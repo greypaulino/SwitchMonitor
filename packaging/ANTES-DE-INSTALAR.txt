@@ -1,0 +1,9 @@
+﻿SwitchMonitor 1.2.0 - Windows 10/11, 64-bit
+
+AutoHotkey and ControlMyMonitor are included. Installation is for your Windows user and does not change graphics drivers.
+
+LG 29WK600 with Dell Intel HD 3000: switching to DP has been verified. With AMD, the image switches, but the LG menu may still show DP. The Dell resends HDMI 1 after its connection returns to synchronize the menu.
+
+Other monitors depend on their DDC/CI support. Switching to another computer can interrupt control from the previous computer.
+
+Your settings are preserved during updates and uninstall.

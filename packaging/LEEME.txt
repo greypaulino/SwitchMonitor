@@ -1,0 +1,16 @@
+﻿SWITCHMONITOR 1.2.0
+
+Install SwitchMonitor-Setup-1.2.0.exe on each computer. AutoHotkey and ControlMyMonitor are included. The portable ZIP can be extracted and run without installation.
+
+FIRST USE
+1. Select a monitor when more than one is detected.
+2. Check the inputs you use. Next input cycles through checked inputs only.
+3. Press + beside an input to record a shortcut with 2 to 4 keys for 3 seconds. Press - to remove it.
+4. Set the global shortcuts if desired. Defaults: Ctrl+Alt+M for Next input; Ctrl+Shift+Alt+M for Settings.
+5. Choose Save and activate.
+
+The tray menu lists monitors, then Settings, Shortcuts, Next input, and About. Input shortcuts from all saved monitor profiles stay active. Settings and Shortcuts open for the selected monitor. Duplicate shortcuts across monitors and global actions are rejected.
+
+The connected-input checkboxes are manual. They do not detect whether the other computer is powered on.
+
+Settings are preserved when the app is updated or removed.

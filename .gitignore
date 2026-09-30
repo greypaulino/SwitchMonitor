@@ -1,0 +1,9 @@
+/.build-tools/
+/data/
+/dist/
+*.log
+*.tmp
+*.bak
+*.zip
+*.exe
+

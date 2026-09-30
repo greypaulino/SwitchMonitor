@@ -1,0 +1,18 @@
+Herramientas de compilacion (solo necesarias para reconstruir, no para usar el EXE):
+
+- AutoHotkey v2.0.28 x64 instalado. Build.ps1 admite -AhkBase para cambiar la ruta.
+- .build-tools\Ahk2Exe\Ahk2Exe.exe
+  https://github.com/AutoHotkey/Ahk2Exe/releases/tag/Ahk2Exe1.1.37.02a2
+  SHA256 del ZIP: C29B8C3A5124850D79FC9E66E2CA79677C377D7F31631AD3022BA159C5D9E3BE
+- .build-tools\InnoSetup\ISCC.exe
+  https://github.com/jrsoftware/issrc/releases/tag/is-6_7_3
+  El instalador oficial admite /PORTABLE=1 /CURRENTUSER /DIR="carpeta".
+  Firma verificada: Pyrsys B.V.
+- .build-tools\ControlMyMonitor: extraer aqui la distribucion original completa de
+  https://www.nirsoft.net/utils/controlmymonitor.zip
+
+Ejecutar en PowerShell: .\packaging\Build.ps1
+Si la politica bloquea scripts, usar solo para este proceso:
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\packaging\Build.ps1
+El icono se genera a partir de monitor-switch.png, sin modificar la imagen original.
+No se utiliza compresion de ejecutables UPX/MPRESS ni se empaquetan drivers.
