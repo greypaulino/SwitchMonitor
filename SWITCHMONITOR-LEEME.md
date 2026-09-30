@@ -4,12 +4,13 @@ El cambio a DisplayPort ya fue confirmado visualmente: cambia tanto la imagen co
 la entrada mostrada en el menu del monitor. La ruta que lo consigue utiliza el
 controlador Intel existente, sin instalar DLL ni controladores adicionales.
 
-Puedes instalar `dist\SwitchMonitor-Setup-1.2.0.exe` sin instalar AutoHotkey aparte.
-La version portable esta en `dist\SwitchMonitor-Portable-1.2.0.zip`.
+Puedes instalar `dist\SwitchMonitor-Setup-1.3.0.exe` sin instalar AutoHotkey aparte.
+La version portable esta en `dist\SwitchMonitor-Portable-1.3.0.zip`.
 Ambas usan el icono generado desde `monitor-switch.png`.
 
-Para ejecutar el codigo fuente, conserva `switchMonitor.ahk`, `intelLegacyDdc.ahk`,
-`amdLgDdc.ahk`, `appPaths.ahk` y `returnSyncState.ahk` en la misma carpeta.
+Para ejecutar el codigo fuente, conserva `switchMonitor.ahk`, `settingsUi.ahk`,
+`intelLegacyDdc.ahk`, `amdLgDdc.ahk`, `appPaths.ahk` y `returnSyncState.ahk`
+en la misma carpeta.
 Se requiere AutoHotkey v2 de 64 bits. En la configuracion, guarda y activa tus
 asignaciones. Si solo hay un monitor se selecciona automaticamente; si hay varios,
 usa la lista de monitores.
@@ -30,15 +31,22 @@ El boton "Switch to selected" usa el mismo transporte que los atajos.
 
 La bandeja muestra el nombre del monitor si solo hay uno, o una lista de nombres
 si hay varios. La seleccion se recuerda al reiniciar. El menu contiene
-Settings, Shortcuts, Next input (Ctrl+Alt+M) y About. Se ocultan las acciones predeterminadas
+Settings, Shortcuts, Next input (Ctrl+Alt+M), Check for updates, About,
+Start with Windows y Exit. Se ocultan las acciones predeterminadas
 de AutoHotkey. Settings y Shortcuts abren con el monitor seleccionado.
 
 Cada monitor conserva su propio perfil; los cambios hechos en varias pantallas
-durante la misma sesion de configuracion se guardan al pulsar Guardar y activar.
+durante la misma sesion de configuracion se guardan al pulsar Save.
 Los atajos de todos los perfiles se registran a la vez y se comprueba que no
 coincidan entre monitores. Saltar se aplica al monitor seleccionado. Las tres
 ventanas del programa utilizan colores oscuros inspirados en VS Code. Los atajos
-globales se pueden cambiar en Settings con el boton + o quitar con el boton −.
+globales se pueden cambiar haciendo clic en sus botones de Settings.
+
+## Actualizaciones (1.3.0)
+
+Al iniciar y desde Check for updates, el programa consulta el ultimo release
+publicado de GitHub. Si hay una version nueva, muestra un aviso con Download update,
+que guarda el instalador en Descargas. La instalacion se inicia por separado.
 
 ## Funcionamiento y alcance verificado
 

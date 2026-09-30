@@ -1,15 +1,17 @@
-﻿SWITCHMONITOR 1.2.0
+SWITCHMONITOR 1.3.0
 
-Install SwitchMonitor-Setup-1.2.0.exe on each computer. AutoHotkey and ControlMyMonitor are included. The portable ZIP can be extracted and run without installation.
+Install SwitchMonitor-Setup-1.3.0.exe on each computer. AutoHotkey and ControlMyMonitor are included. The portable ZIP can be extracted and run without installation.
 
 FIRST USE
 1. Select a monitor when more than one is detected.
 2. Check the inputs you use. Next input cycles through checked inputs only.
-3. Press + beside an input to record a shortcut with 2 to 4 keys for 3 seconds. Press - to remove it.
+3. Click an input's shortcut button to record a combination of 2 to 4 keys. Press Escape or Delete to clear it.
 4. Set the global shortcuts if desired. Defaults: Ctrl+Alt+M for Next input; Ctrl+Shift+Alt+M for Settings.
-5. Choose Save and activate.
+5. Choose Save. If nothing changed, choose Close.
 
-The tray menu lists monitors, then Settings, Shortcuts, Next input, and About. Input shortcuts from all saved monitor profiles stay active. Settings and Shortcuts open for the selected monitor. Duplicate shortcuts across monitors and global actions are rejected.
+The tray menu lists monitors, then Settings, Shortcuts, Next input, Check for updates, About, Start with Windows and Exit. Input shortcuts from all saved monitor profiles stay active. Settings and Shortcuts open for the selected monitor. Duplicate shortcuts across monitors and global actions are rejected.
+
+When a newer GitHub release is available, the app displays a desktop notice. Download update saves its installer in Downloads; installation is a separate step.
 
 The connected-input checkboxes are manual. They do not detect whether the other computer is powered on.
 

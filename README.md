@@ -16,4 +16,4 @@ The app checks the latest published GitHub release at startup and through **Chec
 
 For each release, use a version tag such as `v1.3.0` and attach the installer as `SwitchMonitor-Setup-1.3.0.exe`. The version in `switchMonitor.ahk` (`APP_VERSION` and the Ahk2Exe directive), `packaging/SwitchMonitor.iss`, and `packaging/Build.ps1` must match. Publish a non-draft, non-prerelease GitHub release so the latest-release API can find it.
 
-The current 1.2.0 installers were built before the update notice was added. The notice will first be available in the next compiled release.
+Version 1.3.0 is the first release with update notices and one-click installer downloads.

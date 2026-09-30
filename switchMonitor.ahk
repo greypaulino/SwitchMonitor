@@ -6,10 +6,10 @@
 #Include settingsUi.ahk
 ;@Ahk2Exe-SetName SwitchMonitor
 ;@Ahk2Exe-SetDescription SwitchMonitor - monitor input shortcuts
-;@Ahk2Exe-SetVersion 1.2.0.0
+;@Ahk2Exe-SetVersion 1.3.0.0
 ;@Ahk2Exe-SetOrigFilename SwitchMonitor.exe
 
-APP_VERSION := '1.2.0'
+APP_VERSION := '1.3.0'
 
 monitorTool := FileExist(A_ScriptDir '\ControlMyMonitor\ControlMyMonitor.exe')
     ? A_ScriptDir '\ControlMyMonitor\ControlMyMonitor.exe'
@@ -388,7 +388,7 @@ TransportLabel(monitor) {
 }
 
 DiagnoseMonitors(monitors) {
-    report := 'SwitchMonitor 1.2.0 - ' FormatTime(, 'yyyy-MM-dd HH:mm:ss')
+    report := 'SwitchMonitor ' APP_VERSION ' - ' FormatTime(, 'yyyy-MM-dd HH:mm:ss')
         . '`nRead-only diagnostics; does not switch inputs.`nWindows ' A_OSVersion
         . '`nAutoHotkey ' A_AhkVersion ' / ' (A_PtrSize * 8) ' bits / compiled=' A_IsCompiled
         . '`nData: ' AppPath() '`nControlMyMonitor: ' FileGetVersion(monitorTool) '`n'
