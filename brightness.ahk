@@ -367,7 +367,7 @@ ShowBrightnessPanel(*) {
     buttonStyles[settingsButton.Hwnd].iconOpacity := 0.72
     rows := Map()
     for index, monitor in availableMonitors {
-        y := 12 + (index - 1) * 72
+        y := 12 + (index - 1) * 96
         label := window.AddText('x27 y' y ' w142 h20 cFFFFFF', MonitorLabel(monitor))
         label.OnEvent('Click', SelectBrightnessMonitor.Bind(monitor.key))
         number := window.AddText('x165 y' y ' w70 h20 Center cFFFFFF', '')
@@ -381,7 +381,7 @@ ShowBrightnessPanel(*) {
         rows[monitor.key] := {label: label, number: number, slider: slider,
             name: MonitorLabel(monitor)}
     }
-    height := 110 + (availableMonitors.Length - 1) * 72
+    height := 110 + (availableMonitors.Length - 1) * 96
     status := window.AddText('x16 y' (height - 22) ' w364 h18 cB7B7B7', '')
     brightnessPanel := {window: window, rows: rows, status: status, link: linkButton,
         x: 0, y: 0, bottom: 0, height: height, linkedView: false, updating: false,
@@ -483,7 +483,7 @@ BrightnessLayoutPanel(panel) {
         row.number.Visible := visible
         row.slider.Visible := visible
     }
-    panel.height := panel.linkedView ? 110 : 110 + (availableMonitors.Length - 1) * 72
+    panel.height := panel.linkedView ? 110 : 110 + (availableMonitors.Length - 1) * 96
     panel.status.Move(16, panel.height - 22, 364, 18)
     if panel.bottom {
         panel.y := panel.bottom - panel.height
@@ -590,7 +590,7 @@ BrightnessPanelMouseWheel(wParam, lParam, msg, hwnd) {
 BrightnessWheelAt(panel, mx, my, steps) {
     global availableMonitors
     index := panel.linkedView ? 1 : Max(1, Min(availableMonitors.Length,
-        Floor((my - panel.y - 12) / 72) + 1))
+        Floor((my - panel.y - 12) / 96) + 1))
     key := availableMonitors[index].key
     slider := panel.rows[key].slider
     if !slider.Enabled
@@ -816,6 +816,11 @@ BrightnessAnimate(*) {
     panel := brightnessPanel
     progress := BrightnessAnimationProgress(panel)
     panel.progress := progress
+    ; Never expose the final one-pixel region along the Windows 11 taskbar.
+    if panel.target = 0 && progress <= 0.08 {
+        BrightnessDestroyPanel()
+        return
+    }
     BrightnessRenderFrame(panel, progress)
     if A_TickCount - panel.started < panel.duration
         return

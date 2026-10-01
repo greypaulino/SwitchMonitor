@@ -7,10 +7,10 @@
 #Include brightness.ahk
 ;@Ahk2Exe-SetName SwitchMonitor
 ;@Ahk2Exe-SetDescription SwitchMonitor - monitor input shortcuts
-;@Ahk2Exe-SetVersion 1.6.0.0
+;@Ahk2Exe-SetVersion 1.6.1.0
 ;@Ahk2Exe-SetOrigFilename SwitchMonitor.exe
 
-APP_VERSION := '1.6.0'
+APP_VERSION := '1.6.1'
 
 monitorTool := FileExist(A_ScriptDir '\ControlMyMonitor\ControlMyMonitor.exe')
     ? A_ScriptDir '\ControlMyMonitor\ControlMyMonitor.exe'
@@ -1513,7 +1513,12 @@ CheckForUpdatesCore(silent) {
             firstNotice := availableUpdate.version != latest
             availableUpdate := {version: latest, url: assetUrl, hash: StrUpper(checksum[1])}
             BuildTrayMenu()
-            if firstNotice
+            if !silent {
+                TrayTip(CanAutoInstallUpdate()
+                    ? 'SwitchMonitor ' latest ' is available. Downloading the update now.'
+                    : 'SwitchMonitor ' latest ' is available. Opening its GitHub release.', 'SwitchMonitor update')
+                SetTimer(InstallAvailableUpdate, -150)
+            } else if firstNotice
                 TrayTip('SwitchMonitor ' latest ' is ready. Select Install update from the monitor icon.', 'SwitchMonitor')
         } else if !silent
             MsgBox('SwitchMonitor is up to date (version ' APP_VERSION ').', 'SwitchMonitor', 'Iconi')
@@ -1523,12 +1528,17 @@ CheckForUpdatesCore(silent) {
     }
 }
 
+CanAutoInstallUpdate() {
+    return !FileExist(A_ScriptDir '\portable.flag')
+        && (FileExist(A_ScriptDir '\installed.flag') || A_IsCompiled)
+}
+
 InstallAvailableUpdate(*) {
     global availableUpdate
     update := availableUpdate
     if update.version = ''
         return
-    if !FileExist(A_ScriptDir '\installed.flag') && !A_IsCompiled {
+    if !CanAutoInstallUpdate() {
         MsgBox('Automatic installation is available from the installed edition. Download this release from GitHub to update this portable or source copy.', 'SwitchMonitor update', 'Iconi')
         Run('https://github.com/greypaulino/SwitchMonitor/releases/latest')
         return
@@ -1538,6 +1548,7 @@ InstallAvailableUpdate(*) {
     target := directory '\SwitchMonitor-Setup-' update.version '.exe'
     partial := target '.' DllCall('GetCurrentProcessId') '.part'
     try {
+        TrayTip('Downloading SwitchMonitor ' update.version '...', 'SwitchMonitor update')
         if FileExist(target)
             FileDelete(target)
         Download(update.url, partial)
@@ -1550,6 +1561,7 @@ InstallAvailableUpdate(*) {
         helper := A_ScriptDir '\Update-Helper.ps1'
         if !FileExist(helper)
             throw Error('The update helper is missing.')
+        TrayTip('Download complete. Installing SwitchMonitor ' update.version '...', 'SwitchMonitor update')
         command := '"' A_WinDir '\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' helper '" -Installer "' target '" -ExpectedHash ' update.hash ' -ProcessId ' DllCall('GetCurrentProcessId') ' -AppDir "' A_ScriptDir '"'
         Run(command, , 'Hide')
         ExitApp()
@@ -1778,7 +1790,7 @@ SelfTest() {
         firstSlider := brightnessPanel.rows[monitors[1].key].slider
         secondSlider := brightnessPanel.rows[monitors[2].key].slider
         BrightnessWheelAt(brightnessPanel, brightnessPanel.x + 30,
-            brightnessPanel.y + 88, 1)
+            brightnessPanel.y + 160, 1)
         if firstSlider.Value != 42 || secondSlider.Value != 43
             throw Error('Mouse wheel did not adjust the monitor under the pointer.')
         firstSlider.Value := 43
