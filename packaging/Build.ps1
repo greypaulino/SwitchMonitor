@@ -17,7 +17,7 @@ New-Item -ItemType Directory -Path $package, "$package\licenses", "$package\sour
 & "$PSScriptRoot\Make-Sun-Icon.ps1"
 if ($Interpreted) {
     Copy-Item -LiteralPath $AhkBase -Destination "$package\SwitchMonitor.exe" -Force
-    foreach ($file in @('switchMonitor.ahk','settingsUi.ahk','brightness.ahk','intelLegacyDdc.ahk','amdLgDdc.ahk','appPaths.ahk','returnSyncState.ahk')) {
+    foreach ($file in @('switchMonitor.ahk','settingsUi.ahk','brightness.ahk','intelLegacyDdc.ahk','amdLgDdc.ahk','appPaths.ahk','returnSyncState.ahk','Update-Helper.ps1')) {
         Copy-Item -LiteralPath "$root\$file" -Destination $package -Force
     }
 } else {
@@ -28,11 +28,12 @@ if ($Interpreted) {
         throw "Ahk2Exe fallo: $($compile.ExitCode)"
     }
 }
+Copy-Item -LiteralPath "$root\Update-Helper.ps1" -Destination $package -Force
 Copy-Item -LiteralPath "$toolsDir\ControlMyMonitor" -Destination $package -Recurse -Force
 foreach ($file in @('monitor-switch.ico','monitor-switch.png','brightness-sun.ico','setting-white.png','link-white.png')) { Copy-Item -LiteralPath "$root\$file" -Destination $package -Force }
 Copy-Item -LiteralPath "$PSScriptRoot\LEEME.txt" -Destination $package -Force
 Copy-Item -LiteralPath 'C:\Program Files\AutoHotkey\license.txt' -Destination "$package\licenses\AutoHotkey.txt" -Force
-foreach ($file in @('switchMonitor.ahk','settingsUi.ahk','brightness.ahk','intelLegacyDdc.ahk','amdLgDdc.ahk','appPaths.ahk','returnSyncState.ahk','intel-ddc-selftest.ahk','amd-ddc-selftest.ahk','monitor-switch.png','brightness-sun.ico','setting.png','link.png','setting-white.png','link-white.png')) {
+foreach ($file in @('switchMonitor.ahk','settingsUi.ahk','brightness.ahk','intelLegacyDdc.ahk','amdLgDdc.ahk','appPaths.ahk','returnSyncState.ahk','Update-Helper.ps1','intel-ddc-selftest.ahk','amd-ddc-selftest.ahk','monitor-switch.png','brightness-sun.ico','setting.png','link.png','setting-white.png','link-white.png')) {
     Copy-Item -LiteralPath "$root\$file" -Destination "$package\source" -Force
 }
 Get-ChildItem -LiteralPath $PSScriptRoot -File | Copy-Item -Destination "$package\source\packaging" -Force
@@ -40,10 +41,10 @@ Get-ChildItem -LiteralPath $PSScriptRoot -File | Copy-Item -Destination "$packag
 [IO.File]::WriteAllText("$package\installed.flag", 'Keep installed settings in LocalAppData\SwitchMonitor')
 & $iscc '/Qp' "/DInterpreted=$([int]$Interpreted.IsPresent)" "$PSScriptRoot\SwitchMonitor.iss"
 if ($LASTEXITCODE -ne 0) { throw 'Inno Setup fallo.' }
-$zip = "$root\dist\SwitchMonitor-Portable-1.4.1.zip"
+$zip = "$root\dist\SwitchMonitor-Portable-1.5.0.zip"
 $releaseFiles = Get-ChildItem -LiteralPath $package | Where-Object { $_.Name -ne 'data' }
 Compress-Archive -LiteralPath $releaseFiles.FullName -DestinationPath $zip -Force
-Get-FileHash -LiteralPath "$root\dist\SwitchMonitor-Setup-1.4.1.exe", $zip -Algorithm SHA256 |
+Get-FileHash -LiteralPath "$root\dist\SwitchMonitor-Setup-1.5.0.exe", $zip -Algorithm SHA256 |
     Select-Object @{n='File';e={[IO.Path]::GetFileName($_.Path)}}, Hash |
     ConvertTo-Json | Set-Content -LiteralPath "$root\dist\SHA256.json" -Encoding UTF8
 Write-Output 'Compilacion terminada: instalador y ZIP portable en dist.'

@@ -1,4 +1,4 @@
-#define AppVersion "1.4.1"
+#define AppVersion "1.5.0"
 #define Root SourcePath + ".."
 #ifndef Interpreted
 #define Interpreted 0

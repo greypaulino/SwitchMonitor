@@ -7,10 +7,10 @@
 #Include brightness.ahk
 ;@Ahk2Exe-SetName SwitchMonitor
 ;@Ahk2Exe-SetDescription SwitchMonitor - monitor input shortcuts
-;@Ahk2Exe-SetVersion 1.4.1.0
+;@Ahk2Exe-SetVersion 1.5.0.0
 ;@Ahk2Exe-SetOrigFilename SwitchMonitor.exe
 
-APP_VERSION := '1.4.1'
+APP_VERSION := '1.5.0'
 
 monitorTool := FileExist(A_ScriptDir '\ControlMyMonitor\ControlMyMonitor.exe')
     ? A_ScriptDir '\ControlMyMonitor\ControlMyMonitor.exe'
@@ -54,6 +54,7 @@ brightnessPointerDown := false
 brightnessHotkeyActive := false
 brightnessCaptureActive := false
 sunIconHandle := 0
+availableUpdate := {version: '', url: '', hash: ''}
 
 try {
     if A_Args.Length && A_Args[1] = '--self-test' {
@@ -134,6 +135,7 @@ try {
     if !wizardOpen && (!A_Args.Length || A_Args[1] != '--activate' || !monitorProfiles.Count)
         OpenLearning()
     SetTimer(CheckForUpdatesSilent, -5000)
+    SetTimer(CheckForUpdatesSilent, 21600000)
 } catch as err {
     if A_Args.Length {
         FileAppend('FAIL: ' err.Message '`n' err.Stack '`n', AppPath('monitor-test-errors.txt'), 'UTF-8')
@@ -196,7 +198,7 @@ SelectTrayMonitor(key, *) {
 }
 
 BuildTrayMenu() {
-    global availableMonitors, selectedMonitor, globalShortcuts
+    global availableMonitors, selectedMonitor, globalShortcuts, availableUpdate
     A_TrayMenu.Delete()
     if availableMonitors.Length = 1 {
         title := MonitorLabel(availableMonitors[1])
@@ -215,6 +217,8 @@ BuildTrayMenu() {
     A_TrayMenu.Add('Shortcuts', ShowAssignments)
     A_TrayMenu.Add('Next input (' ShortcutLabel(globalShortcuts['cycle']) ')', NextConnected)
     A_TrayMenu.Add('Brightness control', ShowBrightnessPanel)
+    if availableUpdate.version != ''
+        A_TrayMenu.Add('Install update ' availableUpdate.version, InstallAvailableUpdate)
     A_TrayMenu.Add('Check for updates', CheckForUpdates)
     A_TrayMenu.Add('About', ShowAbout)
     A_TrayMenu.Add('Start with Windows', ToggleStartWithWindows)
@@ -1460,7 +1464,7 @@ CheckForUpdatesSilent(*) {
 }
 
 CheckForUpdatesCore(silent) {
-    global APP_VERSION
+    global APP_VERSION, availableUpdate
     api := 'https://api.github.com/repos/greypaulino/SwitchMonitor/releases/latest'
     try {
         request := ComObject('WinHttp.WinHttpRequest.5.1')
@@ -1482,7 +1486,24 @@ CheckForUpdatesCore(silent) {
         if IsNewerVersion(latest, APP_VERSION) {
             assetPattern := '"browser_download_url"\s*:\s*"(https://github\.com/greypaulino/SwitchMonitor/releases/download/[^"/]+/SwitchMonitor-Setup-' StrReplace(latest, '.', '\.') '\.exe)"'
             assetUrl := RegExMatch(request.ResponseText, assetPattern, &asset) ? asset[1] : ''
-            ShowUpdateNotice(latest, assetUrl)
+            hashUrl := RegExMatch(request.ResponseText, '"browser_download_url"\s*:\s*"(https://github\.com/greypaulino/SwitchMonitor/releases/download/[^"/]+/SHA256\.json)"', &hashAsset) ? hashAsset[1] : ''
+            if assetUrl = '' || hashUrl = ''
+                throw Error('The release is missing its installer or SHA256 manifest.')
+            manifest := ComObject('WinHttp.WinHttpRequest.5.1')
+            manifest.SetTimeouts(5000, 5000, 5000, 5000)
+            manifest.Open('GET', hashUrl, false)
+            manifest.SetRequestHeader('User-Agent', 'SwitchMonitor/' APP_VERSION)
+            manifest.Send()
+            if manifest.Status != 200
+                throw Error('Could not read the installer checksum.')
+            namePattern := '"File"\s*:\s*"SwitchMonitor-Setup-' StrReplace(latest, '.', '\.') '\.exe"\s*,\s*"Hash"\s*:\s*"([0-9A-Fa-f]{64})"'
+            if !RegExMatch(manifest.ResponseText, namePattern, &checksum)
+                throw Error('The release has no valid installer checksum.')
+            firstNotice := availableUpdate.version != latest
+            availableUpdate := {version: latest, url: assetUrl, hash: StrUpper(checksum[1])}
+            BuildTrayMenu()
+            if firstNotice
+                TrayTip('SwitchMonitor ' latest ' is ready. Select Install update from the monitor icon.', 'SwitchMonitor')
         } else if !silent
             MsgBox('SwitchMonitor is up to date (version ' APP_VERSION ').', 'SwitchMonitor', 'Iconi')
     } catch as err {
@@ -1491,55 +1512,40 @@ CheckForUpdatesCore(silent) {
     }
 }
 
-ShowUpdateNotice(version, assetUrl) {
-    global updateNotice
-    if IsSet(updateNotice) && IsObject(updateNotice)
-        try updateNotice.Destroy()
-    notice := Gui('+AlwaysOnTop -Caption +ToolWindow', 'SwitchMonitor update')
-    updateNotice := notice
-    notice.BackColor := '1E1E1E'
-    notice.SetFont('s10 cFFFFFF', 'Segoe UI')
-    notice.AddText('x20 y16 w330 h24 cFFFFFF', 'SwitchMonitor ' version ' is available').SetFont('s12 Bold')
-    notice.AddText('x20 y46 w330 h37 cB7B7B7', assetUrl != ''
-        ? 'Download the new installer to your Downloads folder.'
-        : 'The release is ready to view on GitHub.')
-    action := SolidButton(notice, 'x20 y92 w235 h35', assetUrl != '' ? 'Download update' : 'View release', '0E639C')
-    action.OnEvent('Click', (*) => assetUrl != '' ? DownloadUpdate(version, assetUrl, notice)
-        : OpenUpdateRelease(notice))
-    dismiss := SolidButton(notice, 'x265 y92 w85 h35', 'Later', '3C3C3C')
-    dismiss.OnEvent('Click', (*) => notice.Destroy())
-    RoundControls([{control: action, width: 235, height: 35}, {control: dismiss, width: 85, height: 35}])
-    notice.OnEvent('Close', (*) => notice.Destroy())
-    MonitorGetWorkArea(MonitorGetPrimary(), &left, &top, &right, &bottom)
-    notice.Show('NoActivate x' (right - 370) ' y' (bottom - 155) ' w370 h145')
-}
-
-OpenUpdateRelease(notice) {
-    notice.Destroy()
-    Run('https://github.com/greypaulino/SwitchMonitor/releases/latest')
-}
-
-DownloadUpdate(version, url, notice) {
-    notice.Destroy()
-    directory := EnvGet('USERPROFILE') '\Downloads'
+InstallAvailableUpdate(*) {
+    global availableUpdate
+    update := availableUpdate
+    if update.version = ''
+        return
+    if !FileExist(A_ScriptDir '\installed.flag') && !A_IsCompiled {
+        MsgBox('Automatic installation is available from the installed edition. Download this release from GitHub to update this portable or source copy.', 'SwitchMonitor update', 'Iconi')
+        Run('https://github.com/greypaulino/SwitchMonitor/releases/latest')
+        return
+    }
+    directory := AppPath('updates')
     DirCreate(directory)
-    target := directory '\SwitchMonitor-Setup-' version '.exe'
+    target := directory '\SwitchMonitor-Setup-' update.version '.exe'
     partial := target '.' DllCall('GetCurrentProcessId') '.part'
     try {
-        if !FileExist(target) {
-            Download(url, partial)
-            file := FileOpen(partial, 'r')
-            valid := file.Length > 100000 && file.ReadUShort() = 0x5A4D
-            file.Close()
-            if !valid
-                throw Error('The downloaded file is not a valid installer.')
-            FileMove(partial, target)
-        }
-        MsgBox('The installer is ready in Downloads:`n' target, 'SwitchMonitor update', 'Iconi')
+        if FileExist(target)
+            FileDelete(target)
+        Download(update.url, partial)
+        file := FileOpen(partial, 'r')
+        valid := file.Length > 100000 && file.ReadUShort() = 0x5A4D
+        file.Close()
+        if !valid
+            throw Error('The downloaded file is not a valid installer.')
+        FileMove(partial, target)
+        helper := A_ScriptDir '\Update-Helper.ps1'
+        if !FileExist(helper)
+            throw Error('The update helper is missing.')
+        command := '"' A_WinDir '\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' helper '" -Installer "' target '" -ExpectedHash ' update.hash ' -ProcessId ' DllCall('GetCurrentProcessId') ' -AppDir "' A_ScriptDir '"'
+        Run(command, , 'Hide')
+        ExitApp()
     } catch as err {
         if FileExist(partial)
             FileDelete(partial)
-        MsgBox('Could not download the installer: ' err.Message, 'SwitchMonitor update', 'Iconx')
+        MsgBox('Could not install the update: ' err.Message, 'SwitchMonitor update', 'Iconx')
     }
 }
 
@@ -1575,6 +1581,7 @@ ShowAbout(*) {
 SelfTest() {
     global assignments, selectedMonitor, settingsFile, uiTest, availableMonitors, testCodes, monitorProfiles, registeredBindings, returnWatches
     global brightnessValues, brightnessSelectedKey, brightnessLinked, brightnessPanel, brightnessPending
+    global availableUpdate
 
     if !IsNewerVersion('1.3.0', '1.2.0') || IsNewerVersion('1.2.0', '1.2.0')
         || IsNewerVersion('1.1.9', '1.2.0') || !IsNewerVersion('1.2.1', '1.2.0')
@@ -1636,6 +1643,12 @@ SelfTest() {
     BuildTrayMenu()
     if DllCall('user32\GetMenuItemCount', 'Ptr', A_TrayMenu.Handle, 'Int') != 10
         throw Error('Menu de bandeja con un monitor incorrecto.')
+    availableUpdate := {version: '9.9.9', url: 'https://example.invalid/update.exe', hash: ''}
+    BuildTrayMenu()
+    if DllCall('user32\GetMenuItemCount', 'Ptr', A_TrayMenu.Handle, 'Int') != 11
+        throw Error('The update action is missing from the tray menu.')
+    availableUpdate := {version: '', url: '', hash: ''}
+    BuildTrayMenu()
     availableMonitors := monitors
     profiles := Map()
     profiles[monitors[1].key] := {monitor: monitors[1], rows: [], assignments: Map(1,
