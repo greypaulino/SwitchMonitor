@@ -25,7 +25,7 @@ OpenLearning(*) {
         if IsObject(selectedMonitor) && monitor.key = selectedMonitor.key
             state.index := index
     }
-    ui := {rows: [], shown: false, height: 890}
+    ui := {rows: [], shown: false, height: 934}
     window := Gui(, 'SwitchMonitor Settings')
     window.BackColor := '1E1E1E'
     window.SetFont('s10 cD4D4D4', 'Segoe UI')
@@ -76,14 +76,20 @@ OpenLearning(*) {
     ui.export := SolidButton(window, 'x286 y746 w154 h36', 'Export diagnostics', '3C3C3C')
     ui.export.SetFont('s9 Bold')
     ui.export.OnEvent('Click', ExportDiagnostic)
-    ui.status := window.AddText('x40 y794 w480 h31 Center cB7B7B7', '')
+    ui.backup := SolidButton(window, 'x120 y790 w154 h36', 'Back up settings', '3C3C3C')
+    ui.backup.SetFont('s9 Bold')
+    ui.backup.OnEvent('Click', BackupConfig)
+    ui.restore := SolidButton(window, 'x286 y790 w154 h36', 'Restore settings', '3C3C3C')
+    ui.restore.SetFont('s9 Bold')
+    ui.restore.OnEvent('Click', RestoreConfig)
+    ui.status := window.AddText('x40 y838 w480 h31 Center cB7B7B7', '')
     ui.status.SetFont('s9')
-    ui.bottomLine := window.AddText('x40 y828 w480 h1 Background3C3C3C')
-    ui.close := SolidButton(window, 'x205 y842 w150 h38', 'Close', '3C3C3C')
+    ui.bottomLine := window.AddText('x40 y872 w480 h1 Background3C3C3C')
+    ui.close := SolidButton(window, 'x205 y886 w150 h38', 'Close', '3C3C3C')
     ui.close.OnEvent('Click', Close)
-    ui.cancel := SolidButton(window, 'x120 y842 w150 h38', 'Cancel', '3C3C3C')
+    ui.cancel := SolidButton(window, 'x120 y886 w150 h38', 'Cancel', '3C3C3C')
     ui.cancel.OnEvent('Click', Close)
-    ui.save := SolidButton(window, 'x290 y842 w150 h38', 'Save')
+    ui.save := SolidButton(window, 'x290 y886 w150 h38', 'Save')
     ui.save.SetFont('s9 Bold')
     ui.save.OnEvent('Click', Commit)
     window.OnEvent('Close', Close)
@@ -94,7 +100,9 @@ OpenLearning(*) {
         {control: ui.downButton, width: 275, height: 32}, {control: ui.upButton, width: 275, height: 32},
         {control: ui.nextButton, width: 275, height: 32}, {control: ui.linkButton, width: 275, height: 32},
         {control: ui.check, width: 154, height: 36},
-        {control: ui.export, width: 154, height: 36}, {control: ui.close, width: 150, height: 38},
+        {control: ui.export, width: 154, height: 36},
+        {control: ui.backup, width: 154, height: 36}, {control: ui.restore, width: 154, height: 36},
+        {control: ui.close, width: 150, height: 38},
         {control: ui.cancel, width: 150, height: 38},
         {control: ui.save, width: 150, height: 38}])
     ShowSmooth(window, 'w560 h' ui.height)
@@ -233,12 +241,14 @@ OpenLearning(*) {
         ui.actionLine.Move(, 728 + offset)
         ui.check.Move(, 746 + offset)
         ui.export.Move(, 746 + offset)
-        ui.status.Move(, 794 + offset)
-        ui.bottomLine.Move(, 828 + offset)
-        ui.close.Move(, 842 + offset)
-        ui.cancel.Move(, 842 + offset)
-        ui.save.Move(, 842 + offset)
-        ui.height := 890 + offset
+        ui.backup.Move(, 790 + offset)
+        ui.restore.Move(, 790 + offset)
+        ui.status.Move(, 838 + offset)
+        ui.bottomLine.Move(, 872 + offset)
+        ui.close.Move(, 886 + offset)
+        ui.cancel.Move(, 886 + offset)
+        ui.save.Move(, 886 + offset)
+        ui.height := 934 + offset
         if ui.shown {
             window.Show('h' ui.height)
             ApplyDarkWindow(window)
@@ -502,6 +512,85 @@ OpenLearning(*) {
         try ui.status.Value := ControlStatus(availableMonitors[state.index]).message
         finally busy := false
     }
+    BackupConfig(*) {
+        if state.loading || state.capturing
+            return
+        if ui.save.Visible {
+            ui.status.Value := 'Save your changes before creating a backup.'
+            return
+        }
+        path := FileSelect('S', A_MyDocuments '\SwitchMonitor-backup.ini',
+            'Back up SwitchMonitor settings', 'INI files (*.ini)')
+        if path = ''
+            return
+        if !RegExMatch(path, 'i)\.ini$')
+            path .= '.ini'
+        try {
+            SaveSettingsBackup(settingsFile, path)
+            ui.status.Value := 'Settings backup saved.'
+        } catch as err
+            ui.status.Value := 'Backup failed: ' err.Message
+    }
+    RestoreConfig(*) {
+        global profileError, brightnessLinked, monitorProfiles
+        if state.loading || state.capturing
+            return
+        if ui.save.Visible {
+            ui.status.Value := 'Save or cancel your changes before restoring.'
+            return
+        }
+        path := FileSelect(, A_MyDocuments, 'Restore SwitchMonitor settings',
+            'INI files (*.ini)')
+        if path = ''
+            return
+        if !IsSettingsBackup(path) {
+            ui.status.Value := 'Select a backup made by SwitchMonitor.'
+            return
+        }
+        if !uiTest && MsgBox('Restore this backup and replace current settings?',
+            'Restore settings', 'YesNo Icon!') != 'Yes'
+            return
+        rollback := AppPath('settings-restore-rollback.ini')
+        existed := FileExist(settingsFile) != ''
+        originalStartup := StartsWithWindows()
+        restored := false
+        try {
+            if existed
+                FileCopy(settingsFile, rollback, 1)
+            FileCopy(path, settingsFile, 1)
+            LoadGlobalShortcuts()
+            RefreshAvailableMonitors()
+            if profileError != ''
+                throw Error(profileError)
+            ValidateGlobalShortcuts(monitorProfiles, globalShortcuts)
+            RegisterGlobalShortcuts()
+            brightnessLinked := IniRead(settingsFile, 'Brightness', 'Linked', '0') = '1'
+            ConfigureStartup(IniRead(path, 'SwitchMonitorBackup', 'StartWithWindows', '0') = '1')
+            BrightnessDestroyPanel()
+            restored := true
+        } catch as err {
+            try {
+                if existed && FileExist(rollback)
+                    FileCopy(rollback, settingsFile, 1)
+                else if !existed && FileExist(settingsFile)
+                    FileDelete(settingsFile)
+                LoadGlobalShortcuts()
+                RefreshAvailableMonitors()
+                RegisterGlobalShortcuts()
+                brightnessLinked := IniRead(settingsFile, 'Brightness', 'Linked', '0') = '1'
+                ConfigureStartup(originalStartup)
+                ui.status.Value := 'Restore failed: ' err.Message
+            } catch as rollbackError
+                ui.status.Value := 'Restore failed; recovery also failed: ' rollbackError.Message
+        } finally {
+            if FileExist(rollback)
+                FileDelete(rollback)
+        }
+        if restored {
+            Close()
+            OpenLearning()
+        }
+    }
     Commit(*) {
         global globalShortcuts, brightnessLinked
         if state.loading || state.capturing || !state.rows.Length
@@ -542,4 +631,18 @@ OpenLearning(*) {
         wizardOpen := false
         CloseSmooth(window)
     }
+}
+
+SaveSettingsBackup(source, target) {
+    if FileExist(source)
+        FileCopy(source, target, 1)
+    else
+        FileOpen(target, 'w', 'UTF-8').Close()
+    IniWrite('1', target, 'SwitchMonitorBackup', 'Version')
+    IniWrite(StartsWithWindows() ? '1' : '0', target,
+        'SwitchMonitorBackup', 'StartWithWindows')
+}
+
+IsSettingsBackup(path) {
+    return FileExist(path) && IniRead(path, 'SwitchMonitorBackup', 'Version', '') = '1'
 }

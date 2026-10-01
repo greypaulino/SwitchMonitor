@@ -7,10 +7,10 @@
 #Include brightness.ahk
 ;@Ahk2Exe-SetName SwitchMonitor
 ;@Ahk2Exe-SetDescription SwitchMonitor - monitor input shortcuts
-;@Ahk2Exe-SetVersion 1.6.2.0
+;@Ahk2Exe-SetVersion 1.6.3.0
 ;@Ahk2Exe-SetOrigFilename SwitchMonitor.exe
 
-APP_VERSION := '1.6.2'
+APP_VERSION := '1.6.3'
 
 monitorTool := FileExist(A_ScriptDir '\ControlMyMonitor\ControlMyMonitor.exe')
     ? A_ScriptDir '\ControlMyMonitor\ControlMyMonitor.exe'
@@ -58,7 +58,10 @@ brightnessCaptureActive := false
 sunIconHandle := 0
 availableUpdate := {version: '', url: '', hash: ''}
 updateNoticeActive := false
+notificationTestActive := false
 OnMessage(0x404, UpdateNotificationClicked)
+OnMessage(0x7E, MonitorTopologyChanged)
+OnMessage(0x219, MonitorDeviceChanged)
 
 try {
     if A_Args.Length && A_Args[1] = '--self-test' {
@@ -149,6 +152,7 @@ try {
         OpenLearning()
     SetTimer(CheckForUpdatesSilent, -5000)
     SetTimer(CheckForUpdatesSilent, 21600000)
+    SetTimer(PollMonitorTopology, 30000)
 } catch as err {
     if A_Args.Length {
         FileAppend('FAIL: ' err.Message '`n' err.Stack '`n', AppPath('monitor-test-errors.txt'), 'UTF-8')
@@ -615,12 +619,13 @@ ChangeMonitor(*) {
     OpenLearning()
 }
 
-RefreshAvailableMonitors() {
+RefreshAvailableMonitors(monitors := 0) {
     global availableMonitors, selectedMonitor, uiTest, profileError
     if uiTest
         return
     currentKey := IsObject(selectedMonitor) ? selectedMonitor.key : ''
-    monitors := ParseMonitors(ExportMonitors())
+    if !IsObject(monitors)
+        monitors := ParseMonitors(ExportMonitors())
     if !monitors.Length
         throw Error('No monitors detected.')
     availableMonitors := monitors
@@ -632,6 +637,52 @@ RefreshAvailableMonitors() {
     } catch as err {
         profileError := err.Message
     }
+}
+
+MonitorTopologyChanged(*) {
+    SetTimer(RefreshMonitorsAfterChange, -1500)
+}
+
+MonitorDeviceChanged(wParam, *) {
+    if wParam = 7 ; DBT_DEVNODES_CHANGED
+        MonitorTopologyChanged()
+}
+
+PollMonitorTopology(*) {
+    RefreshMonitorsAfterChange()
+}
+
+RefreshMonitorsAfterChange(*) {
+    global availableMonitors, brightnessPanel, brightnessSelectedKey, wizardOpen, busy, uiTest
+    if uiTest || wizardOpen || busy
+        return
+    try {
+        detected := ParseMonitors(ExportMonitors())
+        if !detected.Length || !MonitorListChanged(availableMonitors, detected)
+            return
+        wasVisible := IsObject(brightnessPanel) && brightnessPanel.target != 0
+        if IsObject(brightnessPanel)
+            BrightnessDestroyPanel()
+        RefreshAvailableMonitors(detected)
+        if !IsObject(BrightnessMonitor(brightnessSelectedKey))
+            brightnessSelectedKey := availableMonitors[1].key
+        BrightnessStartRangeJobs()
+        if wasVisible
+            ShowBrightnessPanel()
+    } catch as err {
+        FileAppend('Monitor refresh: ' err.Message '`n', AppPath('monitor-switch.log'), 'UTF-8')
+    }
+}
+
+MonitorListChanged(previous, current) {
+    if previous.Length != current.Length
+        return true
+    for index, monitor in current
+        if monitor.key != previous[index].key
+            || monitor.device != previous[index].device
+            || monitor.target != previous[index].target
+            return true
+    return false
 }
 
 LoadAssignments(path, key) {
@@ -1490,7 +1541,7 @@ CheckForUpdatesSilent(*) {
 }
 
 CheckForUpdatesCore(silent) {
-    global APP_VERSION, availableUpdate, updateNoticeActive
+    global APP_VERSION, availableUpdate, updateNoticeActive, notificationTestActive
     api := 'https://api.github.com/repos/greypaulino/SwitchMonitor/releases/latest'
     try {
         request := ComObject('WinHttp.WinHttpRequest.5.1')
@@ -1529,6 +1580,7 @@ CheckForUpdatesCore(silent) {
             availableUpdate := {version: latest, url: assetUrl, hash: StrUpper(checksum[1])}
             BuildTrayMenu()
             if firstNotice || !silent {
+                notificationTestActive := false
                 updateNoticeActive := true
                 TrayTip('SwitchMonitor ' latest ' is available. Click here to update.', 'SwitchMonitor update')
             }
@@ -1540,9 +1592,25 @@ CheckForUpdatesCore(silent) {
     }
 }
 
+ShowTestNotification(*) {
+    global notificationTestActive, updateNoticeActive
+    updateNoticeActive := false
+    notificationTestActive := true
+    TrayTip('Click this notification to confirm that activation works.',
+        'SwitchMonitor notification test')
+}
+
 UpdateNotificationClicked(wParam, lParam, msg, hwnd) {
-    global availableUpdate, updateNoticeActive
-    if hwnd != A_ScriptHwnd || lParam != 1029 || !updateNoticeActive || availableUpdate.version = ''
+    global availableUpdate, updateNoticeActive, notificationTestActive
+    ; NOTIFYICON_VERSION_4 puts the event in LOWORD(lParam).
+    if hwnd != A_ScriptHwnd || (lParam & 0xFFFF) != 1029
+        return
+    if notificationTestActive {
+        notificationTestActive := false
+        MsgBox('Notification click received successfully.', 'SwitchMonitor', 'Iconi')
+        return
+    }
+    if !updateNoticeActive || availableUpdate.version = ''
         return
     updateNoticeActive := false
     SetTimer(InstallAvailableUpdate, -100)
@@ -1614,11 +1682,14 @@ ShowAbout(*) {
     window.AddText('x24 y69 w448 h23 Center cB7B7B7', 'Version ' APP_VERSION)
     window.AddText('x24 y111 w448 h70 Center', 'Switch monitor inputs with keyboard shortcuts. Each monitor keeps its own settings, and shortcut conflicts are prevented.')
     window.AddText('x24 y198 w448 h51 Center cB7B7B7', 'Data: ' AppPath() '`nSettings: ' ShortcutLabel(globalShortcuts['settings']) '  |  Next input: ' ShortcutLabel(globalShortcuts['cycle'])).SetFont('s9')
-    closeButton := SolidButton(window, 'x176 y270 w144 h35', 'Close', '3C3C3C')
+    testButton := SolidButton(window, 'x88 y270 w150 h35', 'Test notification', '3C3C3C')
+    testButton.OnEvent('Click', ShowTestNotification)
+    closeButton := SolidButton(window, 'x258 y270 w150 h35', 'Close', '3C3C3C')
     closeButton.OnEvent('Click', (*) => CloseSmooth(window))
     window.OnEvent('Close', (*) => CloseSmooth(window))
     window.OnEvent('Escape', (*) => CloseSmooth(window))
-    RoundControls([{control: closeButton, width: 144, height: 35}])
+    RoundControls([{control: testButton, width: 150, height: 35},
+        {control: closeButton, width: 150, height: 35}])
     ShowSmooth(window, 'w496 h328')
 }
 
@@ -1663,6 +1734,23 @@ SelfTest() {
     }
     fixture := 'Monitor Device Name: "\\.\DISPLAY1\Monitor0"`nMonitor Name: "Mismo modelo"`nSerial Number: ""`nMonitor ID: "MONITOR\TEST\0001"`n`nMonitor Device Name: "\\.\DISPLAY2\Monitor0"`nMonitor Name: "Mismo modelo"`nSerial Number: ""`nMonitor ID: "MONITOR\TEST\0002"`n'
     monitors := ParseMonitors(fixture)
+    if MonitorListChanged(monitors, monitors) || !MonitorListChanged(monitors, [monitors[1]])
+        || !MonitorListChanged(monitors, [monitors[2], monitors[1]])
+        throw Error('Monitor topology comparison failed.')
+    backupSource := A_Temp '\SwitchMonitor-settings-source-' DllCall('GetCurrentProcessId') '.ini'
+    backupTarget := A_Temp '\SwitchMonitor-settings-backup-' DllCall('GetCurrentProcessId') '.ini'
+    try {
+        IniWrite('Ctrl|Alt|F9', backupSource, 'GlobalShortcuts', 'brightnessUp')
+        SaveSettingsBackup(backupSource, backupTarget)
+        if !IsSettingsBackup(backupTarget)
+            || IniRead(backupTarget, 'GlobalShortcuts', 'brightnessUp', '') != 'Ctrl|Alt|F9'
+            throw Error('Settings backup did not preserve shortcuts.')
+    } finally {
+        if FileExist(backupSource)
+            FileDelete(backupSource)
+        if FileExist(backupTarget)
+            FileDelete(backupTarget)
+    }
     watch := ReturnSyncState(monitors[1], 17)
     if watch.Observe(17) != 'wait' || watch.Observe(17) != 'wait'
         throw Error('La sincronizacion se inicio sin una perdida de conexion.')
@@ -1798,6 +1886,9 @@ SelfTest() {
         if !IsObject(brightnessPanel) || !brightnessPanel.linkedView
             || brightnessPanel.rows[monitors[2].key].slider.control.Visible
             throw Error('Linked brightness did not show a single slider.')
+        if !brightnessPanel.rows[monitors[1].key].activeDot
+            || !brightnessPanel.rows[monitors[2].key].activeDot
+            throw Error('Linked brightness did not mark both monitors active.')
         ToggleBrightnessPanel()
         if IsObject(brightnessPanel)
             throw Error('Brightness tray toggle did not close the visible panel.')
@@ -1808,6 +1899,14 @@ SelfTest() {
         BrightnessRefreshPanel()
         if brightnessPanel.linkedView || !brightnessPanel.rows[monitors[2].key].slider.control.Visible
             throw Error('Independent brightness did not restore both sliders.')
+        if !brightnessPanel.rows[monitors[1].key].activeDot
+            || brightnessPanel.rows[monitors[2].key].activeDot
+            throw Error('Brightness selection did not mark the first monitor active.')
+        NextBrightnessMonitor()
+        if brightnessSelectedKey != monitors[2].key
+            || brightnessPanel.rows[monitors[1].key].activeDot
+            || !brightnessPanel.rows[monitors[2].key].activeDot
+            throw Error('Brightness selection indicator did not follow the next monitor.')
         firstSlider := brightnessPanel.rows[monitors[1].key].slider
         secondSlider := brightnessPanel.rows[monitors[2].key].slider
         BrightnessWheelAt(brightnessPanel, brightnessPanel.x + 30,
@@ -1830,6 +1929,12 @@ SelfTest() {
             throw Error('Brightness shortcut did not update the slider before the hardware write.')
         BrightnessFlushSlider()
         HideBrightnessPanel()
+        availableMonitors := [monitors[1]]
+        ShowBrightnessPanel()
+        if brightnessPanel.rows[monitors[1].key].dot.Visible
+            throw Error('A single monitor should not show a selection indicator.')
+        HideBrightnessPanel()
+        availableMonitors := monitors
         testCodes := ParseInputs('VCP Code`tVCP Code Name`tRead-Write`tCurrent Value`tMaximum Value`tPossible Values`n60`tInput Select`tRead+Write`t17`t18`t17, 18, 15, 16, 17')
         if testCodes.Length != 4
             throw Error('Fallo al leer las entradas anunciadas.')

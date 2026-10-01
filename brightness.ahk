@@ -373,6 +373,10 @@ ShowBrightnessPanel(*) {
     rows := Map()
     for index, monitor in availableMonitors {
         y := 12 + (index - 1) * 96
+        dot := window.AddText('x11 y' y ' w12 h20 Center c777777', '●')
+        dot.SetFont('s9', 'Segoe UI')
+        dot.Visible := availableMonitors.Length > 1
+        dot.OnEvent('Click', SelectBrightnessMonitor.Bind(monitor.key))
         label := window.AddText('x27 y' y ' w142 h20 cFFFFFF', MonitorLabel(monitor))
         label.OnEvent('Click', SelectBrightnessMonitor.Bind(monitor.key))
         number := window.AddText('x165 y' y ' w70 h20 Center cFFFFFF', '')
@@ -383,14 +387,12 @@ ShowBrightnessPanel(*) {
         } catch {
             slider.Enabled := false
         }
-        rows[monitor.key] := {label: label, number: number, slider: slider,
-            name: MonitorLabel(monitor)}
+        rows[monitor.key] := {dot: dot, activeDot: false, label: label,
+            number: number, slider: slider, name: MonitorLabel(monitor)}
     }
-    linkedNames := window.AddText('x27 y39 w340 h20 cFFFFFF Hidden', '')
     height := 110 + (availableMonitors.Length - 1) * 96
     status := window.AddText('x16 y' (height - 22) ' w364 h18 cB7B7B7', '')
     brightnessPanel := {window: window, rows: rows, status: status, link: linkButton,
-        linkedNames: linkedNames,
         x: 0, y: 0, bottom: 0, height: height, linkedView: false, updating: false,
         progress: 0, target: 1, from: 0, started: A_TickCount, duration: 280}
     for _, row in rows
@@ -442,6 +444,12 @@ BrightnessRefreshPanel() {
         BrightnessLayoutPanel(brightnessPanel)
     brightnessPanel.updating := true
     for key, row in brightnessPanel.rows {
+        active := availableMonitors.Length > 1
+            && (brightnessPanel.linkedView || key = brightnessSelectedKey)
+        if row.activeDot != active {
+            row.dot.Opt(active ? 'c4EC97B' : 'c777777')
+            row.activeDot := active
+        }
         if brightnessPanel.linkedView && key != availableMonitors[1].key
             continue
         if brightnessValues.Has(key) {
@@ -470,27 +478,25 @@ BrightnessLayoutPanel(panel) {
     panel.linkedView := brightnessLinked && availableMonitors.Length > 1
     first := panel.rows[availableMonitors[1].key]
     if panel.linkedView {
-        names := []
-        for monitor in availableMonitors
-            names.Push(MonitorLabel(monitor))
-        panel.linkedNames.Text := JoinBrightnessNames(names)
-        panel.linkedNames.Move(27, 39, 340, 22 * names.Length)
-        panel.linkedNames.Visible := true
-        first.label.Visible := false
-        first.slider.Move(16, 52 + 22 * names.Length)
+        first.slider.Move(16, 52 + 22 * availableMonitors.Length)
     } else {
-        panel.linkedNames.Visible := false
-        first.label.Visible := true
         first.slider.Move(16, 62)
     }
     for index, monitor in availableMonitors {
-        if index = 1
-            continue
         row := panel.rows[monitor.key]
-        visible := !panel.linkedView
-        row.label.Visible := visible
-        row.number.Visible := visible
-        row.slider.Visible := visible
+        if panel.linkedView {
+            y := 39 + (index - 1) * 22
+            row.dot.Move(11, y)
+            row.label.Move(27, y, 340, 20)
+            row.number.Visible := index = 1
+            row.slider.Visible := index = 1
+        } else {
+            y := 12 + (index - 1) * 96
+            row.dot.Move(11, y)
+            row.label.Move(27, y, 142, 20)
+            row.number.Visible := true
+            row.slider.Visible := true
+        }
     }
     panel.height := panel.linkedView ? 102 + 22 * availableMonitors.Length
         : 110 + (availableMonitors.Length - 1) * 96
@@ -500,13 +506,6 @@ BrightnessLayoutPanel(panel) {
         panel.window.Show('NoActivate x' panel.x ' y' panel.y ' w400 h' panel.height)
         BrightnessRenderFrame(panel, panel.progress)
     }
-}
-
-JoinBrightnessNames(names) {
-    text := ''
-    for name in names
-        text .= (text = '' ? '' : '`n') name
-    return text
 }
 
 BrightnessSliderChanged(key, control, *) {
@@ -860,6 +859,7 @@ BrightnessAnimate(*) {
 BrightnessRenderFrame(panel, progress) {
     ; Windows will not reveal a window first shown with an empty region.
     visibleHeight := Max(1, Round(panel.height * progress))
+    expanding := visibleHeight > (panel.HasOwnProp('paintedHeight') ? panel.paintedHeight : 0)
     panel.y := panel.bottom - visibleHeight
     region := DllCall('gdi32\CreateRectRgn', 'Int', 0, 'Int', 0,
         'Int', 400, 'Int', visibleHeight, 'Ptr')
@@ -868,6 +868,12 @@ BrightnessRenderFrame(panel, progress) {
         DllCall('gdi32\DeleteObject', 'Ptr', region)
     DllCall('user32\SetWindowPos', 'Ptr', panel.window.Hwnd, 'Ptr', 0,
         'Int', panel.x, 'Int', panel.y, 'Int', 0, 'Int', 0, 'UInt', 0x15)
+    if expanding {
+        ; Paint the newly exposed dark client area before DWM presents it.
+        DllCall('user32\RedrawWindow', 'Ptr', panel.window.Hwnd, 'Ptr', 0,
+            'Ptr', 0, 'UInt', 0x85)
+    }
+    panel.paintedHeight := visibleHeight
 }
 
 BrightnessDestroyPanel() {
