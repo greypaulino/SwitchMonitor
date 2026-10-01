@@ -14,7 +14,7 @@ The detailed project notes are in [SWITCHMONITOR-LEEME.md](SWITCHMONITOR-LEEME.m
 
 The app checks GitHub releases at startup, every six hours, and through **Check for updates** in the monitor tray menu. A newer version changes that menu item to **Update available! Click to install** and shows a clickable Windows notification. Only clicking the notification or menu item downloads the installer, verifies the published SHA-256 checksum, upgrades the installed edition, and reopens the app. Settings in `%LOCALAPPDATA%\SwitchMonitor` are preserved. Portable and source copies open the release page instead.
 
-For each release, use a version tag such as `v1.6.4` and attach the installer as `SwitchMonitor-Setup-1.6.4.exe` and its `SHA256.json` checksum manifest. The version in `switchMonitor.ahk` (`APP_VERSION` and the Ahk2Exe directive), `packaging/SwitchMonitor.iss`, and `packaging/Build.ps1` must match. Publish a non-draft, non-prerelease GitHub release so the latest-release API can find it.
+For each release, use a version tag such as `v1.6.5` and attach the installer as `SwitchMonitor-Setup-1.6.5.exe` and its `SHA256.json` checksum manifest. The version in `switchMonitor.ahk` (`APP_VERSION` and the Ahk2Exe directive), `packaging/SwitchMonitor.iss`, and `packaging/Build.ps1` must match. Publish a non-draft, non-prerelease GitHub release so the latest-release API can find it.
 
 Version 1.3.0 is the first release with update notices and one-click installer downloads.
 The 1.4.0 installer bundles the official AutoHotkey interpreter and the application scripts, because Windows Defender blocked the Ahk2Exe-generated binary during packaging. The installed app still preserves settings in `%LOCALAPPDATA%\SwitchMonitor`.

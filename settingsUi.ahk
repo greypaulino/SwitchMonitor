@@ -11,6 +11,7 @@ OpenLearning(*) {
     }
     wizardOpen := true
     state := {index: 1, rows: [], drafts: Map(), baselines: Map(), loading: false, capturing: false,
+        closing: false, closePending: false,
         globals: Map('cycle', globalShortcuts['cycle'], 'settings', globalShortcuts['settings'],
             'brightnessDown', globalShortcuts['brightnessDown'], 'brightnessUp', globalShortcuts['brightnessUp'],
             'brightnessNext', globalShortcuts['brightnessNext']),
@@ -108,6 +109,13 @@ OpenLearning(*) {
     ShowSmooth(window, 'w560 h' ui.height)
     ui.shown := true
     if uiTest {
+        ; A close request during detection must leave row controls alive until loading ends.
+        state.loading := true
+        Close()
+        if !DllCall('user32\IsWindow', 'Ptr', window.Hwnd)
+            throw Error('Settings closed while monitor rows were loading.')
+        state.loading := false
+        state.closePending := false
         buttonStyle := DllCall('user32\GetWindowLongPtrW', 'Ptr', ui.cycleButton.Hwnd, 'Int', -16, 'Ptr')
         if (buttonStyle & 0xF) != 0xB
             throw Error('Shortcut button is not owner-drawn.')
@@ -167,6 +175,8 @@ OpenLearning(*) {
     }
 
     LoadMonitor() {
+        if state.closing
+            return
         state.loading := true
         ui.choice.Enabled := false
         ui.refresh.Enabled := false
@@ -201,9 +211,15 @@ OpenLearning(*) {
             ui.choice.Enabled := availableMonitors.Length > 1
             ui.refresh.Enabled := true
             RefreshActions()
+            if state.closePending {
+                state.closePending := false
+                Close()
+            }
         }
     }
     RenderRows() {
+        if state.closing
+            return
         for row in ui.rows {
             row.check.Visible := false
             row.name.Visible := false
@@ -624,12 +640,20 @@ OpenLearning(*) {
     }
     Close(*) {
         global wizardOpen
+        if state.closing
+            return 1
         if state.capturing
-            return
+            return 1
+        if state.loading {
+            state.closePending := true
+            return 1
+        }
+        state.closing := true
         SetTimer(HoverGlobals, 0)
         ToolTip(, , , 20)
         wizardOpen := false
         CloseSmooth(window)
+        return 1
     }
 }
 
