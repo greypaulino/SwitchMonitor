@@ -1,6 +1,6 @@
 ; Settings uses the same name/shortcut rows as the Shortcuts window.
 OpenLearning(*) {
-    global selectedMonitor, wizardOpen, busy, settingsFile, uiTest, availableMonitors, profileError, globalShortcuts
+    global selectedMonitor, wizardOpen, busy, settingsFile, uiTest, availableMonitors, profileError, globalShortcuts, brightnessLinked
     if wizardOpen || busy
         return
     try RefreshAvailableMonitors()
@@ -11,8 +11,13 @@ OpenLearning(*) {
     }
     wizardOpen := true
     state := {index: 1, rows: [], drafts: Map(), baselines: Map(), loading: false, capturing: false,
-        globals: Map('cycle', globalShortcuts['cycle'], 'settings', globalShortcuts['settings']),
-        originalGlobals: Map('cycle', globalShortcuts['cycle'], 'settings', globalShortcuts['settings']),
+        globals: Map('cycle', globalShortcuts['cycle'], 'settings', globalShortcuts['settings'],
+            'brightnessDown', globalShortcuts['brightnessDown'], 'brightnessUp', globalShortcuts['brightnessUp'],
+            'brightnessNext', globalShortcuts['brightnessNext']),
+        originalGlobals: Map('cycle', globalShortcuts['cycle'], 'settings', globalShortcuts['settings'],
+            'brightnessDown', globalShortcuts['brightnessDown'], 'brightnessUp', globalShortcuts['brightnessUp'],
+            'brightnessNext', globalShortcuts['brightnessNext']),
+        linked: brightnessLinked, originalLinked: brightnessLinked,
         selected: 0, refresh: false, hover: '', mock: 'valid'}
     labels := []
     for index, monitor in availableMonitors {
@@ -20,50 +25,62 @@ OpenLearning(*) {
         if IsObject(selectedMonitor) && monitor.key = selectedMonitor.key
             state.index := index
     }
-    ui := {rows: [], shown: false, height: 610}
+    ui := {rows: [], shown: false, height: 890}
     window := Gui(, 'SwitchMonitor Settings')
     window.BackColor := '1E1E1E'
     window.SetFont('s10 cD4D4D4', 'Segoe UI')
-    window.AddText('x40 y18 w480 h36 Center cFFFFFF', 'Settings').SetFont('s22 Bold')
-    window.AddText('x40 y57 w480 h20 Center cB7B7B7', 'Choose inputs and keyboard shortcuts.').SetFont('s9')
-    window.AddText('x130 y102 w72 h25 cFFFFFF', 'Monitor:').SetFont('s10 Bold')
-    ui.choice := window.AddDropDownList('x210 y96 w210 Choose' state.index, labels)
+    window.AddText('x40 y32 w480 h38 Center cFFFFFF', 'Settings').SetFont('s22 Bold')
+    window.AddText('x40 y88 w480 h20 Center cB7B7B7', 'Choose inputs and keyboard shortcuts.').SetFont('s9')
+    window.AddText('x130 y128 w72 h25 cFFFFFF', 'Monitor:').SetFont('s10 Bold')
+    ui.choice := window.AddDropDownList('x210 y123 w210 Choose' state.index, labels)
     ui.choice.Enabled := availableMonitors.Length > 1
     if availableMonitors.Length = 1 {
         ui.choice.Visible := false
-        window.AddText('x210 y96 w210 h31 Background2D2D2D cFFFFFF +0x200', '  ' labels[1])
+        window.AddText('x210 y123 w210 h31 Background2D2D2D cFFFFFF +0x200', '  ' labels[1])
     }
     ui.choice.OnEvent('Change', ChooseMonitor)
-    ui.refresh := SolidButton(window, 'x430 y96 w90 h31', 'Detect', '3C3C3C')
+    ui.refresh := SolidButton(window, 'x430 y123 w90 h31', 'Detect', '3C3C3C')
     ui.refresh.OnEvent('Click', Reload)
-    window.AddText('x40 y140 w480 h1 Background3C3C3C')
-    window.AddText('x40 y151 w480 h23 Center cFFFFFF', 'INPUT SHORTCUTS').SetFont('s11 Bold')
-    window.AddText('x40 y176 w480 h18 Center cB7B7B7', 'Check the inputs to include in Next input.').SetFont('s9')
-    ui.globalLine := window.AddText('x40 y335 w480 h1 Background3C3C3C')
-    ui.cycleName := window.AddText('x68 y352 w160 h32 cFFFFFF +0x200', 'Next input')
-    ui.cycleButton := SolidButton(window, 'x240 y352 w275 h32', ShortcutLabel(state.globals['cycle']), '2D2D2D')
+    window.AddText('x40 y167 w480 h1 Background3C3C3C')
+    window.AddText('x40 y185 w480 h23 Center cFFFFFF', 'INPUT SHORTCUTS').SetFont('s11 Bold')
+    window.AddText('x40 y210 w480 h18 Center cB7B7B7', 'Check the inputs to include in Next input.').SetFont('s9')
+    ui.globalLine := window.AddText('x40 y376 w480 h1 Background3C3C3C')
+    ui.cycleName := window.AddText('x68 y394 w160 h32 cFFFFFF +0x200', 'Next input')
+    ui.cycleButton := SolidButton(window, 'x240 y394 w275 h32', ShortcutLabel(state.globals['cycle']), '2D2D2D')
     ui.cycleButton.OnEvent('Click', CaptureClick.Bind('cycle', 0))
-    ui.settingsName := window.AddText('x68 y395 w160 h32 cFFFFFF +0x200', 'Open Settings')
-    ui.settingsButton := SolidButton(window, 'x240 y395 w275 h32', ShortcutLabel(state.globals['settings']), '2D2D2D')
+    ui.settingsName := window.AddText('x68 y440 w160 h32 cFFFFFF +0x200', 'Open Settings')
+    ui.settingsButton := SolidButton(window, 'x240 y440 w275 h32', ShortcutLabel(state.globals['settings']), '2D2D2D')
     ui.settingsButton.OnEvent('Click', CaptureClick.Bind('settings', 0))
-    ui.actionLine := window.AddText('x40 y439 w480 h1 Background3C3C3C')
-    ui.switch := SolidButton(window, 'x40 y452 w154 h36', 'Switch to selected', '0E639C')
-    ui.switch.SetFont('s9 Bold')
-    ui.switch.OnEvent('Click', TestSelected)
-    ui.check := SolidButton(window, 'x203 y452 w154 h36', 'Check connection', '3C3C3C')
+    ui.brightnessLine := window.AddText('x40 y490 w480 h1 Background3C3C3C')
+    ui.brightnessTitle := window.AddText('x40 y508 w480 h23 Center cFFFFFF', 'BRIGHTNESS CONTROL')
+    ui.brightnessTitle.SetFont('s11 Bold')
+    ui.downName := window.AddText('x68 y546 w160 h32 cFFFFFF +0x200', 'Decrease brightness')
+    ui.downButton := SolidButton(window, 'x240 y546 w275 h32', ShortcutLabel(state.globals['brightnessDown']), '2D2D2D')
+    ui.downButton.OnEvent('Click', CaptureClick.Bind('brightnessDown', 0))
+    ui.upName := window.AddText('x68 y590 w160 h32 cFFFFFF +0x200', 'Increase brightness')
+    ui.upButton := SolidButton(window, 'x240 y590 w275 h32', ShortcutLabel(state.globals['brightnessUp']), '2D2D2D')
+    ui.upButton.OnEvent('Click', CaptureClick.Bind('brightnessUp', 0))
+    ui.nextName := window.AddText('x68 y634 w160 h32 cFFFFFF +0x200', 'Next monitor')
+    ui.nextButton := SolidButton(window, 'x240 y634 w275 h32', ShortcutLabel(state.globals['brightnessNext']), '2D2D2D')
+    ui.nextButton.OnEvent('Click', CaptureClick.Bind('brightnessNext', 0))
+    ui.linkName := window.AddText('x68 y678 w160 h32 cFFFFFF +0x200', 'Link monitor brightness')
+    ui.linkButton := SolidButton(window, 'x240 y678 w275 h32', state.linked ? 'Linked' : 'Independent', '2D2D2D')
+    ui.linkButton.OnEvent('Click', ToggleLink)
+    ui.actionLine := window.AddText('x40 y728 w480 h1 Background3C3C3C')
+    ui.check := SolidButton(window, 'x120 y746 w154 h36', 'Check connection', '3C3C3C')
     ui.check.SetFont('s9 Bold')
     ui.check.OnEvent('Click', CheckControl)
-    ui.export := SolidButton(window, 'x366 y452 w154 h36', 'Export diagnostics', '3C3C3C')
+    ui.export := SolidButton(window, 'x286 y746 w154 h36', 'Export diagnostics', '3C3C3C')
     ui.export.SetFont('s9 Bold')
     ui.export.OnEvent('Click', ExportDiagnostic)
-    ui.status := window.AddText('x40 y504 w480 h48 Center cB7B7B7', '')
+    ui.status := window.AddText('x40 y794 w480 h31 Center cB7B7B7', '')
     ui.status.SetFont('s9')
-    ui.bottomLine := window.AddText('x40 y555 w480 h1 Background3C3C3C')
-    ui.close := SolidButton(window, 'x205 y565 w150 h38', 'Close', '3C3C3C')
+    ui.bottomLine := window.AddText('x40 y828 w480 h1 Background3C3C3C')
+    ui.close := SolidButton(window, 'x205 y842 w150 h38', 'Close', '3C3C3C')
     ui.close.OnEvent('Click', Close)
-    ui.cancel := SolidButton(window, 'x120 y565 w150 h38', 'Cancel', '3C3C3C')
+    ui.cancel := SolidButton(window, 'x120 y842 w150 h38', 'Cancel', '3C3C3C')
     ui.cancel.OnEvent('Click', Close)
-    ui.save := SolidButton(window, 'x290 y565 w150 h38', 'Save')
+    ui.save := SolidButton(window, 'x290 y842 w150 h38', 'Save')
     ui.save.SetFont('s9 Bold')
     ui.save.OnEvent('Click', Commit)
     window.OnEvent('Close', Close)
@@ -71,7 +88,9 @@ OpenLearning(*) {
     LoadMonitor()
     RoundControls([{control: ui.refresh, width: 90, height: 31},
         {control: ui.cycleButton, width: 275, height: 32}, {control: ui.settingsButton, width: 275, height: 32},
-        {control: ui.switch, width: 154, height: 36}, {control: ui.check, width: 154, height: 36},
+        {control: ui.downButton, width: 275, height: 32}, {control: ui.upButton, width: 275, height: 32},
+        {control: ui.nextButton, width: 275, height: 32}, {control: ui.linkButton, width: 275, height: 32},
+        {control: ui.check, width: 154, height: 36},
         {control: ui.export, width: 154, height: 36}, {control: ui.close, width: 150, height: 38},
         {control: ui.cancel, width: 150, height: 38},
         {control: ui.save, width: 150, height: 38}])
@@ -82,9 +101,15 @@ OpenLearning(*) {
         if (buttonStyle & 0xF) != 0xB
             throw Error('Shortcut button is not owner-drawn.')
         if availableMonitors.Length = 1 {
-            if ui.choice.Enabled || ui.rows.Length != state.rows.Length
+            if ui.choice.Enabled || ui.rows.Length != state.rows.Length || !ui.linkButton.Enabled
                 throw Error('Single-monitor settings did not render its input rows.')
-            Close()
+            if state.linked {
+                ToggleLink()
+                if state.linked || !ui.save.Visible
+                    throw Error('Linked brightness could not be disabled with one monitor detected.')
+                Commit()
+            } else
+                Close()
             return
         }
         if !ui.choice.Enabled || state.rows.Length != 4 || ui.rows.Length != 4
@@ -128,6 +153,9 @@ OpenLearning(*) {
         CheckConnected(2, ui.rows[2].check)
         ui.rows[3].check.Value := 1
         CheckConnected(3, ui.rows[3].check)
+        if !ApplyGlobalShortcut('brightnessUp', 'Ctrl|Alt|F9')
+            throw Error('Brightness shortcut could not be changed in Settings.')
+        ToggleLink()
         Commit()
     } else {
         SetTimer(HoverGlobals, 80)
@@ -142,7 +170,7 @@ OpenLearning(*) {
             monitor := availableMonitors[state.index]
             if state.drafts.Has(monitor.key) {
                 state.rows := state.drafts[monitor.key]
-                ui.status.Value := 'Unsaved changes. Choose Save and activate to keep them.'
+                ui.status.Value := 'Unsaved changes. Choose Save to keep them.'
             } else {
                 saved := LoadAssignments(settingsFile, monitor.key)
                 found := DiscoverInputs(monitor, saved, state.refresh)
@@ -178,7 +206,7 @@ OpenLearning(*) {
         }
         ui.rows := []
         for index, entry in state.rows {
-            y := 201 + (index - 1) * 43
+            y := 236 + (index - 1) * 44
             check := window.AddCheckBox('x42 y' (y + 7) ' w22 h23', '')
             check.Value := entry.connected
             check.OnEvent('Click', CheckConnected.Bind(index))
@@ -189,22 +217,31 @@ OpenLearning(*) {
             ui.rows.Push({check: check, name: name, button: button})
             RoundControls([{control: button, width: 275, height: 32}])
         }
-        offset := Max(0, state.rows.Length - 3) * 43
-        ui.globalLine.Move(, 335 + offset)
-        ui.cycleName.Move(, 352 + offset)
-        ui.cycleButton.Move(, 352 + offset)
-        ui.settingsName.Move(, 395 + offset)
-        ui.settingsButton.Move(, 395 + offset)
-        ui.actionLine.Move(, 439 + offset)
-        ui.switch.Move(, 452 + offset)
-        ui.check.Move(, 452 + offset)
-        ui.export.Move(, 452 + offset)
-        ui.status.Move(, 504 + offset)
-        ui.bottomLine.Move(, 555 + offset)
-        ui.close.Move(, 565 + offset)
-        ui.cancel.Move(, 565 + offset)
-        ui.save.Move(, 565 + offset)
-        ui.height := 615 + offset
+        offset := Max(0, state.rows.Length - 3) * 44
+        ui.globalLine.Move(, 376 + offset)
+        ui.cycleName.Move(, 394 + offset)
+        ui.cycleButton.Move(, 394 + offset)
+        ui.settingsName.Move(, 440 + offset)
+        ui.settingsButton.Move(, 440 + offset)
+        ui.brightnessLine.Move(, 490 + offset)
+        ui.brightnessTitle.Move(, 508 + offset)
+        ui.downName.Move(, 546 + offset)
+        ui.downButton.Move(, 546 + offset)
+        ui.upName.Move(, 590 + offset)
+        ui.upButton.Move(, 590 + offset)
+        ui.nextName.Move(, 634 + offset)
+        ui.nextButton.Move(, 634 + offset)
+        ui.linkName.Move(, 678 + offset)
+        ui.linkButton.Move(, 678 + offset)
+        ui.actionLine.Move(, 728 + offset)
+        ui.check.Move(, 746 + offset)
+        ui.export.Move(, 746 + offset)
+        ui.status.Move(, 794 + offset)
+        ui.bottomLine.Move(, 828 + offset)
+        ui.close.Move(, 842 + offset)
+        ui.cancel.Move(, 842 + offset)
+        ui.save.Move(, 842 + offset)
+        ui.height := 890 + offset
         if ui.shown {
             window.Show('h' ui.height)
             ApplyDarkWindow(window)
@@ -231,8 +268,10 @@ OpenLearning(*) {
         return snapshot
     }
     RefreshActions() {
-        dirty := state.globals['cycle'] != state.originalGlobals['cycle']
-            || state.globals['settings'] != state.originalGlobals['settings']
+        dirty := state.linked != state.originalLinked
+        for kind, chord in state.globals
+            if chord != state.originalGlobals[kind]
+                dirty := true
         if !dirty
             for key, rows in state.drafts
                 if state.baselines.Has(key) && RowsSnapshot(rows) != state.baselines[key] {
@@ -268,7 +307,9 @@ OpenLearning(*) {
         CaptureShortcut(kind, index)
     }
     CaptureShortcut(kind, index) {
+        global brightnessCaptureActive
         state.capturing := true
+        brightnessCaptureActive := true
         ui.choice.Enabled := false
         ui.refresh.Enabled := false
         ui.save.Enabled := false
@@ -306,7 +347,7 @@ OpenLearning(*) {
             if recording.clear {
                 accepted := kind = 'port' ? ApplyPortShortcut(index, '') : ApplyGlobalShortcut(kind, '')
                 if accepted
-                    ui.status.Value := 'Shortcut cleared. Choose Save and activate.'
+                    ui.status.Value := 'Shortcut cleared. Choose Save.'
             } else if recording.cancel || recording.candidate = '' {
                 ui.status.Value := 'No shortcut selected. Previous assignment kept.'
             } else if recording.tooMany {
@@ -315,7 +356,7 @@ OpenLearning(*) {
                 accepted := kind = 'port' ? ApplyPortShortcut(index, recording.candidate)
                     : ApplyGlobalShortcut(kind, recording.candidate)
                 if accepted
-                    ui.status.Value := 'Shortcut updated. Choose Save and activate.'
+                    ui.status.Value := 'Shortcut updated. Choose Save.'
             }
         } catch as err {
             ui.status.Value := err.Message
@@ -326,6 +367,7 @@ OpenLearning(*) {
             SetTimer(Countdown, 0)
             CloseSmooth(dialog)
             state.capturing := false
+            brightnessCaptureActive := false
             ui.choice.Enabled := availableMonitors.Length > 1
             ui.refresh.Enabled := true
             RefreshActions()
@@ -408,8 +450,16 @@ OpenLearning(*) {
         }
         ui.cycleButton.Text := ShortcutLabel(state.globals['cycle'])
         ui.settingsButton.Text := ShortcutLabel(state.globals['settings'])
+        ui.downButton.Text := ShortcutLabel(state.globals['brightnessDown'])
+        ui.upButton.Text := ShortcutLabel(state.globals['brightnessUp'])
+        ui.nextButton.Text := ShortcutLabel(state.globals['brightnessNext'])
         RefreshActions()
         return true
+    }
+    ToggleLink(*) {
+        state.linked := !state.linked
+        ui.linkButton.Text := state.linked ? 'Linked' : 'Independent'
+        RefreshActions()
     }
     HoverGlobals() {
         if state.capturing
@@ -420,6 +470,14 @@ OpenLearning(*) {
             hovered := 'cycle'
         else if hwnd = ui.settingsName.Hwnd || hwnd = ui.settingsButton.Hwnd
             hovered := 'settings'
+        else if hwnd = ui.downName.Hwnd || hwnd = ui.downButton.Hwnd
+            hovered := 'brightnessDown'
+        else if hwnd = ui.upName.Hwnd || hwnd = ui.upButton.Hwnd
+            hovered := 'brightnessUp'
+        else if hwnd = ui.nextName.Hwnd || hwnd = ui.nextButton.Hwnd
+            hovered := 'brightnessNext'
+        else if hwnd = ui.linkName.Hwnd || hwnd = ui.linkButton.Hwnd
+            hovered := 'brightnessLink'
         if hovered = state.hover
             return
         ToolTip(, , , 20)
@@ -427,16 +485,15 @@ OpenLearning(*) {
             ToolTip('Switches to the next checked input on the selected monitor.', mx + 14, my + 18, 20)
         else if hovered = 'settings'
             ToolTip('Opens Settings for the selected monitor.', mx + 14, my + 18, 20)
+        else if hovered = 'brightnessDown'
+            ToolTip('Decrease brightness: tap for 1, hold for 5-point steps, then 10-point steps.', mx + 14, my + 18, 20)
+        else if hovered = 'brightnessUp'
+            ToolTip('Increase brightness: tap for 1, hold for 5-point steps, then 10-point steps.', mx + 14, my + 18, 20)
+        else if hovered = 'brightnessNext'
+            ToolTip('Select the next monitor for brightness shortcuts.', mx + 14, my + 18, 20)
+        else if hovered = 'brightnessLink'
+            ToolTip('Apply the same brightness value to all detected monitors.', mx + 14, my + 18, 20)
         state.hover := hovered
-    }
-    TestSelected(*) {
-        if state.loading || state.capturing || busy
-            return
-        if !state.selected {
-            ui.status.Value := 'Select an input name or shortcut first.'
-            return
-        }
-        SendInputCommand(availableMonitors[state.index], state.rows[state.selected])
     }
     CheckControl(*) {
         global busy
@@ -447,7 +504,7 @@ OpenLearning(*) {
         finally busy := false
     }
     Commit(*) {
-        global globalShortcuts
+        global globalShortcuts, brightnessLinked
         if state.loading || state.capturing || !state.rows.Length
             return
         try {
@@ -462,6 +519,9 @@ OpenLearning(*) {
                 globalShortcuts[kind] := chord
                 IniWrite(chord, settingsFile, 'GlobalShortcuts', kind)
             }
+            brightnessLinked := state.linked
+            IniWrite(brightnessLinked ? '1' : '0', settingsFile, 'Brightness', 'Linked')
+            BrightnessRefreshPanel()
             SelectActiveMonitor(state.index)
             RegisterShortcuts()
             RegisterGlobalShortcuts()

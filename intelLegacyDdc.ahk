@@ -62,6 +62,14 @@ class IntelLegacyDdc {
         return IntelLegacyDdc.ParseVcpReply(data, feature)
     }
 
+    SetVcp(feature, value) {
+        if feature < 0 || feature > 255 || value < 0 || value > 65535
+            throw Error('VCP value is out of range.')
+        data := IntelLegacyDdc.BuildRequest(this.uid, 0x50,
+            [0x84, 0x03, feature, (value >> 8) & 0xFF, value & 0xFF])
+        this.Exchange(data, true)
+    }
+
     static ParseVcpReply(data, feature) {
         checksum := 0x50
         Loop 11

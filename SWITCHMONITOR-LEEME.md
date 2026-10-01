@@ -48,6 +48,16 @@ Al iniciar y desde Check for updates, el programa consulta el ultimo release
 publicado de GitHub. Si hay una version nueva, muestra un aviso con Download update,
 que guarda el instalador en Descargas. La instalacion se inicia por separado.
 
+## Brillo (1.4.0)
+
+El icono de sol abre o cierra un panel con un slider por monitor detectado. La rueda
+del mouse ajusta un punto por paso en la fila bajo el puntero. Settings permite
+cambiar los atajos de bajar y subir brillo, y elegir el monitor activo para esos
+atajos. El boton de cadena vincula el nivel de todos los monitores detectados.
+Una pulsacion cambia un punto; una pulsacion sostenida desde 250 ms usa saltos
+de cinco y despues de dos segundos usa saltos de diez. El panel se oculta con
+una animacion tras cinco segundos sin interaccion, o al hacer clic fuera de el.
+
 ## Funcionamiento y alcance verificado
 
 Para el identificador de modelo GSM7714 conectado a Intel, el script utiliza Intel

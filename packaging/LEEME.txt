@@ -1,6 +1,6 @@
-SWITCHMONITOR 1.3.0
+SWITCHMONITOR 1.4.0
 
-Install SwitchMonitor-Setup-1.3.0.exe on each computer. AutoHotkey and ControlMyMonitor are included. The portable ZIP can be extracted and run without installation.
+Install SwitchMonitor-Setup-1.4.0.exe on each computer. AutoHotkey and ControlMyMonitor are included. The portable ZIP can be extracted and run without installation.
 
 FIRST USE
 1. Select a monitor when more than one is detected.
@@ -12,6 +12,11 @@ FIRST USE
 The tray menu lists monitors, then Settings, Shortcuts, Next input, Check for updates, About, Start with Windows and Exit. Input shortcuts from all saved monitor profiles stay active. Settings and Shortcuts open for the selected monitor. Duplicate shortcuts across monitors and global actions are rejected.
 
 When a newer GitHub release is available, the app displays a desktop notice. Download update saves its installer in Downloads; installation is a separate step.
+
+BRIGHTNESS CONTROL
+Click the sun icon in the tray to open or close a slider for each detected monitor. The default shortcuts are Ctrl+Alt+- (down), Ctrl+Alt++ (up), and Ctrl+Alt+* (next monitor). The numeric keypad works for all three; on a US keyboard the main-keyboard alternatives are -, Shift+=, and Shift+8. Edit these shortcuts in Settings if needed.
+
+A tap or mouse-wheel step changes one point. Hold a shortcut for at least 250 ms for repeated five-point steps; after two seconds the steps are ten points. The chain button in Settings or the slider panel applies the same brightness to all detected monitors. The panel slides away after five seconds without interaction and stays open while the pointer is over it.
 
 The connected-input checkboxes are manual. They do not detect whether the other computer is powered on.
 

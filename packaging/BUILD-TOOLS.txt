@@ -12,6 +12,7 @@ Herramientas de compilacion (solo necesarias para reconstruir, no para usar el E
   https://www.nirsoft.net/utils/controlmymonitor.zip
 
 Ejecutar en PowerShell: .\packaging\Build.ps1
+Si Defender bloquea el EXE generado por Ahk2Exe, usar .\packaging\Build.ps1 -Interpreted para empaquetar el interprete oficial y los scripts sin excluir archivos de la proteccion.
 Si la politica bloquea scripts, usar solo para este proceso:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\packaging\Build.ps1
 El icono se genera a partir de monitor-switch.png, sin modificar la imagen original.

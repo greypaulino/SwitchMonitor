@@ -4,12 +4,13 @@
 #Include amdLgDdc.ahk
 #Include returnSyncState.ahk
 #Include settingsUi.ahk
+#Include brightness.ahk
 ;@Ahk2Exe-SetName SwitchMonitor
 ;@Ahk2Exe-SetDescription SwitchMonitor - monitor input shortcuts
-;@Ahk2Exe-SetVersion 1.3.0.0
+;@Ahk2Exe-SetVersion 1.4.0.0
 ;@Ahk2Exe-SetOrigFilename SwitchMonitor.exe
 
-APP_VERSION := '1.3.0'
+APP_VERSION := '1.4.0'
 
 monitorTool := FileExist(A_ScriptDir '\ControlMyMonitor\ControlMyMonitor.exe')
     ? A_ScriptDir '\ControlMyMonitor\ControlMyMonitor.exe'
@@ -24,7 +25,9 @@ selectedMonitor := 0
 assignments := Map()
 monitorProfiles := Map()
 profileError := ''
-globalShortcuts := Map('cycle', 'Ctrl|Alt|M', 'settings', 'Ctrl|Alt|Shift|M')
+globalShortcuts := Map('cycle', 'Ctrl|Alt|M', 'settings', 'Ctrl|Alt|Shift|M',
+    'brightnessDown', 'Ctrl|Alt|NumpadSub', 'brightnessUp', 'Ctrl|Alt|NumpadAdd',
+    'brightnessNext', 'Ctrl|Alt|NumpadMult')
 registeredGlobalHotkeys := []
 busy := false
 wizardOpen := false
@@ -34,11 +37,23 @@ availableMonitors := []
 testCodes := []
 registeredBindings := []
 buttonStyles := Map()
+buttonImages := Map()
+gdipToken := 0
 buttonHoverHwnd := 0
 cycleEntries := []
 wizardCycle := 0
 returnWatches := Map()
 returnWatchEnabled := false
+brightnessValues := Map()
+brightnessPending := Map()
+brightnessSelectedKey := ''
+brightnessLinked := false
+brightnessPanel := 0
+brightnessLastActivity := 0
+brightnessPointerDown := false
+brightnessHotkeyActive := false
+brightnessCaptureActive := false
+sunIconHandle := 0
 
 try {
     if A_Args.Length && A_Args[1] = '--self-test' {
@@ -98,6 +113,7 @@ try {
     returnWatchEnabled := true
     availableMonitors := monitors
     LoadGlobalShortcuts()
+    brightnessLinked := IniRead(settingsFile, 'Brightness', 'Linked', '0') = '1'
     LoadMonitorProfiles()
     preferred := IniRead(settingsFile, 'General', 'SelectedMonitor', '')
     index := FindMonitorIndex(preferred)
@@ -114,6 +130,7 @@ try {
         OpenLearning()
         MsgBox(err.Message '`n`nEdit the shortcuts in Settings and save again.', 'Shortcut conflict', 'Icon!')
     }
+    InitBrightness()
     if !wizardOpen && (!A_Args.Length || A_Args[1] != '--activate' || !monitorProfiles.Count)
         OpenLearning()
     SetTimer(CheckForUpdatesSilent, -5000)
@@ -197,6 +214,7 @@ BuildTrayMenu() {
     A_TrayMenu.Add('Settings', OpenLearning)
     A_TrayMenu.Add('Shortcuts', ShowAssignments)
     A_TrayMenu.Add('Next input (' ShortcutLabel(globalShortcuts['cycle']) ')', NextConnected)
+    A_TrayMenu.Add('Brightness control', ShowBrightnessPanel)
     A_TrayMenu.Add('Check for updates', CheckForUpdates)
     A_TrayMenu.Add('About', ShowAbout)
     A_TrayMenu.Add('Start with Windows', ToggleStartWithWindows)
@@ -255,7 +273,9 @@ ConfigureStartup(enabled, shortcutPath := '') {
 
 LoadGlobalShortcuts() {
     global settingsFile, globalShortcuts
-    for kind, fallback in Map('cycle', 'Ctrl|Alt|M', 'settings', 'Ctrl|Alt|Shift|M') {
+    for kind, fallback in Map('cycle', 'Ctrl|Alt|M', 'settings', 'Ctrl|Alt|Shift|M',
+        'brightnessDown', 'Ctrl|Alt|NumpadSub', 'brightnessUp', 'Ctrl|Alt|NumpadAdd',
+        'brightnessNext', 'Ctrl|Alt|NumpadMult') {
         saved := IniRead(settingsFile, 'GlobalShortcuts', kind, fallback)
         try globalShortcuts[kind] := saved = '' ? '' : ValidateChord(saved)
         catch
@@ -285,23 +305,54 @@ RegisterGlobalShortcuts() {
     for binding in registeredGlobalHotkeys
         Hotkey(binding, 'Off')
     registeredGlobalHotkeys := []
-    for kind, action in Map('cycle', NextConnected, 'settings', OpenLearning) {
+    for kind, action in Map('cycle', NextConnected, 'settings', OpenLearning,
+        'brightnessDown', BrightnessDown, 'brightnessUp', BrightnessUp,
+        'brightnessNext', NextBrightnessMonitor) {
         if globalShortcuts[kind] = ''
             continue
         name := AhkChord(globalShortcuts[kind])
         Hotkey(name, action, 'On')
         registeredGlobalHotkeys.Push(name)
+        if kind = 'brightnessDown' && globalShortcuts[kind] = 'Ctrl|Alt|NumpadSub' {
+            Hotkey('^!-', BrightnessDown, 'On')
+            registeredGlobalHotkeys.Push('^!-')
+        } else if kind = 'brightnessUp' && globalShortcuts[kind] = 'Ctrl|Alt|NumpadAdd' {
+            Hotkey('^!+=', BrightnessUp, 'On')
+            registeredGlobalHotkeys.Push('^!+=')
+        } else if kind = 'brightnessNext' && globalShortcuts[kind] = 'Ctrl|Alt|NumpadMult' {
+            Hotkey('^!+8', NextBrightnessMonitor, 'On')
+            registeredGlobalHotkeys.Push('^!+8')
+        }
     }
 }
 
 ValidateGlobalShortcuts(profiles, shortcuts) {
-    if shortcuts['cycle'] != '' && shortcuts['cycle'] = shortcuts['settings']
-        throw Error('Next input and Settings cannot use the same shortcut.')
+    seen := Map()
+    for kind, chord in shortcuts {
+        if chord = ''
+            continue
+        for name in GlobalHotkeyNames(kind, chord) {
+            if seen.Has(name)
+                throw Error(ShortcutLabel(chord) ' conflicts with another global shortcut.')
+            seen[name] := kind
+        }
+    }
     for key, profile in profiles
         for slot, entry in profile.assignments
             for kind, chord in shortcuts
-                if chord != '' && entry.shortcut = chord
+                if chord != '' && HasCode(GlobalHotkeyNames(kind, chord), AhkChord(entry.shortcut))
                     throw Error(ShortcutLabel(chord) ' is already assigned to ' MonitorLabel(profile.monitor) ' / ' entry.name '.')
+}
+
+GlobalHotkeyNames(kind, chord) {
+    names := [AhkChord(chord)]
+    if kind = 'brightnessDown' && chord = 'Ctrl|Alt|NumpadSub'
+        names.Push('^!-')
+    else if kind = 'brightnessUp' && chord = 'Ctrl|Alt|NumpadAdd'
+        names.Push('^!+=')
+    else if kind = 'brightnessNext' && chord = 'Ctrl|Alt|NumpadMult'
+        names.Push('^!+8')
+    return names
 }
 
 ExportMonitors() {
@@ -771,6 +822,12 @@ ValidateChord(text) {
 }
 
 ShortcutLabel(chord) {
+    if chord = 'Ctrl|Alt|NumpadSub'
+        return 'Ctrl+Alt+-'
+    if chord = 'Ctrl|Alt|NumpadAdd'
+        return 'Ctrl+Alt++'
+    if chord = 'Ctrl|Alt|NumpadMult'
+        return 'Ctrl+Alt+*'
     return chord = '' ? 'None' : StrReplace(StrReplace(chord, 'Ctrl|Alt|Shift', 'Ctrl|Shift|Alt'), '|', '+')
 }
 
@@ -795,6 +852,41 @@ SolidButton(window, options, label, color := '0E639C') {
     return control
 }
 
+SetSolidButtonImage(control, path, size := 14, offsetX := 0, offsetY := 0) {
+    global buttonStyles, buttonImages, gdipToken
+    if !gdipToken {
+        input := Buffer(16, 0)
+        NumPut('UInt', 1, input)
+        token := Buffer(A_PtrSize, 0)
+        if DllCall('gdiplus\GdiplusStartup', 'Ptr', token, 'Ptr', input, 'Ptr', 0, 'UInt') != 0
+            throw Error('Could not initialize image rendering.')
+        gdipToken := NumGet(token, 0, 'Ptr')
+        OnExit(CleanupButtonImages)
+    }
+    if !buttonImages.Has(path) {
+        output := Buffer(A_PtrSize, 0)
+        if DllCall('gdiplus\GdipLoadImageFromFile', 'WStr', path, 'Ptr', output, 'UInt') != 0
+            throw Error('Could not load icon: ' path)
+        buttonImages[path] := NumGet(output, 0, 'Ptr')
+    }
+    buttonStyles[control.Hwnd].icon := buttonImages[path]
+    buttonStyles[control.Hwnd].iconSize := size
+    buttonStyles[control.Hwnd].iconOffsetX := offsetX
+    buttonStyles[control.Hwnd].iconOffsetY := offsetY
+    buttonStyles[control.Hwnd].roundIcon := true
+    buttonStyles[control.Hwnd].iconOpacity := 1.0
+    buttonStyles[control.Hwnd].iconHoverOpacity := 1.0
+    DllCall('user32\InvalidateRect', 'Ptr', control.Hwnd, 'Ptr', 0, 'Int', 0)
+}
+
+CleanupButtonImages(*) {
+    global buttonImages, gdipToken
+    for _, image in buttonImages
+        DllCall('gdiplus\GdipDisposeImage', 'Ptr', image)
+    if gdipToken
+        DllCall('gdiplus\GdiplusShutdown', 'Ptr', gdipToken)
+}
+
 GdiColor(hex) {
     rgb := Integer('0x' hex)
     return ((rgb & 0xFF0000) >> 16) | (rgb & 0x00FF00) | ((rgb & 0x0000FF) << 16)
@@ -814,13 +906,15 @@ PaintSolidButton(wParam, lParam, *) {
     background := DllCall('gdi32\CreateSolidBrush', 'UInt', GdiColor('1E1E1E'), 'Ptr')
     DllCall('user32\FillRect', 'Ptr', dc, 'Ptr', lParam + 40, 'Ptr', background)
     DllCall('gdi32\DeleteObject', 'Ptr', background)
-    brush := DllCall('gdi32\CreateSolidBrush', 'UInt', GdiColor(style.hovered ? style.hover : style.fill), 'Ptr')
-    oldBrush := DllCall('gdi32\SelectObject', 'Ptr', dc, 'Ptr', brush, 'Ptr')
-    oldPen := DllCall('gdi32\SelectObject', 'Ptr', dc, 'Ptr', DllCall('gdi32\GetStockObject', 'Int', 8, 'Ptr'), 'Ptr')
-    DllCall('gdi32\RoundRect', 'Ptr', dc, 'Int', left, 'Int', top, 'Int', right, 'Int', bottom, 'Int', 24, 'Int', 24)
-    DllCall('gdi32\SelectObject', 'Ptr', dc, 'Ptr', oldPen)
-    DllCall('gdi32\SelectObject', 'Ptr', dc, 'Ptr', oldBrush)
-    DllCall('gdi32\DeleteObject', 'Ptr', brush)
+    if !style.HasOwnProp('roundIcon') {
+        brush := DllCall('gdi32\CreateSolidBrush', 'UInt', GdiColor(style.hovered ? style.hover : style.fill), 'Ptr')
+        oldBrush := DllCall('gdi32\SelectObject', 'Ptr', dc, 'Ptr', brush, 'Ptr')
+        oldPen := DllCall('gdi32\SelectObject', 'Ptr', dc, 'Ptr', DllCall('gdi32\GetStockObject', 'Int', 8, 'Ptr'), 'Ptr')
+        DllCall('gdi32\RoundRect', 'Ptr', dc, 'Int', left, 'Int', top, 'Int', right, 'Int', bottom, 'Int', 24, 'Int', 24)
+        DllCall('gdi32\SelectObject', 'Ptr', dc, 'Ptr', oldPen)
+        DllCall('gdi32\SelectObject', 'Ptr', dc, 'Ptr', oldBrush)
+        DllCall('gdi32\DeleteObject', 'Ptr', brush)
+    }
     DllCall('gdi32\SetBkMode', 'Ptr', dc, 'Int', 1)
     disabled := NumGet(lParam, 16, 'UInt') & 4
     DllCall('gdi32\SetTextColor', 'Ptr', dc, 'UInt', disabled ? 0xAAAAAA : 0xFFFFFF)
@@ -830,7 +924,36 @@ PaintSolidButton(wParam, lParam, *) {
         'Ptr', lParam + 40, 'UInt', 0x8025)
     if oldFont
         DllCall('gdi32\SelectObject', 'Ptr', dc, 'Ptr', oldFont)
+    if style.HasOwnProp('icon') {
+        iconSize := style.iconSize
+        output := Buffer(A_PtrSize, 0)
+        if DllCall('gdiplus\GdipCreateFromHDC', 'Ptr', dc, 'Ptr', output, 'UInt') = 0 {
+            graphics := NumGet(output, 0, 'Ptr')
+            DllCall('gdiplus\GdipSetInterpolationMode', 'Ptr', graphics, 'Int', 7)
+            x := left + Round((right - left - iconSize) / 2) + style.iconOffsetX
+            y := top + Round((bottom - top - iconSize) / 2) + style.iconOffsetY
+            opacity := style.hovered ? style.iconHoverOpacity : style.iconOpacity
+            DrawButtonImage(graphics, style.icon, x, y, iconSize, opacity,
+                left, top, right - left, bottom - top)
+            DllCall('gdiplus\GdipDeleteGraphics', 'Ptr', graphics)
+        }
+    }
     return true
+}
+
+DrawButtonImage(graphics, icon, x, y, size, opacity, left, top, width, height) {
+    DllCall('gdiplus\GdipDrawImageRectI', 'Ptr', graphics, 'Ptr', icon,
+        'Int', x, 'Int', y, 'Int', size, 'Int', size)
+    if opacity >= 1
+        return
+    brush := Buffer(A_PtrSize, 0)
+    overlay := (Round((1 - opacity) * 255) << 24) | 0x1E1E1E
+    if DllCall('gdiplus\GdipCreateSolidFill', 'UInt', overlay, 'Ptr', brush, 'UInt') != 0
+        return
+    handle := NumGet(brush, 0, 'Ptr')
+    DllCall('gdiplus\GdipFillRectangleI', 'Ptr', graphics, 'Ptr', handle,
+        'Int', left, 'Int', top, 'Int', width, 'Int', height)
+    DllCall('gdiplus\GdipDeleteBrush', 'Ptr', handle)
 }
 
 RefreshButtonHover() {
@@ -1252,20 +1375,20 @@ ShowAssignments(*) {
     window := Gui(, 'SwitchMonitor Shortcuts')
     window.BackColor := '1E1E1E'
     window.SetFont('s10 cD4D4D4', 'Segoe UI')
-    window.AddText('x40 y20 w460 h38 Center cFFFFFF', 'Shortcuts').SetFont('s22 Bold')
-    window.AddText('x40 y69 w460 h21 Center cB7B7B7', 'Select a monitor to view or edit its shortcuts.').SetFont('s9')
-    window.AddText('x110 y108 w70 h25', 'Monitor:').SetFont('s10 Bold')
-    choice := window.AddDropDownList('x188 y103 w240 Choose' FindMonitorIndex(selectedMonitor.key), labels)
+    window.AddText('x40 y27 w460 h38 Center cFFFFFF', 'Shortcuts').SetFont('s22 Bold')
+    window.AddText('x40 y82 w460 h21 Center cB7B7B7', 'Select a monitor to view or edit its shortcuts.').SetFont('s9')
+    window.AddText('x110 y130 w70 h25', 'Monitor:').SetFont('s10 Bold')
+    choice := window.AddDropDownList('x188 y125 w240 Choose' FindMonitorIndex(selectedMonitor.key), labels)
     choice.Enabled := availableMonitors.Length > 1
     if availableMonitors.Length = 1 {
         choice.Visible := false
-        window.AddText('x188 y103 w240 h30 Background2D2D2D cFFFFFF +0x200', '  ' labels[1])
+        window.AddText('x188 y125 w240 h30 Background2D2D2D cFFFFFF +0x200', '  ' labels[1])
     }
-    window.AddText('x40 y145 w460 h1 Background3C3C3C')
-    view := {rows: [], height: 480}
-    footerLine := window.AddText('x40 y320 w460 h1 Background3C3C3C')
-    footer := window.AddText('x40 y340 w460 h42 Center cB7B7B7', '')
-    closeButton := SolidButton(window, 'x198 y395 w144 h38', 'Close', '3C3C3C')
+    window.AddText('x40 y169 w460 h1 Background3C3C3C')
+    view := {rows: [], height: 510}
+    footerLine := window.AddText('x40 y350 w460 h1 Background3C3C3C')
+    footer := window.AddText('x40 y372 w460 h42 Center cB7B7B7', '')
+    closeButton := SolidButton(window, 'x198 y435 w144 h38', 'Close', '3C3C3C')
     closeButton.OnEvent('Click', (*) => CloseSmooth(window))
     choice.OnEvent('Change', ChangeSelection)
     window.OnEvent('Close', (*) => CloseSmooth(window))
@@ -1298,25 +1421,32 @@ ShowAssignments(*) {
         if !entries.Length
             entries.Push({name: 'No shortcuts saved', shortcut: ''})
         for index, entry in entries {
-            y := 164 + (index - 1) * 46
+            y := 190 + (index - 1) * 50
             label := window.AddText('x60 y' y ' w190 h34 cFFFFFF +0x200', entry.name)
             button := SolidButton(window, 'x258 y' y ' w222 h34',
-                entry.shortcut = '' ? 'Open Settings' : ShortcutLabel(entry.shortcut), '2D2D2D')
-            button.OnEvent('Click', EditAssignments)
+                !entry.HasOwnProp('code') ? 'Open Settings'
+                    : (entry.shortcut = '' ? 'Switch to ' entry.name : ShortcutLabel(entry.shortcut)), '2D2D2D')
+            if entry.HasOwnProp('code')
+                button.OnEvent('Click', SwitchFromShortcuts.Bind(monitor, entry))
+            else
+                button.OnEvent('Click', EditAssignments)
             view.rows.Push(label)
             view.rows.Push(button)
             RoundControls([{control: button, width: 222, height: 34}])
         }
-        footerY := 172 + entries.Length * 46
+        footerY := 195 + entries.Length * 50
         footerLine.Move(, footerY)
-        footer.Move(, footerY + 18)
+        footer.Move(, footerY + 22)
         footer.Value := 'Next input: ' ShortcutLabel(globalShortcuts['cycle']) '    Settings: ' ShortcutLabel(globalShortcuts['settings'])
-        closeButton.Move(, footerY + 76)
-        view.height := footerY + 130
+        closeButton.Move(, footerY + 86)
+        view.height := footerY + 142
     }
     EditAssignments(*) {
         CloseSmooth(window)
         OpenLearning()
+    }
+    SwitchFromShortcuts(monitor, entry, *) {
+        SendInputCommand(monitor, entry)
     }
 }
 
@@ -1443,10 +1573,22 @@ ShowAbout(*) {
 
 SelfTest() {
     global assignments, selectedMonitor, settingsFile, uiTest, availableMonitors, testCodes, monitorProfiles, registeredBindings, returnWatches
+    global brightnessValues, brightnessSelectedKey, brightnessLinked, brightnessPanel, brightnessPending
 
     if !IsNewerVersion('1.3.0', '1.2.0') || IsNewerVersion('1.2.0', '1.2.0')
         || IsNewerVersion('1.1.9', '1.2.0') || !IsNewerVersion('1.2.1', '1.2.0')
         throw Error('Update version comparison failed.')
+    if BrightnessStep(0) != 1 || BrightnessStep(249) != 1 || BrightnessStep(250) != 5
+        || BrightnessStep(1999) != 5 || BrightnessStep(2000) != 10
+        || BrightnessClamp(-5) != 0 || BrightnessClamp(105) != 100
+        throw Error('Brightness repeat steps or limits failed.')
+    if BrightnessValueAtX(12, 7, 343, 9) != 0
+        || BrightnessValueAtX(175, 7, 343, 9) != 50
+        || BrightnessValueAtX(339, 7, 343, 9) != 100
+        throw Error('Brightness slider click positions did not match the trackbar channel.')
+    for chord in ['Ctrl|Alt|NumpadSub', 'Ctrl|Alt|NumpadAdd', 'Ctrl|Alt|NumpadMult']
+        if ValidateChord(chord) != chord
+            throw Error('A brightness shortcut is invalid: ' chord)
     startupTestPath := A_Temp '\SwitchMonitor-startup-test-' DllCall('GetCurrentProcessId') '.lnk'
     try {
         ConfigureStartup(true, startupTestPath)
@@ -1487,11 +1629,11 @@ SelfTest() {
     availableMonitors := monitors
     selectedMonitor := monitors[2]
     BuildTrayMenu()
-    if DllCall('user32\GetMenuItemCount', 'Ptr', A_TrayMenu.Handle, 'Int') != 10
+    if DllCall('user32\GetMenuItemCount', 'Ptr', A_TrayMenu.Handle, 'Int') != 11
         throw Error('Menu de bandeja con varios monitores incorrecto.')
     availableMonitors := [monitors[1]]
     BuildTrayMenu()
-    if DllCall('user32\GetMenuItemCount', 'Ptr', A_TrayMenu.Handle, 'Int') != 9
+    if DllCall('user32\GetMenuItemCount', 'Ptr', A_TrayMenu.Handle, 'Int') != 10
         throw Error('Menu de bandeja con un monitor incorrecto.')
     availableMonitors := monitors
     profiles := Map()
@@ -1507,6 +1649,14 @@ SelfTest() {
         throw Error('Se acepto un atajo duplicado en otro monitor.')
     profiles[monitors[2].key].assignments[1].shortcut := 'Ctrl|Alt|9'
     ValidateProfileShortcuts(profiles)
+    profiles[monitors[1].key].assignments[1].shortcut := 'Ctrl|Alt|Shift|8'
+    rejected := false
+    try ValidateGlobalShortcuts(profiles, Map('brightnessNext', 'Ctrl|Alt|NumpadMult'))
+    catch
+        rejected := true
+    if !rejected
+        throw Error('The main-keyboard brightness shortcut alias was not reserved.')
+    profiles[monitors[1].key].assignments[1].shortcut := 'Ctrl|Alt|1'
     globalTest := Map('cycle', 'Ctrl|Alt|M', 'settings', 'Ctrl|Alt|Shift|M')
     ValidateGlobalShortcuts(profiles, globalTest)
     globalTest['cycle'] := 'Ctrl|Alt|9'
@@ -1574,10 +1724,46 @@ SelfTest() {
         settingsFile := path
         uiTest := true
         availableMonitors := monitors
+        brightnessSelectedKey := monitors[1].key
+        brightnessLinked := true
+        BrightnessApply(monitors[1], 42)
+        if brightnessValues.Get(monitors[1].key, -1) != 42
+            || brightnessValues.Get(monitors[2].key, -1) != 42
+            throw Error('Linked brightness did not update both monitors.')
+        ShowBrightnessPanel()
+        if !IsObject(brightnessPanel) || brightnessPanel.rows.Count != 2
+            throw Error('Brightness panel did not show both monitors.')
+        ToggleBrightnessPanel()
+        if IsObject(brightnessPanel)
+            throw Error('Brightness tray toggle did not close the visible panel.')
+        ToggleBrightnessPanel()
+        if !IsObject(brightnessPanel) || brightnessPanel.rows.Count != 2
+            throw Error('Brightness tray toggle did not reopen the panel.')
+        brightnessLinked := false
+        firstSlider := brightnessPanel.rows[monitors[1].key].slider
+        secondSlider := brightnessPanel.rows[monitors[2].key].slider
+        BrightnessWheelAt(brightnessPanel, brightnessPanel.x + 30,
+            brightnessPanel.y + 88, 1)
+        if firstSlider.Value != 42 || secondSlider.Value != 43
+            throw Error('Mouse wheel did not adjust the monitor under the pointer.')
+        firstSlider.Value := 43
+        BrightnessSliderChanged(monitors[1].key, firstSlider)
+        secondSlider.Value := 44
+        BrightnessSliderChanged(monitors[2].key, secondSlider)
+        SetTimer(BrightnessFlushSlider, 0)
+        if brightnessPending.Count != 2
+            throw Error('A second slider replaced the first pending adjustment.')
+        BrightnessFlushSlider()
+        if brightnessValues[monitors[1].key] != 43 || brightnessValues[monitors[2].key] != 44
+            throw Error('The two brightness sliders did not update independently.')
+        HideBrightnessPanel()
         testCodes := ParseInputs('VCP Code`tVCP Code Name`tRead-Write`tCurrent Value`tMaximum Value`tPossible Values`n60`tInput Select`tRead+Write`t17`t18`t17, 18, 15, 16, 17')
         if testCodes.Length != 4
             throw Error('Fallo al leer las entradas anunciadas.')
         OpenLearning()
+        if IniRead(path, 'GlobalShortcuts', 'brightnessUp', '') != 'Ctrl|Alt|F9'
+            || IniRead(path, 'Brightness', 'Linked', '') != '1'
+            throw Error('Brightness Settings did not save its shortcut or link state.')
         learned := LoadAssignments(path, monitors[1].key)
         learnedOther := LoadAssignments(path, monitors[2].key)
         foundSecond := false
@@ -1618,6 +1804,8 @@ SelfTest() {
             throw Error('No se conservo la opcion Sin atajo.')
         availableMonitors := [monitors[1]]
         OpenLearning()
+        if IniRead(path, 'Brightness', 'Linked', '') != '0'
+            throw Error('Settings did not save independent brightness with one monitor detected.')
         FileAppend('PASS: input cycle, profiles, multi-monitor shortcuts and shortcut capture.`n', AppPath('monitor-selftest-result.txt'), 'UTF-8')
     } finally {
         if FileExist(path)

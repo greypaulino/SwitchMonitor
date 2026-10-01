@@ -1,5 +1,8 @@
-#define AppVersion "1.3.0"
+#define AppVersion "1.4.0"
 #define Root SourcePath + ".."
+#ifndef Interpreted
+#define Interpreted 0
+#endif
 
 [Setup]
 AppId={{A153C1DB-CA20-448F-B320-37E0448E041A}
@@ -37,12 +40,34 @@ Name: startup; Description: "Start SwitchMonitor when I sign in to Windows"; Fla
 Source: "{#Root}\dist\SwitchMonitor\*"; DestDir: "{app}"; Excludes: "portable.flag,data\*"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
+#if Interpreted
+Name: "{group}\SwitchMonitor"; Filename: "{app}\SwitchMonitor.exe"; Parameters: """{app}\switchMonitor.ahk"""; WorkingDir: "{app}"
+Name: "{group}\User guide"; Filename: "{app}\LEEME.txt"
+Name: "{autodesktop}\SwitchMonitor"; Filename: "{app}\SwitchMonitor.exe"; Parameters: """{app}\switchMonitor.ahk"""; Check: WantDesktopShortcut
+Name: "{userstartup}\SwitchMonitor"; Filename: "{app}\SwitchMonitor.exe"; Parameters: """{app}\switchMonitor.ahk"" --activate"; WorkingDir: "{app}"; Check: WantStartupShortcut
+#else
 Name: "{group}\SwitchMonitor"; Filename: "{app}\SwitchMonitor.exe"; WorkingDir: "{app}"
 Name: "{group}\User guide"; Filename: "{app}\LEEME.txt"
 Name: "{autodesktop}\SwitchMonitor"; Filename: "{app}\SwitchMonitor.exe"; Tasks: desktopicon
 Name: "{userstartup}\SwitchMonitor"; Filename: "{app}\SwitchMonitor.exe"; Parameters: "--activate"; WorkingDir: "{app}"; Tasks: startup
+#endif
 
 [Run]
+#if Interpreted
+Filename: "{app}\SwitchMonitor.exe"; Parameters: """{app}\switchMonitor.ahk"""; Description: "Open SwitchMonitor"; Flags: nowait postinstall skipifsilent
+#else
 Filename: "{app}\SwitchMonitor.exe"; Description: "Open SwitchMonitor"; Flags: nowait postinstall skipifsilent
+#endif
 
-; User profiles in LocalAppData\SwitchMonitor are deliberately kept on uninstall.
+#if Interpreted
+[Code]
+function WantDesktopShortcut: Boolean;
+begin
+  Result := WizardIsTaskSelected('desktopicon') or FileExists(ExpandConstant('{autodesktop}\SwitchMonitor.lnk'));
+end;
+
+function WantStartupShortcut: Boolean;
+begin
+  Result := WizardIsTaskSelected('startup') or FileExists(ExpandConstant('{userstartup}\SwitchMonitor.lnk'));
+end;
+#endif
