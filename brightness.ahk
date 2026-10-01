@@ -325,7 +325,9 @@ SelectBrightnessMonitor(key, *) {
 }
 
 ToggleBrightnessLink(*) {
-    global brightnessLinked, settingsFile, brightnessLastActivity
+    global brightnessLinked, settingsFile, brightnessLastActivity, availableMonitors
+    if availableMonitors.Length < 2
+        return
     BrightnessFlushSlider()
     brightnessLinked := !brightnessLinked
     IniWrite(brightnessLinked ? '1' : '0', settingsFile, 'Brightness', 'Linked')
@@ -353,14 +355,17 @@ ShowBrightnessPanel(*) {
     NumPut('Int', 1, disableDwmTransition)
     DllCall('dwmapi\DwmSetWindowAttribute', 'Ptr', window.Hwnd, 'UInt', 3,
         'Ptr', disableDwmTransition, 'UInt', 4)
+    ; Windows 11 can paint a light DWM frame while the clipped window expands.
+    ; This panel draws its own edges, so suppress that compositor border.
     darkBorder := Buffer(4, 0)
-    NumPut('UInt', GdiColor('1E1E1E'), darkBorder)
+    NumPut('UInt', 0xFFFFFFFE, darkBorder)
     DllCall('dwmapi\DwmSetWindowAttribute', 'Ptr', window.Hwnd, 'UInt', 34,
         'Ptr', darkBorder, 'UInt', 4)
     window.SetFont('s10 cFFFFFF', 'Segoe UI')
     linkButton := SolidButton(window, 'x325 y12 w20 h20', '', '2D2D2D')
     linkButton.OnEvent('Click', ToggleBrightnessLink)
     SetSolidButtonImage(linkButton, A_ScriptDir '\link-white.png', 12, -2, -2)
+    linkButton.Visible := availableMonitors.Length > 1
     settingsButton := SolidButton(window, 'x353 y12 w20 h20', '', '3C3C3C')
     settingsButton.OnEvent('Click', OpenBrightnessSettings)
     SetSolidButtonImage(settingsButton, A_ScriptDir '\setting-white.png', 13, -1, -2)
@@ -381,9 +386,11 @@ ShowBrightnessPanel(*) {
         rows[monitor.key] := {label: label, number: number, slider: slider,
             name: MonitorLabel(monitor)}
     }
+    linkedNames := window.AddText('x27 y39 w340 h20 cFFFFFF Hidden', '')
     height := 110 + (availableMonitors.Length - 1) * 96
     status := window.AddText('x16 y' (height - 22) ' w364 h18 cB7B7B7', '')
     brightnessPanel := {window: window, rows: rows, status: status, link: linkButton,
+        linkedNames: linkedNames,
         x: 0, y: 0, bottom: 0, height: height, linkedView: false, updating: false,
         progress: 0, target: 1, from: 0, started: A_TickCount, duration: 280}
     for _, row in rows
@@ -463,16 +470,18 @@ BrightnessLayoutPanel(panel) {
     panel.linkedView := brightnessLinked && availableMonitors.Length > 1
     first := panel.rows[availableMonitors[1].key]
     if panel.linkedView {
-        names := ''
+        names := []
         for monitor in availableMonitors
-            names .= (names = '' ? '' : '  +  ') MonitorLabel(monitor)
-        first.label.Text := names
-        first.label.Move(27, 12, 285, 20)
-        first.number.Move(165, 38, 70, 20)
+            names.Push(MonitorLabel(monitor))
+        panel.linkedNames.Text := JoinBrightnessNames(names)
+        panel.linkedNames.Move(27, 39, 340, 22 * names.Length)
+        panel.linkedNames.Visible := true
+        first.label.Visible := false
+        first.slider.Move(16, 52 + 22 * names.Length)
     } else {
-        first.label.Text := first.name
-        first.label.Move(27, 12, 142, 20)
-        first.number.Move(165, 12, 70, 20)
+        panel.linkedNames.Visible := false
+        first.label.Visible := true
+        first.slider.Move(16, 62)
     }
     for index, monitor in availableMonitors {
         if index = 1
@@ -483,13 +492,21 @@ BrightnessLayoutPanel(panel) {
         row.number.Visible := visible
         row.slider.Visible := visible
     }
-    panel.height := panel.linkedView ? 110 : 110 + (availableMonitors.Length - 1) * 96
+    panel.height := panel.linkedView ? 102 + 22 * availableMonitors.Length
+        : 110 + (availableMonitors.Length - 1) * 96
     panel.status.Move(16, panel.height - 22, 364, 18)
     if panel.bottom {
         panel.y := panel.bottom - panel.height
         panel.window.Show('NoActivate x' panel.x ' y' panel.y ' w400 h' panel.height)
         BrightnessRenderFrame(panel, panel.progress)
     }
+}
+
+JoinBrightnessNames(names) {
+    text := ''
+    for name in names
+        text .= (text = '' ? '' : '`n') name
+    return text
 }
 
 BrightnessSliderChanged(key, control, *) {
@@ -648,6 +665,17 @@ class BrightnessBar {
             this.thumb.Visible := value
             this.control.Visible := value
         }
+    }
+    Move(x, y) {
+        if this.x = x && this.y = y
+            return
+        this.x := x
+        this.y := y
+        this.track.Move(x + 11, y + 9)
+        this.fill.Move(x + 11, y + 9)
+        this.thumb.Move(x + 6, y + 2)
+        this.control.Move(x, y)
+        this.Render(true)
     }
     SetImmediate(value) {
         this._value := BrightnessClamp(value)

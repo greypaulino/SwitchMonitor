@@ -7,10 +7,10 @@
 #Include brightness.ahk
 ;@Ahk2Exe-SetName SwitchMonitor
 ;@Ahk2Exe-SetDescription SwitchMonitor - monitor input shortcuts
-;@Ahk2Exe-SetVersion 1.6.1.0
+;@Ahk2Exe-SetVersion 1.6.2.0
 ;@Ahk2Exe-SetOrigFilename SwitchMonitor.exe
 
-APP_VERSION := '1.6.1'
+APP_VERSION := '1.6.2'
 
 monitorTool := FileExist(A_ScriptDir '\ControlMyMonitor\ControlMyMonitor.exe')
     ? A_ScriptDir '\ControlMyMonitor\ControlMyMonitor.exe'
@@ -57,6 +57,8 @@ brightnessHotkeyActive := false
 brightnessCaptureActive := false
 sunIconHandle := 0
 availableUpdate := {version: '', url: '', hash: ''}
+updateNoticeActive := false
+OnMessage(0x404, UpdateNotificationClicked)
 
 try {
     if A_Args.Length && A_Args[1] = '--self-test' {
@@ -229,8 +231,9 @@ BuildTrayMenu() {
     A_TrayMenu.Add('Next input (' ShortcutLabel(globalShortcuts['cycle']) ')', NextConnected)
     A_TrayMenu.Add('Brightness control', ShowBrightnessPanel)
     if availableUpdate.version != ''
-        A_TrayMenu.Add('Install update ' availableUpdate.version, InstallAvailableUpdate)
-    A_TrayMenu.Add('Check for updates', CheckForUpdates)
+        A_TrayMenu.Add('Update available! Click to install', InstallAvailableUpdate)
+    else
+        A_TrayMenu.Add('Check for updates', CheckForUpdates)
     A_TrayMenu.Add('About', ShowAbout)
     A_TrayMenu.Add('Start with Windows', ToggleStartWithWindows)
     if StartsWithWindows()
@@ -943,6 +946,8 @@ PaintSolidButton(wParam, lParam, *) {
     if style.HasOwnProp('icon') {
         iconSize := style.iconSize
         output := Buffer(A_PtrSize, 0)
+        ; Commit the GDI background before GDI+ blends a dimmed tray icon.
+        DllCall('gdi32\GdiFlush')
         if DllCall('gdiplus\GdipCreateFromHDC', 'Ptr', dc, 'Ptr', output, 'UInt') = 0 {
             graphics := NumGet(output, 0, 'Ptr')
             DllCall('gdiplus\GdipSetInterpolationMode', 'Ptr', graphics, 'Int', 7)
@@ -958,6 +963,16 @@ PaintSolidButton(wParam, lParam, *) {
 }
 
 DrawButtonImage(graphics, icon, x, y, size, opacity, left, top, width, height) {
+    ; Paint an opaque base in the same GDI+ pass as the icon. Otherwise its
+    ; translucent dimming layer can blend with an unpainted white button DC.
+    base := Buffer(A_PtrSize, 0)
+    if DllCall('gdiplus\GdipCreateSolidFill', 'UInt', 0xFF1E1E1E,
+        'Ptr', base, 'UInt') = 0 {
+        handle := NumGet(base, 0, 'Ptr')
+        DllCall('gdiplus\GdipFillRectangleI', 'Ptr', graphics, 'Ptr', handle,
+            'Int', left, 'Int', top, 'Int', width, 'Int', height)
+        DllCall('gdiplus\GdipDeleteBrush', 'Ptr', handle)
+    }
     DllCall('gdiplus\GdipDrawImageRectI', 'Ptr', graphics, 'Ptr', icon,
         'Int', x, 'Int', y, 'Int', size, 'Int', size)
     if opacity >= 1
@@ -1475,7 +1490,7 @@ CheckForUpdatesSilent(*) {
 }
 
 CheckForUpdatesCore(silent) {
-    global APP_VERSION, availableUpdate
+    global APP_VERSION, availableUpdate, updateNoticeActive
     api := 'https://api.github.com/repos/greypaulino/SwitchMonitor/releases/latest'
     try {
         request := ComObject('WinHttp.WinHttpRequest.5.1')
@@ -1513,13 +1528,10 @@ CheckForUpdatesCore(silent) {
             firstNotice := availableUpdate.version != latest
             availableUpdate := {version: latest, url: assetUrl, hash: StrUpper(checksum[1])}
             BuildTrayMenu()
-            if !silent {
-                TrayTip(CanAutoInstallUpdate()
-                    ? 'SwitchMonitor ' latest ' is available. Downloading the update now.'
-                    : 'SwitchMonitor ' latest ' is available. Opening its GitHub release.', 'SwitchMonitor update')
-                SetTimer(InstallAvailableUpdate, -150)
-            } else if firstNotice
-                TrayTip('SwitchMonitor ' latest ' is ready. Select Install update from the monitor icon.', 'SwitchMonitor')
+            if firstNotice || !silent {
+                updateNoticeActive := true
+                TrayTip('SwitchMonitor ' latest ' is available. Click here to update.', 'SwitchMonitor update')
+            }
         } else if !silent
             MsgBox('SwitchMonitor is up to date (version ' APP_VERSION ').', 'SwitchMonitor', 'Iconi')
     } catch as err {
@@ -1528,13 +1540,22 @@ CheckForUpdatesCore(silent) {
     }
 }
 
+UpdateNotificationClicked(wParam, lParam, msg, hwnd) {
+    global availableUpdate, updateNoticeActive
+    if hwnd != A_ScriptHwnd || lParam != 1029 || !updateNoticeActive || availableUpdate.version = ''
+        return
+    updateNoticeActive := false
+    SetTimer(InstallAvailableUpdate, -100)
+}
+
 CanAutoInstallUpdate() {
     return !FileExist(A_ScriptDir '\portable.flag')
         && (FileExist(A_ScriptDir '\installed.flag') || A_IsCompiled)
 }
 
 InstallAvailableUpdate(*) {
-    global availableUpdate
+    global availableUpdate, updateNoticeActive
+    updateNoticeActive := false
     update := availableUpdate
     if update.version = ''
         return
@@ -1674,7 +1695,7 @@ SelfTest() {
         throw Error('Menu de bandeja con un monitor incorrecto.')
     availableUpdate := {version: '9.9.9', url: 'https://example.invalid/update.exe', hash: ''}
     BuildTrayMenu()
-    if DllCall('user32\GetMenuItemCount', 'Ptr', A_TrayMenu.Handle, 'Int') != 11
+    if DllCall('user32\GetMenuItemCount', 'Ptr', A_TrayMenu.Handle, 'Int') != 10
         throw Error('The update action is missing from the tray menu.')
     availableUpdate := {version: '', url: '', hash: ''}
     BuildTrayMenu()
@@ -1856,8 +1877,8 @@ SelfTest() {
             throw Error('No se conservo la opcion Sin atajo.')
         availableMonitors := [monitors[1]]
         OpenLearning()
-        if IniRead(path, 'Brightness', 'Linked', '') != '0'
-            throw Error('Settings did not save independent brightness with one monitor detected.')
+        if IniRead(path, 'Brightness', 'Linked', '') != '1'
+            throw Error('Single-monitor Settings changed the saved link preference.')
         FileAppend('PASS: input cycle, profiles, multi-monitor shortcuts and shortcut capture.`n', AppPath('monitor-selftest-result.txt'), 'UTF-8')
     } finally {
         if FileExist(path)
