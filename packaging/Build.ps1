@@ -41,10 +41,10 @@ Get-ChildItem -LiteralPath $PSScriptRoot -File | Copy-Item -Destination "$packag
 [IO.File]::WriteAllText("$package\installed.flag", 'Keep installed settings in LocalAppData\SwitchMonitor')
 & $iscc '/Qp' "/DInterpreted=$([int]$Interpreted.IsPresent)" "$PSScriptRoot\SwitchMonitor.iss"
 if ($LASTEXITCODE -ne 0) { throw 'Inno Setup fallo.' }
-$zip = "$root\dist\SwitchMonitor-Portable-1.6.3.zip"
+$zip = "$root\dist\SwitchMonitor-Portable-1.6.4.zip"
 $releaseFiles = Get-ChildItem -LiteralPath $package | Where-Object { $_.Name -ne 'data' }
 Compress-Archive -LiteralPath $releaseFiles.FullName -DestinationPath $zip -Force
-Get-FileHash -LiteralPath "$root\dist\SwitchMonitor-Setup-1.6.3.exe", $zip -Algorithm SHA256 |
+Get-FileHash -LiteralPath "$root\dist\SwitchMonitor-Setup-1.6.4.exe", $zip -Algorithm SHA256 |
     Select-Object @{n='File';e={[IO.Path]::GetFileName($_.Path)}}, Hash |
     ConvertTo-Json | Set-Content -LiteralPath "$root\dist\SHA256.json" -Encoding UTF8
 Write-Output 'Compilacion terminada: instalador y ZIP portable en dist.'

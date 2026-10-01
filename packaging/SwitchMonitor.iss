@@ -1,4 +1,4 @@
-#define AppVersion "1.6.3"
+#define AppVersion "1.6.4"
 #define Root SourcePath + ".."
 #ifndef Interpreted
 #define Interpreted 0
@@ -59,8 +59,11 @@ Filename: "{app}\SwitchMonitor.exe"; Parameters: """{app}\switchMonitor.ahk"""; 
 Filename: "{app}\SwitchMonitor.exe"; Description: "Open SwitchMonitor"; Flags: nowait postinstall skipifsilent
 #endif
 
-#if Interpreted
 [Code]
+var
+  WasInstalled: Boolean;
+
+#if Interpreted
 function WantDesktopShortcut: Boolean;
 begin
   Result := WizardIsTaskSelected('desktopicon') or FileExists(ExpandConstant('{autodesktop}\SwitchMonitor.lnk'));
@@ -71,3 +74,18 @@ begin
   Result := WizardIsTaskSelected('startup') or FileExists(ExpandConstant('{userstartup}\SwitchMonitor.lnk'));
 end;
 #endif
+
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  DataDir: String;
+begin
+  if CurStep = ssInstall then
+    WasInstalled := FileExists(ExpandConstant('{app}\installed.flag'));
+  if (CurStep = ssPostInstall) and WasInstalled then
+  begin
+    DataDir := ExpandConstant('{localappdata}\SwitchMonitor');
+    if ForceDirectories(DataDir) then
+      SaveStringToFile(DataDir + '\update-complete.ini',
+        '[Update]'#13#10'Version={#AppVersion}'#13#10, False);
+  end;
+end;

@@ -373,11 +373,11 @@ ShowBrightnessPanel(*) {
     rows := Map()
     for index, monitor in availableMonitors {
         y := 12 + (index - 1) * 96
-        dot := window.AddText('x11 y' y ' w12 h20 Center c777777', '●')
-        dot.SetFont('s9', 'Segoe UI')
+        dot := window.AddText('x9 y' (y - 1) ' w16 h22 Center c777777', Chr(0x25CF))
+        dot.SetFont('s12', 'Segoe UI Symbol')
         dot.Visible := availableMonitors.Length > 1
         dot.OnEvent('Click', SelectBrightnessMonitor.Bind(monitor.key))
-        label := window.AddText('x27 y' y ' w142 h20 cFFFFFF', MonitorLabel(monitor))
+        label := window.AddText('x27 y' y ' w142 h22 cFFFFFF +0x200', MonitorLabel(monitor))
         label.OnEvent('Click', SelectBrightnessMonitor.Bind(monitor.key))
         number := window.AddText('x165 y' y ' w70 h20 Center cFFFFFF', '')
         slider := BrightnessBar(window, 16, y + 50, 368, 24)
@@ -394,7 +394,8 @@ ShowBrightnessPanel(*) {
     status := window.AddText('x16 y' (height - 22) ' w364 h18 cB7B7B7', '')
     brightnessPanel := {window: window, rows: rows, status: status, link: linkButton,
         x: 0, y: 0, bottom: 0, height: height, linkedView: false, updating: false,
-        progress: 0, target: 1, from: 0, started: A_TickCount, duration: 280}
+        progress: 0, target: 1, from: 0, started: A_TickCount, duration: 280,
+        fadeEntrance: !uiTest}
     for _, row in rows
         row.slider.Render()
     window.OnEvent('Close', HideBrightnessPanel)
@@ -404,7 +405,7 @@ ShowBrightnessPanel(*) {
     x := Max(left + 8, right - 408)
     y := Max(top, bottom - height)
     brightnessPanel.x := x
-    brightnessPanel.y := uiTest ? y : bottom
+    brightnessPanel.y := y
     brightnessPanel.bottom := bottom
     window.Show('Hide x' x ' y' brightnessPanel.y ' w400 h' height)
     ApplyDarkWindow(window)
@@ -413,8 +414,16 @@ ShowBrightnessPanel(*) {
         brightnessPanel.progress := 1
         window.Show('NoActivate x' x ' y' y)
     } else {
-        BrightnessRenderFrame(brightnessPanel, 0)
+        style := DllCall('user32\GetWindowLongPtrW', 'Ptr', window.Hwnd, 'Int', -20, 'Ptr')
+        DllCall('user32\SetWindowLongPtrW', 'Ptr', window.Hwnd, 'Int', -20,
+            'Ptr', style | 0x80000, 'Ptr')
+        DllCall('user32\SetLayeredWindowAttributes', 'Ptr', window.Hwnd,
+            'UInt', 0, 'UChar', 0, 'UInt', 2)
         window.Show('NoActivate')
+        DllCall('user32\RedrawWindow', 'Ptr', window.Hwnd, 'Ptr', 0, 'Ptr', 0,
+            'UInt', 0x185)
+        DllCall('dwmapi\DwmFlush')
+        brightnessPanel.started := A_TickCount
         SetTimer(BrightnessAnimate, 15)
     }
     brightnessLastActivity := A_TickCount
@@ -478,27 +487,27 @@ BrightnessLayoutPanel(panel) {
     panel.linkedView := brightnessLinked && availableMonitors.Length > 1
     first := panel.rows[availableMonitors[1].key]
     if panel.linkedView {
-        first.slider.Move(16, 52 + 22 * availableMonitors.Length)
+        first.slider.Move(16, 54 + 28 * availableMonitors.Length)
     } else {
         first.slider.Move(16, 62)
     }
     for index, monitor in availableMonitors {
         row := panel.rows[monitor.key]
         if panel.linkedView {
-            y := 39 + (index - 1) * 22
-            row.dot.Move(11, y)
-            row.label.Move(27, y, 340, 20)
+            y := 42 + (index - 1) * 28
+            row.dot.Move(9, y)
+            row.label.Move(27, y, 340, 26)
             row.number.Visible := index = 1
             row.slider.Visible := index = 1
         } else {
             y := 12 + (index - 1) * 96
-            row.dot.Move(11, y)
-            row.label.Move(27, y, 142, 20)
+            row.dot.Move(9, y - 1)
+            row.label.Move(27, y, 142, 22)
             row.number.Visible := true
             row.slider.Visible := true
         }
     }
-    panel.height := panel.linkedView ? 102 + 22 * availableMonitors.Length
+    panel.height := panel.linkedView ? 102 + 28 * availableMonitors.Length
         : 110 + (availableMonitors.Length - 1) * 96
     panel.status.Move(16, panel.height - 22, 364, 18)
     if panel.bottom {
@@ -848,12 +857,18 @@ BrightnessAnimate(*) {
         BrightnessDestroyPanel()
         return
     }
-    BrightnessRenderFrame(panel, progress)
+    if panel.fadeEntrance
+        WinSetTransparent(Max(0, Min(255, Round(255 * progress))),
+            'ahk_id ' panel.window.Hwnd)
+    else
+        BrightnessRenderFrame(panel, progress)
     if A_TickCount - panel.started < panel.duration
         return
     SetTimer(BrightnessAnimate, 0)
     if panel.target = 0
         BrightnessDestroyPanel()
+    else if panel.fadeEntrance
+        panel.fadeEntrance := false
 }
 
 BrightnessRenderFrame(panel, progress) {

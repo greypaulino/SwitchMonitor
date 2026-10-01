@@ -6,6 +6,7 @@ param(
     [switch]$VerifyOnly
 )
 $ErrorActionPreference = 'Stop'
+$notice = $null
 try {
     $expected = $ExpectedHash.ToUpperInvariant()
     if ($expected -notmatch '^[0-9A-F]{64}$') { throw 'Invalid checksum.' }
@@ -14,6 +15,15 @@ try {
     if ($VerifyOnly) { exit 0 }
     $running = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
     if ($running) { $running.WaitForExit(30000) | Out-Null }
+    try {
+        Add-Type -AssemblyName System.Windows.Forms
+        $notice = New-Object System.Windows.Forms.NotifyIcon
+        $notice.Icon = [System.Drawing.SystemIcons]::Information
+        $notice.Text = 'SwitchMonitor update'
+        $notice.Visible = $true
+        $notice.ShowBalloonTip(5000, 'SwitchMonitor update',
+            'Installing SwitchMonitor...', [System.Windows.Forms.ToolTipIcon]::Info)
+    } catch { }
     $setup = Start-Process -FilePath $Installer -ArgumentList '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS' -Wait -PassThru
     if ($setup.ExitCode -ne 0) { throw "Installer exited with code $($setup.ExitCode)." }
     $exe = Join-Path $AppDir 'SwitchMonitor.exe'
@@ -28,4 +38,6 @@ try {
     Add-Type -AssemblyName PresentationFramework
     [System.Windows.MessageBox]::Show($_.Exception.Message, 'SwitchMonitor update') | Out-Null
     exit 1
+} finally {
+    if ($notice) { $notice.Dispose() }
 }

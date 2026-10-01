@@ -7,10 +7,10 @@
 #Include brightness.ahk
 ;@Ahk2Exe-SetName SwitchMonitor
 ;@Ahk2Exe-SetDescription SwitchMonitor - monitor input shortcuts
-;@Ahk2Exe-SetVersion 1.6.3.0
+;@Ahk2Exe-SetVersion 1.6.4.0
 ;@Ahk2Exe-SetOrigFilename SwitchMonitor.exe
 
-APP_VERSION := '1.6.3'
+APP_VERSION := '1.6.4'
 
 monitorTool := FileExist(A_ScriptDir '\ControlMyMonitor\ControlMyMonitor.exe')
     ? A_ScriptDir '\ControlMyMonitor\ControlMyMonitor.exe'
@@ -148,6 +148,7 @@ try {
         MsgBox(err.Message '`n`nEdit the shortcuts in Settings and save again.', 'Shortcut conflict', 'Icon!')
     }
     InitBrightness()
+    ShowPendingUpdateCompletion()
     if !wizardOpen && (!A_Args.Length || A_Args[1] != '--activate' || !monitorProfiles.Count)
         OpenLearning()
     SetTimer(CheckForUpdatesSilent, -5000)
@@ -1600,6 +1601,28 @@ ShowTestNotification(*) {
         'SwitchMonitor notification test')
 }
 
+ShowPendingUpdateCompletion() {
+    global APP_VERSION
+    path := AppPath('update-complete.ini')
+    if !FileExist(path)
+        return
+    version := IniRead(path, 'Update', 'Version', '')
+    FileDelete(path)
+    if version = APP_VERSION
+        SetTimer(ShowUpdateCompletePopup.Bind(version), -700)
+}
+
+ShowUpdateCompletePopup(version, *) {
+    window := Gui('+AlwaysOnTop -Caption +ToolWindow', 'SwitchMonitor update')
+    window.BackColor := '1E1E1E'
+    window.SetFont('s11 cFFFFFF', 'Segoe UI')
+    window.AddText('x20 y16 w320 h28 Center', 'SwitchMonitor ' version ' installed successfully.')
+    MonitorGetWorkArea(MonitorGetPrimary(), &left, &top, &right, &bottom)
+    window.Show('NoActivate x' (right - 376) ' y' (bottom - 92) ' w356 h64')
+    ApplyDarkWindow(window)
+    SetTimer(() => window.Destroy(), -2000)
+}
+
 UpdateNotificationClicked(wParam, lParam, msg, hwnd) {
     global availableUpdate, updateNoticeActive, notificationTestActive
     ; NOTIFYICON_VERSION_4 puts the event in LOWORD(lParam).
@@ -1653,6 +1676,7 @@ InstallAvailableUpdate(*) {
         TrayTip('Download complete. Installing SwitchMonitor ' update.version '...', 'SwitchMonitor update')
         command := '"' A_WinDir '\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' helper '" -Installer "' target '" -ExpectedHash ' update.hash ' -ProcessId ' DllCall('GetCurrentProcessId') ' -AppDir "' A_ScriptDir '"'
         Run(command, , 'Hide')
+        Sleep(250)
         ExitApp()
     } catch as err {
         if FileExist(partial)
@@ -1889,6 +1913,9 @@ SelfTest() {
         if !brightnessPanel.rows[monitors[1].key].activeDot
             || !brightnessPanel.rows[monitors[2].key].activeDot
             throw Error('Linked brightness did not mark both monitors active.')
+        brightnessPanel.rows[monitors[2].key].label.GetPos(, &lowerNameY, , &lowerNameHeight)
+        if lowerNameY + lowerNameHeight >= brightnessPanel.rows[monitors[1].key].slider.y
+            throw Error('Linked monitor names overlap the brightness slider.')
         ToggleBrightnessPanel()
         if IsObject(brightnessPanel)
             throw Error('Brightness tray toggle did not close the visible panel.')
