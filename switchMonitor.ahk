@@ -7,10 +7,10 @@
 #Include brightness.ahk
 ;@Ahk2Exe-SetName SwitchMonitor
 ;@Ahk2Exe-SetDescription SwitchMonitor - monitor input shortcuts
-;@Ahk2Exe-SetVersion 1.5.0.0
+;@Ahk2Exe-SetVersion 1.6.0.0
 ;@Ahk2Exe-SetOrigFilename SwitchMonitor.exe
 
-APP_VERSION := '1.5.0'
+APP_VERSION := '1.6.0'
 
 monitorTool := FileExist(A_ScriptDir '\ControlMyMonitor\ControlMyMonitor.exe')
     ? A_ScriptDir '\ControlMyMonitor\ControlMyMonitor.exe'
@@ -45,6 +45,8 @@ wizardCycle := 0
 returnWatches := Map()
 returnWatchEnabled := false
 brightnessValues := Map()
+brightnessRanges := Map()
+brightnessRangeJobs := Map()
 brightnessPending := Map()
 brightnessSelectedKey := ''
 brightnessLinked := false
@@ -68,6 +70,15 @@ try {
     monitors := ParseMonitors(ExportMonitors())
     if !monitors.Length
         throw Error('ControlMyMonitor detected no monitors.')
+    if A_Args.Length && A_Args[1] = '--brightness-check' {
+        report := ''
+        for monitor in monitors {
+            range := BrightnessRange(monitor)
+            report .= MonitorLabel(monitor) ': current=' range.current ', maximum=' range.max ', displayed=' BrightnessToPercent(range.current, range.max) '%`n'
+        }
+        FileAppend(report, AppPath('brightness-check-result.txt'), 'UTF-8')
+        ExitApp(0)
+    }
     if A_Args.Length && A_Args[1] = '--diagnose' {
         DiagnoseMonitors(monitors)
         ExitApp(0)
@@ -1594,6 +1605,12 @@ SelfTest() {
         || BrightnessValueAtX(175, 7, 343, 9) != 50
         || BrightnessValueAtX(339, 7, 343, 9) != 100
         throw Error('Brightness slider click positions did not match the trackbar channel.')
+    if BrightnessToPercent(25, 50) != 50 || BrightnessToRaw(50, 50) != 25
+        || BrightnessToPercent(50, 50) != 100 || BrightnessToRaw(100, 50) != 50
+        || BrightnessToRaw(25, 255) != 64
+        throw Error('Brightness normalization did not respect the monitor maximum.')
+    if BrightnessParseRange('10,Brightness,Read+Write,25,50,').max != 50
+        throw Error('The monitor-reported brightness maximum was not parsed.')
     for chord in ['Ctrl|Alt|NumpadSub', 'Ctrl|Alt|NumpadAdd', 'Ctrl|Alt|NumpadMult']
         if ValidateChord(chord) != chord
             throw Error('A brightness shortcut is invalid: ' chord)
@@ -1745,15 +1762,19 @@ SelfTest() {
             || brightnessValues.Get(monitors[2].key, -1) != 42
             throw Error('Linked brightness did not update both monitors.')
         ShowBrightnessPanel()
-        if !IsObject(brightnessPanel) || brightnessPanel.rows.Count != 2
-            throw Error('Brightness panel did not show both monitors.')
+        if !IsObject(brightnessPanel) || !brightnessPanel.linkedView
+            || brightnessPanel.rows[monitors[2].key].slider.control.Visible
+            throw Error('Linked brightness did not show a single slider.')
         ToggleBrightnessPanel()
         if IsObject(brightnessPanel)
             throw Error('Brightness tray toggle did not close the visible panel.')
         ToggleBrightnessPanel()
-        if !IsObject(brightnessPanel) || brightnessPanel.rows.Count != 2
+        if !IsObject(brightnessPanel) || !brightnessPanel.linkedView
             throw Error('Brightness tray toggle did not reopen the panel.')
         brightnessLinked := false
+        BrightnessRefreshPanel()
+        if brightnessPanel.linkedView || !brightnessPanel.rows[monitors[2].key].slider.control.Visible
+            throw Error('Independent brightness did not restore both sliders.')
         firstSlider := brightnessPanel.rows[monitors[1].key].slider
         secondSlider := brightnessPanel.rows[monitors[2].key].slider
         BrightnessWheelAt(brightnessPanel, brightnessPanel.x + 30,
@@ -1770,6 +1791,11 @@ SelfTest() {
         BrightnessFlushSlider()
         if brightnessValues[monitors[1].key] != 43 || brightnessValues[monitors[2].key] != 44
             throw Error('The two brightness sliders did not update independently.')
+        BrightnessAdjust(1)
+        if brightnessValues[monitors[2].key] != 45 || secondSlider.Value != 45
+            || brightnessPending.Get(monitors[2].key, -1) != 45
+            throw Error('Brightness shortcut did not update the slider before the hardware write.')
+        BrightnessFlushSlider()
         HideBrightnessPanel()
         testCodes := ParseInputs('VCP Code`tVCP Code Name`tRead-Write`tCurrent Value`tMaximum Value`tPossible Values`n60`tInput Select`tRead+Write`t17`t18`t17, 18, 15, 16, 17')
         if testCodes.Length != 4

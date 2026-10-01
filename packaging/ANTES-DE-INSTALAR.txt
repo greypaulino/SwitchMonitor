@@ -1,4 +1,4 @@
-SwitchMonitor 1.5.0 - Windows 10/11, 64-bit
+SwitchMonitor 1.6.0 - Windows 10/11, 64-bit
 
 AutoHotkey and ControlMyMonitor are included. Installation is for your Windows user and does not change graphics drivers.
 
