@@ -7,10 +7,10 @@
 #Include brightness.ahk
 ;@Ahk2Exe-SetName SwitchMonitor
 ;@Ahk2Exe-SetDescription SwitchMonitor - monitor input shortcuts
-;@Ahk2Exe-SetVersion 1.4.0.0
+;@Ahk2Exe-SetVersion 1.4.1.0
 ;@Ahk2Exe-SetOrigFilename SwitchMonitor.exe
 
-APP_VERSION := '1.4.0'
+APP_VERSION := '1.4.1'
 
 monitorTool := FileExist(A_ScriptDir '\ControlMyMonitor\ControlMyMonitor.exe')
     ? A_ScriptDir '\ControlMyMonitor\ControlMyMonitor.exe'
@@ -855,11 +855,13 @@ SolidButton(window, options, label, color := '0E639C') {
 SetSolidButtonImage(control, path, size := 14, offsetX := 0, offsetY := 0) {
     global buttonStyles, buttonImages, gdipToken
     if !gdipToken {
-        input := Buffer(16, 0)
-        NumPut('UInt', 1, input)
+        ; GdiplusStartupInput is 24 bytes on x64 (pointer alignment), 16 on x86.
+        input := Buffer(A_PtrSize = 8 ? 24 : 16, 0)
+        NumPut('UInt', 1, input, 0)
         token := Buffer(A_PtrSize, 0)
-        if DllCall('gdiplus\GdiplusStartup', 'Ptr', token, 'Ptr', input, 'Ptr', 0, 'UInt') != 0
-            throw Error('Could not initialize image rendering.')
+        status := DllCall('gdiplus\GdiplusStartup', 'Ptr', token, 'Ptr', input, 'Ptr', 0, 'UInt')
+        if status != 0
+            throw Error('Could not initialize image rendering (GDI+ status ' status ').')
         gdipToken := NumGet(token, 0, 'Ptr')
         OnExit(CleanupButtonImages)
     }
@@ -880,11 +882,10 @@ SetSolidButtonImage(control, path, size := 14, offsetX := 0, offsetY := 0) {
 }
 
 CleanupButtonImages(*) {
-    global buttonImages, gdipToken
+    global buttonImages
     for _, image in buttonImages
         DllCall('gdiplus\GdipDisposeImage', 'Ptr', image)
-    if gdipToken
-        DllCall('gdiplus\GdiplusShutdown', 'Ptr', gdipToken)
+    ; Windows releases GDI+ when the process exits. Explicit shutdown faults here.
 }
 
 GdiColor(hex) {

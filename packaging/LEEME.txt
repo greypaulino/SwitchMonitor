@@ -1,6 +1,6 @@
-SWITCHMONITOR 1.4.0
+SWITCHMONITOR 1.4.1
 
-Install SwitchMonitor-Setup-1.4.0.exe on each computer. AutoHotkey and ControlMyMonitor are included. The portable ZIP can be extracted and run without installation.
+Install SwitchMonitor-Setup-1.4.1.exe on each computer. AutoHotkey and ControlMyMonitor are included. The portable ZIP can be extracted and run without installation.
 
 FIRST USE
 1. Select a monitor when more than one is detected.
