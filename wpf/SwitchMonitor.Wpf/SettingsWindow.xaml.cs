@@ -51,6 +51,7 @@ public partial class SettingsWindow : Window
         }
         globalShortcuts = new(preferences.GlobalShortcuts);
         linked = preferences.LinkedBrightness;
+        AutomaticUpdates.IsChecked = preferences.AutomaticUpdateChecks;
         InputRows.ItemsSource = rows;
         SourceInitialized += (_, _) =>
         {
@@ -129,6 +130,8 @@ public partial class SettingsWindow : Window
         CloseButton.Visibility = Visibility.Collapsed;
         DirtyButtons.Visibility = Visibility.Visible;
     }
+
+    private void AutomaticUpdates_Click(object sender, RoutedEventArgs e) => MarkDirty();
 
     private async void MonitorChoice_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
@@ -350,6 +353,7 @@ public partial class SettingsWindow : Window
             preferences.PortShortcuts = restored.PortShortcuts;
             preferences.GlobalShortcuts = restored.GlobalShortcuts;
             preferences.LinkedBrightness = restored.LinkedBrightness;
+            preferences.AutomaticUpdateChecks = restored.AutomaticUpdateChecks;
             preferences.SelectedMonitor = restored.SelectedMonitor;
             preferences.BrightnessMonitor = restored.BrightnessMonitor;
             preferences.Save();
@@ -369,6 +373,7 @@ public partial class SettingsWindow : Window
             preferences.PortShortcuts = portShortcuts;
             preferences.GlobalShortcuts = globalShortcuts;
             preferences.LinkedBrightness = linked;
+            preferences.AutomaticUpdateChecks = AutomaticUpdates.IsChecked == true;
             if (MonitorChoice.SelectedItem is PhysicalMonitor current)
                 preferences.SelectedMonitor = current.Key;
             preferences.Save();

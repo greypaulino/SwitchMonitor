@@ -96,8 +96,7 @@ public partial class MainWindow : Window
             initialLoadComplete = true;
             if (!startHidden || showSettingsWhenReady) ShowSettings();
             Hide();
-            updateTimer.Start();
-            _ = CheckForUpdatesAfterStartupAsync();
+            ConfigureUpdateChecks();
         };
         Closing += (_, e) =>
         {
@@ -239,7 +238,15 @@ public partial class MainWindow : Window
     private async Task CheckForUpdatesAfterStartupAsync()
     {
         await Task.Delay(5000);
-        if (!exiting) await CheckForUpdatesAsync(true);
+        if (!exiting && preferences.AutomaticUpdateChecks) await CheckForUpdatesAsync(true);
+    }
+
+    private void ConfigureUpdateChecks()
+    {
+        updateTimer.Stop();
+        if (!preferences.AutomaticUpdateChecks) return;
+        updateTimer.Start();
+        _ = CheckForUpdatesAfterStartupAsync();
     }
 
     private void ShowUpdateCompletion()
@@ -282,7 +289,7 @@ public partial class MainWindow : Window
 
     private async Task CheckForUpdatesAsync(bool silent)
     {
-        if (checkingUpdates || exiting) return;
+        if (checkingUpdates || exiting || silent && !preferences.AutomaticUpdateChecks) return;
         checkingUpdates = true;
         RebuildTrayMenu();
         try
@@ -408,7 +415,7 @@ public partial class MainWindow : Window
         }
         settingsWindow = new SettingsWindow(preferences, monitors,
             async () => { await RefreshMonitorsAsync(); return monitors; },
-            RefreshMonitorsAsync,
+            async () => { ConfigureUpdateChecks(); await RefreshMonitorsAsync(); },
             paused => { if (paused) UnregisterHotkeys(); else RegisterHotkeys(); });
         settingsWindow.Closed += (_, _) => settingsWindow = null;
         settingsWindow.Show();

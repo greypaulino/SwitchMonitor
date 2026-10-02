@@ -2,7 +2,7 @@
 
 This is the native C# / WPF migration of SwitchMonitor. It is an experimental preview alongside the released AutoHotkey edition. It stores a separate profile in `%LOCALAPPDATA%\SwitchMonitor-Wpf\settings.json` and does not replace the released edition or its settings.
 
-The preview provides per-monitor input shortcuts, a Next input shortcut, a Settings window, a Shortcuts window, a brightness panel with independent or linked sliders, editable global shortcuts, Startup shortcut control for installed builds, profile backup and restore, and optional import of the AutoHotkey profile. It maps each monitor's reported maximum brightness to 100% in the interface. The update checker accepts only WPF release assets and does not install updates without a user click.
+The preview provides per-monitor input shortcuts, a Next input shortcut, a Settings window, a Shortcuts window, a brightness panel with independent or linked sliders, editable global shortcuts, Startup shortcut control for installed builds, profile backup and restore, and optional import of the AutoHotkey profile. It maps each monitor's reported maximum brightness to 100% in the interface. The update checker accepts only WPF release assets and does not install updates without a user click. Automatic checks can be disabled in Settings or during installation; manual checks remain available.
 
 ## Monitor transports
 

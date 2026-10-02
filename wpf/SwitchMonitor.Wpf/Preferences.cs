@@ -8,6 +8,7 @@ internal sealed class Preferences
     public string SelectedMonitor { get; set; } = "";
     public string BrightnessMonitor { get; set; } = "";
     public bool LinkedBrightness { get; set; }
+    public bool AutomaticUpdateChecks { get; set; } = true;
     public Dictionary<string, List<int>> ConnectedInputs { get; set; } = [];
     public Dictionary<string, Dictionary<int, string>> PortShortcuts { get; set; } = [];
     public Dictionary<string, string> GlobalShortcuts { get; set; } = new()
@@ -25,14 +26,27 @@ internal sealed class Preferences
 
     public static Preferences Load()
     {
+        Preferences preferences = new();
         try
         {
             if (File.Exists(SettingsPath))
-                return JsonSerializer.Deserialize<Preferences>(File.ReadAllText(SettingsPath)) ?? new Preferences();
+                preferences = JsonSerializer.Deserialize<Preferences>(File.ReadAllText(SettingsPath)) ?? new Preferences();
         }
         catch (JsonException) { }
         catch (IOException) { }
-        return new Preferences();
+        string disableMarker = Path.Combine(AppContext.BaseDirectory, "disable-auto-updates.flag");
+        if (File.Exists(disableMarker))
+        {
+            preferences.AutomaticUpdateChecks = false;
+            try
+            {
+                preferences.Save();
+                File.Delete(disableMarker);
+            }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+        }
+        return preferences;
     }
 
     public void Save()

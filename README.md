@@ -6,7 +6,9 @@ SwitchMonitor source code is open source under the [MIT License](LICENSE). Third
 
 ## Code signing policy
 
-The WPF preview is currently unsigned. Its [Windows build workflow](.github/workflows/wpf-preview.yml) compiles the public source and publishes an unsigned test artifact; a successful workflow does not mean SignPath has approved or signed it. We intend to apply to [SignPath Foundation](https://signpath.org/) for free open-source code signing. If accepted, this section and release pages will identify SignPath as the signer and list the maintainers who may approve signing requests. Only maintainers of this repository may request a signature for binaries built from this source. Until then, verify the source and treat all WPF preview downloads as unsigned.
+The WPF preview is currently unsigned. Its [Windows build workflow](.github/workflows/wpf-preview.yml) compiles the public source and publishes an unsigned test artifact; a successful workflow does not mean SignPath has approved or signed it. We are applying to [SignPath Foundation](https://signpath.org/) for free open-source code signing. If accepted: **Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).** Only binaries built from this repository's source by the public workflow will be submitted for signing. Every signing request will require the project maintainer's approval.
+
+Project roles: author and reviewer — [@greypaulino](https://github.com/greypaulino); signing approver — [@greypaulino](https://github.com/greypaulino). The [privacy notice](PRIVACY.md) covers local settings and connections to GitHub. Until a signed release exists, verify the source and treat all WPF preview downloads as unsigned.
 
 The [privacy notice](PRIVACY.md) describes the app's GitHub release checks and locally stored settings.
 

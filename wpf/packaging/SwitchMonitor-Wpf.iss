@@ -1,5 +1,5 @@
 #ifndef AppVersion
-#define AppVersion "0.1.0"
+#define AppVersion "0.1.1"
 #endif
 #define WpfRoot SourcePath + ".."
 
@@ -17,6 +17,7 @@ MinVersion=10.0
 OutputDir={#WpfRoot}\dist
 OutputBaseFilename=SwitchMonitor-WPF-Setup-{#AppVersion}
 SetupIconFile={#WpfRoot}\..\monitor-switch.ico
+InfoBeforeFile={#WpfRoot}\..\PRIVACY.md
 UninstallDisplayIcon={app}\SwitchMonitor.Wpf.exe
 WizardStyle=modern
 Compression=lzma2
@@ -32,6 +33,7 @@ Name: english; MessagesFile: compiler:Default.isl
 [Tasks]
 Name: desktopicon; Description: "Create a desktop shortcut"; Flags: unchecked
 Name: startup; Description: "Start SwitchMonitor WPF when I sign in to Windows"; Flags: unchecked
+Name: autoupdates; Description: "Check GitHub for updates automatically"
 
 [Files]
 Source: "{#WpfRoot}\dist\package-build\*"; DestDir: "{app}"; Excludes: "*.pdb"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -46,10 +48,20 @@ Filename: "{app}\SwitchMonitor.Wpf.exe"; Description: "Open SwitchMonitor WPF"; 
 
 [UninstallDelete]
 Type: files; Name: "{app}\installed-wpf.flag"
+Type: files; Name: "{app}\disable-auto-updates.flag"
 
 [Code]
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
+  begin
     SaveStringToFile(ExpandConstant('{app}\installed-wpf.flag'), 'installed', False);
+    if not FileExists(ExpandConstant('{localappdata}\SwitchMonitor-Wpf\settings.json')) then
+    begin
+      if WizardIsTaskSelected('autoupdates') then
+        DeleteFile(ExpandConstant('{app}\disable-auto-updates.flag'))
+      else
+        SaveStringToFile(ExpandConstant('{app}\disable-auto-updates.flag'), 'disabled', False);
+    end;
+  end;
 end;
