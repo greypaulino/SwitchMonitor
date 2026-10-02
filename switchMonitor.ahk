@@ -7,10 +7,10 @@
 #Include brightness.ahk
 ;@Ahk2Exe-SetName SwitchMonitor
 ;@Ahk2Exe-SetDescription SwitchMonitor - monitor input shortcuts
-;@Ahk2Exe-SetVersion 1.6.5.0
+;@Ahk2Exe-SetVersion 1.7.0.0
 ;@Ahk2Exe-SetOrigFilename SwitchMonitor.exe
 
-APP_VERSION := '1.6.5'
+APP_VERSION := '1.7.0'
 
 monitorTool := FileExist(A_ScriptDir '\ControlMyMonitor\ControlMyMonitor.exe')
     ? A_ScriptDir '\ControlMyMonitor\ControlMyMonitor.exe'
@@ -172,13 +172,17 @@ FindMonitorIndex(key) {
 }
 
 MonitorLabel(monitor) {
-    return IsLg29wk600(monitor) ? 'LG 29WK600' : monitor.name
+    return IsLg29wk600(monitor) ? 'LG 29WK600'
+        : IsInternalDisplay(monitor) && (monitor.name = 'N/A' || monitor.name = '')
+            ? 'Built-in display' : monitor.name
 }
 
 LoadMonitorProfiles() {
     global availableMonitors, monitorProfiles, settingsFile
     monitorProfiles := Map()
     for monitor in availableMonitors {
+        if IsInternalDisplay(monitor)
+            continue
         saved := LoadAssignments(settingsFile, monitor.key)
         if !saved.Count
             continue
@@ -392,7 +396,7 @@ ExportMonitors() {
     }
 }
 
-ParseMonitors(data) {
+ParseMonitors(data, includeInternal := true) {
     monitors := []
     current := Map()
     for line in StrSplit(data, '`n', '`r') {
@@ -406,7 +410,56 @@ ParseMonitors(data) {
     }
     if current.Count
         monitors.Push(BuildMonitor(current))
+    if includeInternal
+        AttachInternalBrightness(monitors)
     return monitors
+}
+
+AttachInternalBrightness(monitors) {
+    ; Windows exposes built-in panel brightness through WMI rather than DDC/CI.
+    try {
+        service := ComObjGet('winmgmts:\\.\root\wmi')
+        instances := Map()
+        for item in service.ExecQuery('SELECT Active, InstanceName FROM WmiMonitorBrightness') {
+            if !item.Active || !RegExMatch(item.InstanceName, 'i)^(?:DISPLAY|MONITOR)\\([^\\]+)', &match)
+                continue
+            model := StrUpper(match[1])
+            if !instances.Has(model)
+                instances[model] := []
+            instances[model].Push(item.InstanceName)
+        }
+        monitorCounts := Map()
+        for monitor in monitors {
+            model := MonitorHardwareCode(monitor)
+            monitorCounts[model] := monitorCounts.Get(model, 0) + 1
+        }
+        for monitor in monitors {
+            model := MonitorHardwareCode(monitor)
+            if instances.Has(model) && instances[model].Length = 1 && monitorCounts[model] = 1
+                monitor.internalBrightness := instances[model][1]
+        }
+        for model, names in instances {
+            if names.Length != 1 || monitorCounts.Get(model, 0) != 0
+                continue
+            instance := names[1]
+            synthetic := BuildMonitor(Map('Monitor Device Name', instance,
+                'Monitor Name', 'Built-in display', 'Short Monitor ID', model,
+                'Monitor ID', 'MONITOR\' SubStr(instance, InStr(instance, '\') + 1)))
+            synthetic.internalBrightness := instance
+            monitors.Push(synthetic)
+        }
+    } catch as err {
+        try FileAppend('Internal display detection: ' err.Message '`n', AppPath('monitor-switch.log'), 'UTF-8')
+    }
+}
+
+IsInternalDisplay(monitor) {
+    return monitor.HasProp('internalBrightness') && monitor.internalBrightness != ''
+}
+
+MonitorHardwareCode(monitor) {
+    return RegExMatch(monitor.id, 'i)^MONITOR\\([^\\]+)', &match)
+        ? StrUpper(match[1]) : StrUpper(monitor.model)
 }
 
 BuildMonitor(fields) {
@@ -425,7 +478,7 @@ BuildMonitor(fields) {
 }
 
 IsLg29wk600(monitor) {
-    return InStr(monitor.id, 'GSM7714') > 0
+    return RegExMatch(monitor.id, 'i)MONITOR\\GSM771[45]\\') > 0
 }
 
 UsesIntelLg(monitor) {
@@ -437,6 +490,8 @@ UsesAmdLg(monitor) {
 }
 
 CompatibilityInfo(monitor) {
+    if IsInternalDisplay(monitor)
+        return {supported: true, message: 'Built-in display: brightness is controlled through Windows. Input switching is not available.'}
     if UsesIntelLg(monitor) {
         version := ''
         try version := FileGetVersion(A_WinDir '\System32\igfxsrvc.exe')
@@ -456,7 +511,8 @@ CompatibilityInfo(monitor) {
 }
 
 TransportLabel(monitor) {
-    return UsesIntelLg(monitor) ? 'Intel CUI direct / LG F4 (source 0x50)'
+    return IsInternalDisplay(monitor) ? 'Windows WMI / built-in brightness'
+        : UsesIntelLg(monitor) ? 'Intel CUI direct / LG F4 (source 0x50)'
         : UsesAmdLg(monitor) ? 'AMD ADL2 / LG F4 (source 0x50), experimental'
         : IsLg29wk600(monitor) ? 'LG: no GPU transport implemented' : 'ControlMyMonitor / VCP 60'
 }
@@ -471,7 +527,10 @@ DiagnoseMonitors(monitors) {
             . '`nMethod: ' TransportLabel(monitor) '`n'
         report .= 'Compatibility: ' CompatibilityInfo(monitor).message '`n'
         try {
-            if UsesIntelLg(monitor) {
+            if IsInternalDisplay(monitor) {
+                report .= 'Brightness: ' BrightnessRead(monitor) '% via Windows WMI`n'
+                report .= 'Inputs: none (built-in display)`n'
+            } else if UsesIntelLg(monitor) {
                 api := IntelLegacyDdc(monitor.device)
                 report .= 'Intel UID: ' api.uid '`n'
                 report .= 'Brightness: ' api.GetVcp(0x10) '`n'
@@ -586,6 +645,11 @@ CheckReturnSync() {
 }
 
 ControlStatus(monitor) {
+    if IsInternalDisplay(monitor) {
+        try return {current: BrightnessRead(monitor), message: 'Built-in display brightness is available through Windows. This screen has no switchable inputs.'}
+        catch as err
+            return {current: 0, message: err.Message}
+    }
     compatibility := CompatibilityInfo(monitor)
     if !compatibility.supported
         return {current: 0, message: compatibility.message}
@@ -682,6 +746,7 @@ MonitorListChanged(previous, current) {
         if monitor.key != previous[index].key
             || monitor.device != previous[index].device
             || monitor.target != previous[index].target
+            || IsInternalDisplay(monitor) != IsInternalDisplay(previous[index])
             return true
     return false
 }
@@ -1284,6 +1349,8 @@ OrderedCodes(values) {
 
 DiscoverInputs(monitor, saved, refresh := false) {
     global uiTest, capabilitiesFile, testCodes
+    if IsInternalDisplay(monitor)
+        return {values: [], message: 'Built-in display: no switchable inputs. Brightness is available below.'}
     if uiTest
         return {values: testCodes, message: 'Simulated inputs for testing.'}
     if IsLg29wk600(monitor)
@@ -1757,7 +1824,7 @@ SelfTest() {
             FileDelete(startupTestPath)
     }
     fixture := 'Monitor Device Name: "\\.\DISPLAY1\Monitor0"`nMonitor Name: "Mismo modelo"`nSerial Number: ""`nMonitor ID: "MONITOR\TEST\0001"`n`nMonitor Device Name: "\\.\DISPLAY2\Monitor0"`nMonitor Name: "Mismo modelo"`nSerial Number: ""`nMonitor ID: "MONITOR\TEST\0002"`n'
-    monitors := ParseMonitors(fixture)
+    monitors := ParseMonitors(fixture, false)
     if MonitorListChanged(monitors, monitors) || !MonitorListChanged(monitors, [monitors[1]])
         || !MonitorListChanged(monitors, [monitors[2], monitors[1]])
         throw Error('Monitor topology comparison failed.')
@@ -1864,6 +1931,17 @@ SelfTest() {
     lgRows := MakeRows([17, 18, 15], lgSaved, true)
     if lgRows.Length != 3 || lgRows[3].code != 15 || FindNextConnected(lgRows, 17).code != 15
         throw Error('El perfil LG incorporo entradas que no existen o rompio el ciclo.')
+    amdLg := BuildMonitor(Map('Monitor Device Name', 'AMD-DISPLAY', 'Monitor Name', 'Generic PnP Monitor',
+        'Adapter Name', 'Radeon 7', 'Monitor ID', 'MONITOR\GSM7715\TEST'))
+    if !IsLg29wk600(amdLg) || !UsesAmdLg(amdLg)
+        || MakeRows(DiscoverInputs(amdLg, lgSaved).values, lgSaved, true).Length != 3
+        throw Error('The AMD LG variant exposed a nonexistent DisplayPort 2 input.')
+    laptop := BuildMonitor(Map('Monitor Device Name', 'LAPTOP-DISPLAY', 'Monitor Name', 'N/A',
+        'Short Monitor ID', 'BOE1234', 'Monitor ID', 'MONITOR\BOE1234\TEST'))
+    laptop.internalBrightness := 'DISPLAY\BOE1234\TEST_0'
+    if MonitorLabel(laptop) != 'Built-in display' || DiscoverInputs(laptop, lgSaved).values.Length
+        || MakeRows([], lgSaved, IsInternalDisplay(laptop)).Length
+        throw Error('A built-in display exposed monitor input shortcuts.')
     if ValidateChord('K|RControl|LAlt|LShift') != 'Ctrl|Alt|Shift|K' || ValidateChord('B|A') != 'A|B'
         throw Error('Fallo normalizando combinaciones de dos y cuatro teclas.')
     for invalid in ['K', 'Ctrl|Alt|Shift|Win|K'] {
@@ -1908,11 +1986,10 @@ SelfTest() {
             throw Error('Linked brightness did not update both monitors.')
         ShowBrightnessPanel()
         if !IsObject(brightnessPanel) || !brightnessPanel.linkedView
-            || brightnessPanel.rows[monitors[2].key].slider.control.Visible
+            || brightnessPanel.rows[monitors[2].key].slider.Visible
             throw Error('Linked brightness did not show a single slider.')
-        if !brightnessPanel.rows[monitors[1].key].activeDot
-            || !brightnessPanel.rows[monitors[2].key].activeDot
-            throw Error('Linked brightness did not mark both monitors active.')
+        if brightnessPanel.highlightKey != monitors[1].key
+            throw Error('Linked brightness did not show the shared highlight.')
         brightnessPanel.rows[monitors[2].key].label.GetPos(, &lowerNameY, , &lowerNameHeight)
         if lowerNameY + lowerNameHeight >= brightnessPanel.rows[monitors[1].key].slider.y
             throw Error('Linked monitor names overlap the brightness slider.')
@@ -1924,16 +2001,14 @@ SelfTest() {
             throw Error('Brightness tray toggle did not reopen the panel.')
         brightnessLinked := false
         BrightnessRefreshPanel()
-        if brightnessPanel.linkedView || !brightnessPanel.rows[monitors[2].key].slider.control.Visible
+        if brightnessPanel.linkedView || !brightnessPanel.rows[monitors[2].key].slider.Visible
             throw Error('Independent brightness did not restore both sliders.')
-        if !brightnessPanel.rows[monitors[1].key].activeDot
-            || brightnessPanel.rows[monitors[2].key].activeDot
-            throw Error('Brightness selection did not mark the first monitor active.')
+        if brightnessPanel.highlightKey != monitors[1].key
+            throw Error('Brightness highlight did not select the first monitor.')
         NextBrightnessMonitor()
         if brightnessSelectedKey != monitors[2].key
-            || brightnessPanel.rows[monitors[1].key].activeDot
-            || !brightnessPanel.rows[monitors[2].key].activeDot
-            throw Error('Brightness selection indicator did not follow the next monitor.')
+            || brightnessPanel.highlightKey != monitors[2].key
+            throw Error('Brightness highlight did not follow the next monitor.')
         firstSlider := brightnessPanel.rows[monitors[1].key].slider
         secondSlider := brightnessPanel.rows[monitors[2].key].slider
         BrightnessWheelAt(brightnessPanel, brightnessPanel.x + 30,
@@ -1958,8 +2033,8 @@ SelfTest() {
         HideBrightnessPanel()
         availableMonitors := [monitors[1]]
         ShowBrightnessPanel()
-        if brightnessPanel.rows[monitors[1].key].dot.Visible
-            throw Error('A single monitor should not show a selection indicator.')
+        if brightnessPanel.highlightKey != ''
+            throw Error('A single monitor should not show a selection highlight.')
         HideBrightnessPanel()
         availableMonitors := monitors
         testCodes := ParseInputs('VCP Code`tVCP Code Name`tRead-Write`tCurrent Value`tMaximum Value`tPossible Values`n60`tInput Select`tRead+Write`t17`t18`t17, 18, 15, 16, 17')

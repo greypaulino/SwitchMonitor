@@ -43,8 +43,12 @@ OpenLearning(*) {
     ui.refresh := SolidButton(window, 'x430 y123 w90 h31', 'Detect', '3C3C3C')
     ui.refresh.OnEvent('Click', Reload)
     window.AddText('x40 y167 w480 h1 Background3C3C3C')
-    window.AddText('x40 y185 w480 h23 Center cFFFFFF', 'INPUT SHORTCUTS').SetFont('s11 Bold')
-    window.AddText('x40 y210 w480 h18 Center cB7B7B7', 'Check the inputs to include in Next input.').SetFont('s9')
+    ui.inputTitle := window.AddText('x40 y185 w480 h23 Center cFFFFFF', 'INPUT SHORTCUTS')
+    ui.inputTitle.SetFont('s11 Bold')
+    ui.inputHint := window.AddText('x40 y210 w480 h18 Center cB7B7B7', 'Check the inputs to include in Next input.')
+    ui.inputHint.SetFont('s9')
+    ui.noInputs := window.AddText('x68 y242 w447 h42 cB7B7B7', 'This built-in display has no switchable inputs. Use the brightness controls below.')
+    ui.noInputs.Visible := false
     ui.globalLine := window.AddText('x40 y376 w480 h1 Background3C3C3C')
     ui.cycleName := window.AddText('x68 y394 w160 h32 cFFFFFF +0x200', 'Next input')
     ui.cycleButton := SolidButton(window, 'x240 y394 w275 h32', ShortcutLabel(state.globals['cycle']), '2D2D2D')
@@ -169,6 +173,9 @@ OpenLearning(*) {
         if !ApplyGlobalShortcut('brightnessUp', 'Ctrl|Alt|F9')
             throw Error('Brightness shortcut could not be changed in Settings.')
         ToggleLink()
+        ; Global brightness settings must save even when the selected display
+        ; has no input rows, as on a built-in laptop screen.
+        state.rows := []
         Commit()
     } else {
         SetTimer(HoverGlobals, 80)
@@ -189,7 +196,7 @@ OpenLearning(*) {
             } else {
                 saved := LoadAssignments(settingsFile, monitor.key)
                 found := DiscoverInputs(monitor, saved, state.refresh)
-                state.rows := MakeRows(found.values, saved, IsLg29wk600(monitor))
+                state.rows := MakeRows(found.values, saved, IsLg29wk600(monitor) || IsInternalDisplay(monitor))
                 AvoidDefaultShortcutConflicts(state.rows, saved, monitor, state.drafts, availableMonitors, settingsFile)
                 state.drafts[monitor.key] := state.rows
                 if !state.baselines.Has(monitor.key)
@@ -209,7 +216,7 @@ OpenLearning(*) {
             state.loading := false
             state.refresh := false
             ui.choice.Enabled := availableMonitors.Length > 1
-            ui.refresh.Enabled := true
+            ui.refresh.Enabled := !IsInternalDisplay(availableMonitors[state.index])
             RefreshActions()
             if state.closePending {
                 state.closePending := false
@@ -226,6 +233,11 @@ OpenLearning(*) {
             row.button.Visible := false
         }
         ui.rows := []
+        internal := IsInternalDisplay(availableMonitors[state.index])
+        ui.inputTitle.Value := internal ? 'BUILT-IN DISPLAY' : 'INPUT SHORTCUTS'
+        ui.inputHint.Visible := !internal
+        ui.noInputs.Visible := internal
+        ui.refresh.Visible := !internal
         for index, entry in state.rows {
             y := 236 + (index - 1) * 44
             check := window.AddCheckBox('x42 y' (y + 7) ' w22 h23', '')
@@ -238,7 +250,7 @@ OpenLearning(*) {
             ui.rows.Push({check: check, name: name, button: button})
             RoundControls([{control: button, width: 275, height: 32}])
         }
-        offset := Max(0, state.rows.Length - 3) * 44
+        offset := internal ? -80 : Max(0, state.rows.Length - 3) * 44
         ui.globalLine.Move(, 376 + offset)
         ui.cycleName.Move(, 394 + offset)
         ui.cycleButton.Move(, 394 + offset)
@@ -609,7 +621,7 @@ OpenLearning(*) {
     }
     Commit(*) {
         global globalShortcuts, brightnessLinked
-        if state.loading || state.capturing || !state.rows.Length
+        if state.loading || state.capturing
             return
         try {
             proposed := ProfilesWithDrafts(availableMonitors, state.drafts, settingsFile)
