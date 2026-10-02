@@ -1,0 +1,20 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ApplicationIcon>..\..\monitor-switch.ico</ApplicationIcon>
+    <Version>0.1.0</Version>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Content Include="..\..\monitor-switch.ico" Link="monitor-switch.ico" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\brightness-sun.ico" Link="brightness-sun.ico" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\packaging\Update-Wpf.ps1" Link="Update-Wpf.ps1" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

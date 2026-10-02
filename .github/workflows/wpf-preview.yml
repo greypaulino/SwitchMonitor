@@ -1,0 +1,46 @@
+name: WPF preview
+
+on:
+  push:
+    paths:
+      - '.github/workflows/wpf-preview.yml'
+      - 'wpf/**'
+      - 'monitor-switch.ico'
+      - 'brightness-sun.ico'
+  pull_request:
+    paths:
+      - '.github/workflows/wpf-preview.yml'
+      - 'wpf/**'
+      - 'monitor-switch.ico'
+      - 'brightness-sun.ico'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Restore
+        run: dotnet restore .\wpf\SwitchMonitor.Wpf\SwitchMonitor.Wpf.csproj -r win-x64
+      - name: Hardware-free checks
+        shell: pwsh
+        run: |
+          dotnet run --project .\wpf\MonitorProbe\MonitorProbe.csproj -- --selftest-return-sync
+          dotnet run --project .\wpf\ProfileProbe\ProfileProbe.csproj -- --selftest-shortcuts
+          dotnet run --project .\wpf\UpdateProbe\UpdateProbe.csproj
+          dotnet run --project .\wpf\AmdProbe\AmdProbe.csproj -- --packet-test
+      - name: Publish portable preview
+        shell: pwsh
+        run: |
+          dotnet publish .\wpf\SwitchMonitor.Wpf\SwitchMonitor.Wpf.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o .\wpf\dist\ci-portable
+          Copy-Item .\monitor-switch.ico, .\brightness-sun.ico .\wpf\dist\ci-portable\
+          Remove-Item .\wpf\dist\ci-portable\*.pdb -ErrorAction SilentlyContinue
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SwitchMonitor-WPF-unsigned-preview
+          path: wpf/dist/ci-portable/

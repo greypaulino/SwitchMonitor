@@ -1,0 +1,15 @@
+<Window x:Class="SwitchMonitor.Wpf.ShortcutCaptureWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Record shortcut" Width="400" Height="194" ResizeMode="NoResize"
+        WindowStartupLocation="CenterOwner" Background="#1E1E1E" Foreground="White"
+        FontFamily="Segoe UI" ShowInTaskbar="False" PreviewKeyDown="Capture_KeyDown">
+    <StackPanel Margin="24,17,24,16">
+        <TextBlock Text="Press a shortcut now" FontSize="20" FontWeight="SemiBold"
+                   TextAlignment="Center" />
+        <TextBlock Text="Hold 2 to 4 keys within 3 seconds.&#10;Esc or Delete clears the shortcut."
+                   Foreground="#B7B7B7" TextAlignment="Center" Margin="0,13,0,13" />
+        <TextBlock x:Name="Countdown" Text="3 seconds remaining" FontWeight="SemiBold"
+                   TextAlignment="Center" />
+    </StackPanel>
+</Window>

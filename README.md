@@ -1,5 +1,15 @@
 # SwitchMonitor
 
+An experimental [C# / WPF migration preview](wpf/README.md) now lives in `wpf/`. The released AutoHotkey application remains the supported version while native monitor transports and update behavior are validated.
+
+SwitchMonitor source code is open source under the [MIT License](LICENSE). Third-party tools and runtimes retain their own licenses. The WPF preview uses the Windows monitor APIs and AMD/Intel display drivers available on the user's computer; the released AutoHotkey edition separately uses NirSoft ControlMyMonitor.
+
+## Code signing policy
+
+The WPF preview is currently unsigned. Its [Windows build workflow](.github/workflows/wpf-preview.yml) compiles the public source and publishes an unsigned test artifact; a successful workflow does not mean SignPath has approved or signed it. We intend to apply to [SignPath Foundation](https://signpath.org/) for free open-source code signing. If accepted, this section and release pages will identify SignPath as the signer and list the maintainers who may approve signing requests. Only maintainers of this repository may request a signature for binaries built from this source. Until then, verify the source and treat all WPF preview downloads as unsigned.
+
+The [privacy notice](PRIVACY.md) describes the app's GitHub release checks and locally stored settings.
+
 SwitchMonitor is a Windows utility for changing monitor inputs with keyboard shortcuts. It supports separate settings for multiple monitors, a shortcut for cycling through connected inputs, and an optional shortcut in the Windows Startup folder. The interface is in English.
 
 The current source is an AutoHotkey v2 application. It uses [ControlMyMonitor](https://www.nirsoft.net/utils/control_my_monitor.html) for standard DDC/CI monitors and includes experimental LG 29WK600 transports for the Intel and AMD systems used during development. A monitor and its active connection must support the required control command for switching to work.

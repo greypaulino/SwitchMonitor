@@ -6,4 +6,7 @@
 *.bak
 *.zip
 *.exe
+**/bin/
+**/obj/
+/wpf/dist/
 
