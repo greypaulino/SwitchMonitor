@@ -7,10 +7,10 @@
 #Include brightness.ahk
 ;@Ahk2Exe-SetName SwitchMonitor
 ;@Ahk2Exe-SetDescription SwitchMonitor - monitor input shortcuts
-;@Ahk2Exe-SetVersion 1.7.0.0
+;@Ahk2Exe-SetVersion 1.8.0.0
 ;@Ahk2Exe-SetOrigFilename SwitchMonitor.exe
 
-APP_VERSION := '1.7.0'
+APP_VERSION := '1.8.0'
 
 monitorTool := FileExist(A_ScriptDir '\ControlMyMonitor\ControlMyMonitor.exe')
     ? A_ScriptDir '\ControlMyMonitor\ControlMyMonitor.exe'
@@ -173,8 +173,34 @@ FindMonitorIndex(key) {
 
 MonitorLabel(monitor) {
     return IsLg29wk600(monitor) ? 'LG 29WK600'
-        : IsInternalDisplay(monitor) && (monitor.name = 'N/A' || monitor.name = '')
-            ? 'Built-in display' : monitor.name
+        : IsInternalDisplay(monitor) ? InternalDisplayLabel(monitor) : monitor.name
+}
+
+InternalDisplayLabel(monitor) {
+    model := monitor.HasOwnProp('laptopModel') ? monitor.laptopModel : ''
+    if RegExMatch(model, 'i)\b([A-Z]+\d{3,})$', &match)
+        model := match[1]
+    if model = '' && monitor.model != '' && monitor.model != 'N/A'
+        model := monitor.model
+    return model != '' ? model ' Laptop Screen' : 'Built-in display'
+}
+
+LaptopModelName() {
+    static cached := false, model := ''
+    if cached
+        return model
+    cached := true
+    try {
+        service := ComObjGet('winmgmts:\\.\root\cimv2')
+        for item in service.ExecQuery('SELECT Model FROM Win32_ComputerSystem') {
+            candidate := Trim(item.Model '')
+            if candidate != '' && !RegExMatch(candidate,
+                'i)^(?:N/?A|Unknown|Default string|System Product Name|To Be Filled By O\.E\.M\.)$')
+                model := candidate
+            break
+        }
+    }
+    return model
 }
 
 LoadMonitorProfiles() {
@@ -435,8 +461,10 @@ AttachInternalBrightness(monitors) {
         }
         for monitor in monitors {
             model := MonitorHardwareCode(monitor)
-            if instances.Has(model) && instances[model].Length = 1 && monitorCounts[model] = 1
+            if instances.Has(model) && instances[model].Length = 1 && monitorCounts[model] = 1 {
                 monitor.internalBrightness := instances[model][1]
+                monitor.laptopModel := LaptopModelName()
+            }
         }
         for model, names in instances {
             if names.Length != 1 || monitorCounts.Get(model, 0) != 0
@@ -446,6 +474,7 @@ AttachInternalBrightness(monitors) {
                 'Monitor Name', 'Built-in display', 'Short Monitor ID', model,
                 'Monitor ID', 'MONITOR\' SubStr(instance, InStr(instance, '\') + 1)))
             synthetic.internalBrightness := instance
+            synthetic.laptopModel := LaptopModelName()
             monitors.Push(synthetic)
         }
     } catch as err {
@@ -1939,7 +1968,8 @@ SelfTest() {
     laptop := BuildMonitor(Map('Monitor Device Name', 'LAPTOP-DISPLAY', 'Monitor Name', 'N/A',
         'Short Monitor ID', 'BOE1234', 'Monitor ID', 'MONITOR\BOE1234\TEST'))
     laptop.internalBrightness := 'DISPLAY\BOE1234\TEST_0'
-    if MonitorLabel(laptop) != 'Built-in display' || DiscoverInputs(laptop, lgSaved).values.Length
+    laptop.laptopModel := 'Inspiron N5050'
+    if MonitorLabel(laptop) != 'N5050 Laptop Screen' || DiscoverInputs(laptop, lgSaved).values.Length
         || MakeRows([], lgSaved, IsInternalDisplay(laptop)).Length
         throw Error('A built-in display exposed monitor input shortcuts.')
     if ValidateChord('K|RControl|LAlt|LShift') != 'Ctrl|Alt|Shift|K' || ValidateChord('B|A') != 'A|B'
@@ -2009,6 +2039,18 @@ SelfTest() {
         if brightnessSelectedKey != monitors[2].key
             || brightnessPanel.highlightKey != monitors[2].key
             throw Error('Brightness highlight did not follow the next monitor.')
+        BrightnessPanelStarAction(true)
+        if !brightnessLinked || !brightnessPanel.linkedView
+            throw Error('Holding star did not link monitor brightness.')
+        BrightnessPanelStarAction(true)
+        if brightnessLinked || brightnessPanel.linkedView
+            throw Error('Holding star did not unlink monitor brightness.')
+        BrightnessPanelStarAction(false)
+        if brightnessSelectedKey != monitors[1].key
+            throw Error('Tapping star did not select the next monitor.')
+        BrightnessPanelStarAction(false)
+        if brightnessSelectedKey != monitors[2].key
+            throw Error('A second star tap did not cycle to the second monitor.')
         firstSlider := brightnessPanel.rows[monitors[1].key].slider
         secondSlider := brightnessPanel.rows[monitors[2].key].slider
         BrightnessWheelAt(brightnessPanel, brightnessPanel.x + 30,
@@ -2030,7 +2072,36 @@ SelfTest() {
             || brightnessPending.Get(monitors[2].key, -1) != 45
             throw Error('Brightness shortcut did not update the slider before the hardware write.')
         BrightnessFlushSlider()
-        HideBrightnessPanel()
+        BrightnessPanelDigit('7')
+        BrightnessPanelDigit('5')
+        if brightnessPanel.rows[monitors[2].key].number.Value != 'Listening'
+            || brightnessValues[monitors[2].key] != 45
+            throw Error('Typed brightness changed the slider before confirmation.')
+        BrightnessPanelEscape()
+        if brightnessPanel.numericActive
+            || brightnessPanel.rows[monitors[2].key].number.Value != '45%'
+            throw Error('Escape did not cancel typed brightness.')
+        BrightnessPanelDigit('1')
+        BrightnessPanelDigit('0')
+        BrightnessPanelDigit('0')
+        BrightnessPanelEnter()
+        if brightnessPanel.numericActive || brightnessValues[monitors[2].key] != 100
+            || secondSlider.Value != 100
+            throw Error('Enter did not apply typed brightness of 100%.')
+        BrightnessFlushSlider()
+        BrightnessPanelDigit('6')
+        BrightnessPanelDigit('0')
+        Sleep(2250)
+        if brightnessPanel.numericActive || brightnessValues[monitors[2].key] != 60
+            throw Error('Typed brightness did not apply after two seconds.')
+        BrightnessFlushSlider()
+        BrightnessPanelEnter()
+        if IsObject(brightnessPanel)
+            throw Error('Enter did not close the panel outside numeric entry.')
+        ShowBrightnessPanel()
+        BrightnessPanelEscape()
+        if IsObject(brightnessPanel)
+            throw Error('Escape did not close the panel outside numeric entry.')
         availableMonitors := [monitors[1]]
         ShowBrightnessPanel()
         if brightnessPanel.highlightKey != ''

@@ -350,8 +350,156 @@ BrightnessPanelKey(direction, trigger) {
 }
 
 BrightnessPanelNext(trigger) {
-    NextBrightnessMonitor()
-    KeyWait(trigger)
+    if !BrightnessPanelHotkeysActive()
+        return
+    released := KeyWait(trigger, 'T1')
+    if !BrightnessPanelHotkeysActive()
+        return
+    BrightnessPanelStarAction(!released)
+    if !released
+        KeyWait(trigger)
+}
+
+BrightnessPanelStarAction(held) {
+    if held
+        ToggleBrightnessLink()
+    else
+        NextBrightnessMonitor()
+}
+
+BrightnessPanelDigit(digit) {
+    global brightnessPanel, brightnessSelectedKey, brightnessLastActivity, availableMonitors
+    if !BrightnessPanelHotkeysActive()
+        return
+    panel := brightnessPanel
+    key := panel.numericActive ? panel.numericKey : brightnessSelectedKey
+    if !panel.rows.Has(key)
+        return
+    row := panel.linkedView ? panel.rows[availableMonitors[1].key] : panel.rows[key]
+    if !row.slider.Enabled
+        return
+    candidate := panel.numericActive ? panel.numericInput digit : digit
+    if StrLen(candidate) > 3 || candidate + 0 > 100
+        return
+    firstDigit := !panel.numericActive
+    panel.numericActive := true
+    panel.numericKey := key
+    panel.numericOverlayKey := key
+    panel.numericInput := candidate
+    panel.numericLastDigit := A_TickCount
+    panel.numericSeconds := 2
+    row.number.Value := 'Listening'
+    if firstDigit
+        BrightnessStartTypingFade(panel, 1)
+    else
+        BrightnessInvalidateTypingArea(panel)
+    brightnessLastActivity := A_TickCount
+    SetTimer(BrightnessCommitTypedValue, -2000)
+    SetTimer(BrightnessTypingCountdown, 80)
+}
+
+BrightnessCommitTypedValue(*) {
+    global brightnessPanel
+    if !IsObject(brightnessPanel) || !brightnessPanel.numericActive
+        return false
+    panel := brightnessPanel
+    key := panel.numericKey
+    value := panel.numericInput + 0
+    panel.numericActive := false
+    panel.numericSeconds := 0
+    SetTimer(BrightnessCommitTypedValue, 0)
+    SetTimer(BrightnessTypingCountdown, 0)
+    BrightnessQueueValue(key, value)
+    BrightnessStartTypingFade(panel, 0)
+    return true
+}
+
+BrightnessCancelTypedValue() {
+    global brightnessPanel, brightnessLastActivity
+    if !IsObject(brightnessPanel) || !brightnessPanel.numericActive
+        return false
+    brightnessPanel.numericActive := false
+    SetTimer(BrightnessCommitTypedValue, 0)
+    SetTimer(BrightnessTypingCountdown, 0)
+    brightnessLastActivity := A_TickCount
+    BrightnessRefreshPanel()
+    BrightnessStartTypingFade(brightnessPanel, 0)
+    return true
+}
+
+BrightnessTypingCountdown(*) {
+    global brightnessPanel
+    if !IsObject(brightnessPanel) || !brightnessPanel.numericActive {
+        SetTimer(BrightnessTypingCountdown, 0)
+        return
+    }
+    seconds := Max(1, Ceil((2000 - (A_TickCount
+        - brightnessPanel.numericLastDigit)) / 1000))
+    if seconds != brightnessPanel.numericSeconds {
+        brightnessPanel.numericSeconds := seconds
+        BrightnessInvalidateTypingArea(brightnessPanel)
+    }
+}
+
+BrightnessStartTypingFade(panel, target) {
+    panel.numericFadeFrom := panel.numericOpacity
+    panel.numericFadeTo := target
+    panel.numericFadeStarted := A_TickCount
+    panel.numericFadeDuration := target ? 160 : 220
+    SetTimer(BrightnessAnimateTyping, 15)
+    BrightnessAnimateTyping()
+}
+
+BrightnessAnimateTyping(*) {
+    global brightnessPanel
+    if !IsObject(brightnessPanel) {
+        SetTimer(BrightnessAnimateTyping, 0)
+        return
+    }
+    panel := brightnessPanel
+    elapsed := Min(1, Max(0, (A_TickCount - panel.numericFadeStarted)
+        / panel.numericFadeDuration))
+    eased := elapsed * elapsed * (3 - 2 * elapsed)
+    panel.numericOpacity := panel.numericFadeFrom
+        + (panel.numericFadeTo - panel.numericFadeFrom) * eased
+    BrightnessInvalidateTypingArea(panel)
+    if elapsed < 1
+        return
+    SetTimer(BrightnessAnimateTyping, 0)
+    if panel.numericFadeTo = 0 && !panel.numericActive {
+        panel.numericInput := ''
+        panel.numericKey := ''
+        panel.numericOverlayKey := ''
+    }
+}
+
+BrightnessTypingBounds(panel) {
+    if panel.linkedView
+        return {top: 7, bottom: panel.height - 7}
+    return BrightnessHighlightBounds(panel, panel.numericOverlayKey)
+}
+
+BrightnessInvalidateTypingArea(panel) {
+    if !panel.bottom || panel.numericOverlayKey = ''
+        return
+    area := BrightnessTypingBounds(panel)
+    rect := Buffer(16, 0)
+    NumPut('Int', 8, rect, 0)
+    NumPut('Int', area.top, rect, 4)
+    NumPut('Int', 392, rect, 8)
+    NumPut('Int', area.bottom, rect, 12)
+    DllCall('user32\RedrawWindow', 'Ptr', panel.window.Hwnd,
+        'Ptr', rect, 'Ptr', 0, 'UInt', 0x105)
+}
+
+BrightnessPanelEnter(*) {
+    if !BrightnessCommitTypedValue()
+        HideBrightnessPanel()
+}
+
+BrightnessPanelEscape(*) {
+    if !BrightnessCancelTypedValue()
+        HideBrightnessPanel()
 }
 
 #HotIf BrightnessPanelHotkeysActive()
@@ -361,6 +509,29 @@ NumpadMult::BrightnessPanelNext('NumpadMult')
 +=::BrightnessPanelKey(1, '=')
 -::BrightnessPanelKey(-1, '-')
 +8::BrightnessPanelNext('8')
+0::BrightnessPanelDigit('0')
+1::BrightnessPanelDigit('1')
+2::BrightnessPanelDigit('2')
+3::BrightnessPanelDigit('3')
+4::BrightnessPanelDigit('4')
+5::BrightnessPanelDigit('5')
+6::BrightnessPanelDigit('6')
+7::BrightnessPanelDigit('7')
+8::BrightnessPanelDigit('8')
+9::BrightnessPanelDigit('9')
+Numpad0::BrightnessPanelDigit('0')
+Numpad1::BrightnessPanelDigit('1')
+Numpad2::BrightnessPanelDigit('2')
+Numpad3::BrightnessPanelDigit('3')
+Numpad4::BrightnessPanelDigit('4')
+Numpad5::BrightnessPanelDigit('5')
+Numpad6::BrightnessPanelDigit('6')
+Numpad7::BrightnessPanelDigit('7')
+Numpad8::BrightnessPanelDigit('8')
+Numpad9::BrightnessPanelDigit('9')
+Enter::BrightnessPanelEnter()
+NumpadEnter::BrightnessPanelEnter()
+Esc::BrightnessPanelEscape()
 #HotIf
 
 BrightnessStep(heldMs) {
@@ -373,10 +544,21 @@ BrightnessClamp(value) {
 
 BrightnessAdjust(amount) {
     global brightnessValues
+    static lastKeyboardTick := 0
+    now := A_TickCount
+    rapid := lastKeyboardTick && now - lastKeyboardTick < 330
+    lastKeyboardTick := now
     monitor := BrightnessActiveMonitor()
     current := brightnessValues.Has(monitor.key) ? brightnessValues[monitor.key] : BrightnessRead(monitor)
     ShowBrightnessPanel()
-    BrightnessQueueValue(monitor.key, current + amount)
+    BrightnessQueueValue(monitor.key, current + amount, rapid)
+}
+
+BrightnessPanelMonitorName(monitor) {
+    name := MonitorLabel(monitor)
+    if IsInternalDisplay(monitor) || RegExMatch(name, 'i)\bMonitor$')
+        return name
+    return name ' Monitor'
 }
 
 NextBrightnessMonitor(*) {
@@ -385,6 +567,7 @@ NextBrightnessMonitor(*) {
         return
     if availableMonitors.Length < 2
         return
+    BrightnessCancelTypedValue()
     for index, monitor in availableMonitors
         if monitor.key = brightnessSelectedKey {
             brightnessSelectedKey := availableMonitors[Mod(index, availableMonitors.Length) + 1].key
@@ -411,6 +594,7 @@ ToggleBrightnessLink(*) {
     global brightnessPanel, brightnessPointerDown
     if availableMonitors.Length < 2
         return
+    BrightnessCancelTypedValue()
     BrightnessFlushSlider()
     brightnessLinked := !brightnessLinked
     IniWrite(brightnessLinked ? '1' : '0', settingsFile, 'Brightness', 'Linked')
@@ -460,7 +644,7 @@ ShowBrightnessPanel(*) {
     rows := Map()
     for index, monitor in availableMonitors {
         y := 12 + (index - 1) * 96
-        label := window.AddText('x27 y' y ' w142 h22 cFFFFFF BackgroundTrans +0x200', MonitorLabel(monitor))
+        label := window.AddText('x27 y' y ' w142 h22 cFFFFFF BackgroundTrans +0x200', BrightnessPanelMonitorName(monitor))
         number := window.AddText('x165 y' y ' w70 h20 Center cFFFFFF BackgroundTrans', '')
         label.Visible := false
         number.Visible := false
@@ -472,14 +656,16 @@ ShowBrightnessPanel(*) {
             slider.Enabled := false
         }
         rows[monitor.key] := {label: label, number: number, numberShown: true,
-            slider: slider, name: MonitorLabel(monitor)}
+            slider: slider, name: BrightnessPanelMonitorName(monitor)}
     }
     height := 110 + (availableMonitors.Length - 1) * 96
     status := {Value: ''}
     brightnessPanel := {window: window, rows: rows, status: status,
         link: linkButton, settings: settingsButton, iconHover: '',
         x: 0, y: 0, bottom: 0, height: height, linkedView: false, updating: false,
-        dragKey: '',
+        dragKey: '', numericActive: false, numericInput: '', numericKey: '',
+        numericOverlayKey: '', numericOpacity: 0, numericSeconds: 2,
+        numericLastDigit: 0,
         progress: 0, target: 1, from: 0, started: A_TickCount, duration: 280,
         fadeEntrance: !uiTest, highlightKey: '', highlightedKey: '', highlightLinked: false}
     for _, row in rows
@@ -563,15 +749,11 @@ BrightnessDrawPanel(dc, hwnd) {
             ? brightnessPanel.highlightBottom : shape.bottom
         BrightnessDrawShape(canvas, 8, Round(top), 392, Round(bottom), '292929')
     }
-    for key, row in brightnessPanel.rows {
-        BrightnessDrawControlText(canvas, hwnd, row.label, row.name, false)
-        if row.numberShown
-            BrightnessDrawControlText(canvas, hwnd, row.number, row.number.Value, true)
-        if row.slider.Visible
-            BrightnessDrawSlider(canvas, row.slider)
-    }
+    BrightnessDrawPanelRows(canvas, hwnd, brightnessPanel, width, height)
     if brightnessPanel.status.Value != ''
         BrightnessDrawStatus(canvas, brightnessPanel)
+    if brightnessPanel.numericOpacity > 0 && brightnessPanel.numericOverlayKey != ''
+        BrightnessDrawTypingOverlay(canvas, brightnessPanel, width, height)
     BrightnessDrawPanelIcons(canvas, brightnessPanel)
     if oldBitmap {
         opacity := brightnessPanel.HasOwnProp('contentOpacity')
@@ -610,6 +792,333 @@ BrightnessDrawPanel(dc, hwnd) {
     if memoryDc
         DllCall('gdi32\DeleteDC', 'Ptr', memoryDc)
     return 1
+}
+
+BrightnessDrawPanelRow(dc, hwnd, row) {
+    BrightnessDrawControlText(dc, hwnd, row.label, row.name, false)
+    if row.numberShown
+        BrightnessDrawControlText(dc, hwnd, row.number, row.number.Value, true)
+    if row.slider.Visible
+        BrightnessDrawSlider(dc, row.slider)
+}
+
+BrightnessDrawPanelRows(dc, hwnd, panel, width, height) {
+    global availableMonitors
+    if panel.numericOpacity <= 0 || panel.numericOverlayKey = '' {
+        for _, row in panel.rows
+            BrightnessDrawPanelRow(dc, hwnd, row)
+        return
+    }
+    area := BrightnessTypingBounds(panel)
+    if panel.linkedView {
+        BrightnessDrawDimmedRows(dc, hwnd, panel.rows, area, width, height,
+            panel.numericOpacity)
+        first := panel.rows[availableMonitors[1].key]
+        if panel.numericActive
+            BrightnessDrawControlText(dc, hwnd, first.number, 'Listening', true)
+        return
+    }
+    for key, row in panel.rows {
+        if key = panel.numericOverlayKey {
+            BrightnessDrawDimmedRows(dc, hwnd, [row], area, width, height,
+                panel.numericOpacity)
+            if panel.numericActive
+                BrightnessDrawControlText(dc, hwnd, row.number, 'Listening', true)
+        } else
+            BrightnessDrawPanelRow(dc, hwnd, row)
+    }
+}
+
+BrightnessDrawDimmedRows(dc, hwnd, rows, area, width, height, fade) {
+    scratch := DllCall('gdi32\CreateCompatibleDC', 'Ptr', dc, 'Ptr')
+    bitmap := scratch ? DllCall('gdi32\CreateCompatibleBitmap', 'Ptr', dc,
+        'Int', width, 'Int', height, 'Ptr') : 0
+    oldBitmap := bitmap ? DllCall('gdi32\SelectObject', 'Ptr', scratch,
+        'Ptr', bitmap, 'Ptr') : 0
+    if oldBitmap {
+        DllCall('gdi32\BitBlt', 'Ptr', scratch, 'Int', 0, 'Int', 0,
+            'Int', width, 'Int', height, 'Ptr', dc,
+            'Int', 0, 'Int', 0, 'UInt', 0xCC0020)
+        for _, row in rows
+            BrightnessDrawPanelRow(scratch, hwnd, row)
+        visibility := Round(255 - 204 * fade)
+        DllCall('msimg32\AlphaBlend', 'Ptr', dc,
+            'Int', 8, 'Int', area.top, 'Int', 384,
+            'Int', area.bottom - area.top, 'Ptr', scratch,
+            'Int', 8, 'Int', area.top, 'Int', 384,
+            'Int', area.bottom - area.top, 'UInt', visibility << 16)
+        DllCall('gdi32\SelectObject', 'Ptr', scratch, 'Ptr', oldBitmap)
+    } else
+        for _, row in rows
+            BrightnessDrawPanelRow(dc, hwnd, row)
+    if bitmap
+        DllCall('gdi32\DeleteObject', 'Ptr', bitmap)
+    if scratch
+        DllCall('gdi32\DeleteDC', 'Ptr', scratch)
+}
+
+BrightnessDrawTypingOverlay(dc, panel, width, height) {
+    scratch := DllCall('gdi32\CreateCompatibleDC', 'Ptr', dc, 'Ptr')
+    bitmap := scratch ? DllCall('gdi32\CreateCompatibleBitmap', 'Ptr', dc,
+        'Int', width, 'Int', height, 'Ptr') : 0
+    oldBitmap := bitmap ? DllCall('gdi32\SelectObject', 'Ptr', scratch,
+        'Ptr', bitmap, 'Ptr') : 0
+    if oldBitmap {
+        DllCall('gdi32\BitBlt', 'Ptr', scratch, 'Int', 0, 'Int', 0,
+            'Int', width, 'Int', height, 'Ptr', dc,
+            'Int', 0, 'Int', 0, 'UInt', 0xCC0020)
+        area := BrightnessTypingBounds(panel)
+        BrightnessDrawTypingText(scratch, panel, area)
+        DllCall('msimg32\AlphaBlend', 'Ptr', dc,
+            'Int', 8, 'Int', area.top, 'Int', 384,
+            'Int', area.bottom - area.top, 'Ptr', scratch,
+            'Int', 8, 'Int', area.top, 'Int', 384,
+            'Int', area.bottom - area.top,
+            'UInt', Round(255 * panel.numericOpacity) << 16)
+        DllCall('gdi32\SelectObject', 'Ptr', scratch, 'Ptr', oldBitmap)
+    }
+    if bitmap
+        DllCall('gdi32\DeleteObject', 'Ptr', bitmap)
+    if scratch
+        DllCall('gdi32\DeleteDC', 'Ptr', scratch)
+}
+
+BrightnessDrawTypingText(dc, panel, area) {
+    global availableMonitors
+    height := area.bottom - area.top
+    digitBottom := area.top + Round(height * 0.77)
+    digitRect := Buffer(16, 0)
+    NumPut('Int', 8, digitRect, 0)
+    NumPut('Int', area.top + Min(25, Round(height * 0.28)), digitRect, 4)
+    NumPut('Int', 392, digitRect, 8)
+    NumPut('Int', digitBottom, digitRect, 12)
+    largeFont := DllCall('gdi32\CreateFontW',
+        'Int', -Round(height * 0.405), 'Int', 0, 'Int', 0, 'Int', 0,
+        'Int', 700, 'UInt', 0, 'UInt', 0, 'UInt', 0,
+        'UInt', 1, 'UInt', 0, 'UInt', 0, 'UInt', 5,
+        'UInt', 0, 'WStr', 'Segoe UI', 'Ptr')
+    oldFont := largeFont ? DllCall('gdi32\SelectObject', 'Ptr', dc,
+        'Ptr', largeFont, 'Ptr') : 0
+    DllCall('gdi32\SetBkMode', 'Ptr', dc, 'Int', 1)
+    BrightnessDrawGlowText(dc, panel.numericInput, digitRect, area)
+    if oldFont
+        DllCall('gdi32\SelectObject', 'Ptr', dc, 'Ptr', oldFont)
+    if largeFont
+        DllCall('gdi32\DeleteObject', 'Ptr', largeFont)
+    countdownRect := Buffer(16, 0)
+    NumPut('Int', 8, countdownRect, 0)
+    NumPut('Int', digitBottom - 2, countdownRect, 4)
+    NumPut('Int', 392, countdownRect, 8)
+    NumPut('Int', area.bottom - 3, countdownRect, 12)
+    label := panel.rows[availableMonitors[1].key].label
+    font := DllCall('user32\SendMessageW', 'Ptr', label.Hwnd,
+        'UInt', 0x31, 'Ptr', 0, 'Ptr', 0, 'Ptr')
+    oldFont := font ? DllCall('gdi32\SelectObject', 'Ptr', dc, 'Ptr', font,
+        'Ptr') : 0
+    DllCall('gdi32\SetTextColor', 'Ptr', dc, 'UInt', GdiColor('D4D4D4'))
+    DllCall('user32\DrawTextW', 'Ptr', dc, 'Str',
+        'Catching: ' panel.numericSeconds ' sec',
+        'Int', -1, 'Ptr', countdownRect, 'UInt', 0x825)
+    if oldFont
+        DllCall('gdi32\SelectObject', 'Ptr', dc, 'Ptr', oldFont)
+}
+
+BrightnessDrawGlowText(dc, value, rect, area) {
+    static glow := {ambientKey: '', shadowKey: '', ambient: 0, shadow: 0}
+    left := 8, top := area.top
+    width := 384, height := area.bottom - area.top
+    textTop := NumGet(rect, 4, 'Int') - top
+    textBottom := NumGet(rect, 12, 'Int') - top
+    digitSize := Round(height * 0.405)
+    centerY := (textTop + textBottom) / 2
+    ambientKey := height '|' centerY '|' digitSize
+    if glow.ambientKey != ambientKey {
+        BrightnessReleaseGlowLayer(glow.ambient)
+        info := BrightnessDibInfo(width, height)
+        glow.ambient := BrightnessRadialGlowLayer(dc, info, width, height,
+            width / 2, centerY, Round(digitSize * 1.5))
+        glow.ambientKey := ambientKey
+    }
+    shadowWidth := Min(width, Max(120, Round(digitSize * 3.5)))
+    shadowHeight := textBottom - textTop + 8
+    shadowKey := value '|' shadowWidth '|' shadowHeight
+    if glow.shadowKey != shadowKey {
+        BrightnessReleaseGlowLayer(glow.shadow)
+        glow.shadow := BrightnessMakeShadow(dc, value, shadowWidth,
+            shadowHeight)
+        glow.shadowKey := shadowKey
+    }
+    BrightnessBlendGlowLayer(dc, glow.ambient, left, top, width, height)
+    BrightnessBlendGlowLayer(dc, glow.shadow,
+        left + Round((width - shadowWidth) / 2), top + textTop - 4,
+        shadowWidth, shadowHeight)
+    DllCall('gdi32\SetTextColor', 'Ptr', dc, 'UInt', GdiColor('FFFFFF'))
+    DllCall('user32\DrawTextW', 'Ptr', dc, 'Str', value,
+        'Int', -1, 'Ptr', rect, 'UInt', 0x825)
+}
+
+BrightnessBlendGlowLayer(dc, layer, left, top, width, height) {
+    if !IsObject(layer) || !layer.dc
+        return
+    DllCall('msimg32\AlphaBlend', 'Ptr', dc, 'Int', left, 'Int', top,
+        'Int', width, 'Int', height, 'Ptr', layer.dc,
+        'Int', 0, 'Int', 0, 'Int', width, 'Int', height,
+        'UInt', 0x01FF0000)
+}
+
+BrightnessReleaseGlowLayer(layer) {
+    if !IsObject(layer) || !layer.dc
+        return
+    DllCall('gdi32\SelectObject', 'Ptr', layer.dc, 'Ptr', layer.previous, 'Ptr')
+    DllCall('gdi32\DeleteObject', 'Ptr', layer.bitmap)
+    DllCall('gdi32\DeleteDC', 'Ptr', layer.dc)
+}
+
+BrightnessDibInfo(width, height) {
+    info := Buffer(40, 0)
+    NumPut('UInt', 40, info, 0)
+    NumPut('Int', width, info, 4)
+    NumPut('Int', -height, info, 8)
+    NumPut('UShort', 1, info, 12)
+    NumPut('UShort', 32, info, 14)
+    return info
+}
+
+BrightnessMakeShadow(dc, value, width, height) {
+    if width <= 0 || height <= 0
+        return 0
+    info := BrightnessDibInfo(width, height)
+    maskBits := 0
+    maskBitmap := DllCall('gdi32\CreateDIBSection', 'Ptr', dc,
+        'Ptr', info, 'UInt', 0, 'Ptr*', &maskBits, 'Ptr', 0, 'UInt', 0, 'Ptr')
+    maskDc := maskBitmap ? DllCall('gdi32\CreateCompatibleDC', 'Ptr', dc, 'Ptr') : 0
+    oldMask := maskDc ? DllCall('gdi32\SelectObject', 'Ptr', maskDc,
+        'Ptr', maskBitmap, 'Ptr') : 0
+    if !oldMask {
+        if maskDc
+            DllCall('gdi32\DeleteDC', 'Ptr', maskDc)
+        if maskBitmap
+            DllCall('gdi32\DeleteObject', 'Ptr', maskBitmap)
+        return 0
+    }
+    DllCall('msvcrt\memset', 'Ptr', maskBits, 'Int', 0,
+        'UPtr', width * height * 4, 'Ptr')
+    font := DllCall('gdi32\GetCurrentObject', 'Ptr', dc, 'UInt', 6, 'Ptr')
+    oldFont := font ? DllCall('gdi32\SelectObject', 'Ptr', maskDc, 'Ptr', font, 'Ptr') : 0
+    textRect := Buffer(16, 0)
+    NumPut('Int', 4, textRect, 4)
+    NumPut('Int', width, textRect, 8)
+    NumPut('Int', height - 4, textRect, 12)
+    DllCall('gdi32\SetBkMode', 'Ptr', maskDc, 'Int', 1)
+    DllCall('gdi32\SetTextColor', 'Ptr', maskDc, 'UInt', 0xFFFFFF)
+    DllCall('user32\DrawTextW', 'Ptr', maskDc, 'Str', value,
+        'Int', -1, 'Ptr', textRect, 'UInt', 0x825)
+    if oldFont
+        DllCall('gdi32\SelectObject', 'Ptr', maskDc, 'Ptr', oldFont)
+    DllCall('gdi32\GdiFlush')
+    shadow := BrightnessBlurredGlowLayer(dc, info, maskBits, width, height,
+        3, 2.7, 0x0B1015)
+    DllCall('gdi32\SelectObject', 'Ptr', maskDc, 'Ptr', oldMask, 'Ptr')
+    DllCall('gdi32\DeleteObject', 'Ptr', maskBitmap)
+    DllCall('gdi32\DeleteDC', 'Ptr', maskDc)
+    return shadow
+}
+
+BrightnessRadialGlowLayer(dc, info, width, height, centerX, centerY, radius) {
+    bits := 0
+    bitmap := DllCall('gdi32\CreateDIBSection', 'Ptr', dc,
+        'Ptr', info, 'UInt', 0, 'Ptr*', &bits, 'Ptr', 0, 'UInt', 0, 'Ptr')
+    layerDc := bitmap ? DllCall('gdi32\CreateCompatibleDC', 'Ptr', dc, 'Ptr') : 0
+    previous := layerDc ? DllCall('gdi32\SelectObject', 'Ptr', layerDc,
+        'Ptr', bitmap, 'Ptr') : 0
+    if !previous {
+        if layerDc
+            DllCall('gdi32\DeleteDC', 'Ptr', layerDc)
+        if bitmap
+            DllCall('gdi32\DeleteObject', 'Ptr', bitmap)
+        return 0
+    }
+    DllCall('msvcrt\memset', 'Ptr', bits, 'Int', 0,
+        'UPtr', width * height * 4, 'Ptr')
+    firstX := Max(0, Ceil(centerX - radius))
+    lastX := Min(width - 1, Floor(centerX + radius))
+    radiusSquared := radius * radius
+    Loop height {
+        y := A_Index - 1
+        dy := y - centerY
+        if Abs(dy) >= radius
+            continue
+        Loop lastX - firstX + 1 {
+            x := firstX + A_Index - 1
+            dx := x - centerX
+            distanceSquared := dx * dx + dy * dy
+            if distanceSquared >= radiusSquared
+                continue
+            fade := 1 - Sqrt(distanceSquared) / radius
+            alpha := Round(56 * fade * fade * (3 - 2 * fade))
+            NumPut('UInt', (alpha << 24) | (alpha << 16)
+                | (alpha << 8) | alpha, bits + 4 * (y * width + x))
+        }
+    }
+    return {dc: layerDc, bitmap: bitmap, previous: previous}
+}
+
+BrightnessBlurredGlowLayer(dc, info, maskBits, width, height, radius,
+    intensity, rgb) {
+    horizontal := Buffer(width * height, 0)
+    Loop height {
+        y := A_Index - 1
+        total := 0
+        Loop Min(width, radius + 1)
+            total += NumGet(maskBits + 4 * (y * width + A_Index - 1), 'UChar')
+        Loop width {
+            x := A_Index - 1
+            count := Min(width - 1, x + radius) - Max(0, x - radius) + 1
+            NumPut('UChar', Round(total / count), horizontal, y * width + x)
+            if x - radius >= 0
+                total -= NumGet(maskBits + 4 * (y * width + x - radius), 'UChar')
+            if x + radius + 1 < width
+                total += NumGet(maskBits + 4 * (y * width + x + radius + 1), 'UChar')
+        }
+    }
+    bits := 0
+    bitmap := DllCall('gdi32\CreateDIBSection', 'Ptr', dc,
+        'Ptr', info, 'UInt', 0, 'Ptr*', &bits, 'Ptr', 0, 'UInt', 0, 'Ptr')
+    layerDc := bitmap ? DllCall('gdi32\CreateCompatibleDC', 'Ptr', dc, 'Ptr') : 0
+    previous := layerDc ? DllCall('gdi32\SelectObject', 'Ptr', layerDc,
+        'Ptr', bitmap, 'Ptr') : 0
+    if previous {
+        red := (rgb >> 16) & 255
+        green := (rgb >> 8) & 255
+        blue := rgb & 255
+        Loop width {
+            x := A_Index - 1
+            total := 0
+            Loop Min(height, radius + 1)
+                total += NumGet(horizontal, (A_Index - 1) * width + x, 'UChar')
+            Loop height {
+                y := A_Index - 1
+                count := Min(height - 1, y + radius) - Max(0, y - radius) + 1
+                alpha := Min(190, Round(total / count * intensity))
+                color := (alpha << 24) | (Round(alpha * red / 255) << 16)
+                    | (Round(alpha * green / 255) << 8)
+                    | Round(alpha * blue / 255)
+                NumPut('UInt', color, bits + 4 * (y * width + x))
+                if y - radius >= 0
+                    total -= NumGet(horizontal, (y - radius) * width + x, 'UChar')
+                if y + radius + 1 < height
+                    total += NumGet(horizontal, (y + radius + 1) * width + x, 'UChar')
+            }
+        }
+    }
+    if !previous {
+        if layerDc
+            DllCall('gdi32\DeleteDC', 'Ptr', layerDc)
+        if bitmap
+            DllCall('gdi32\DeleteObject', 'Ptr', bitmap)
+        return 0
+    }
+    return {dc: layerDc, bitmap: bitmap, previous: previous}
 }
 
 BrightnessDrawPanelIcons(dc, panel) {
@@ -826,16 +1335,19 @@ BrightnessRefreshPanel() {
     for key, row in brightnessPanel.rows {
         if brightnessPanel.linkedView && key != availableMonitors[1].key
             continue
+        typingHere := brightnessPanel.numericActive
+            && key = (brightnessPanel.linkedView
+                ? availableMonitors[1].key : brightnessPanel.numericKey)
         if brightnessValues.Has(key) {
             label := brightnessValues[key] '%'
-            if row.number.Value != label {
+            if !typingHere && row.number.Value != label {
                 row.number.Value := label
                 if brightnessPanel.bottom && row.numberShown
                     BrightnessInvalidateText(brightnessPanel, row.number)
             }
             if row.slider.Value != brightnessValues[key]
                 row.slider.Value := brightnessValues[key]
-        } else if row.number.Value != 'N/A' {
+        } else if !typingHere && row.number.Value != 'N/A' {
             row.number.Value := 'N/A'
             if brightnessPanel.bottom && row.numberShown
                 BrightnessInvalidateText(brightnessPanel, row.number)
@@ -951,14 +1463,20 @@ BrightnessSliderChanged(key, control, *) {
     BrightnessQueueValue(key, control.Value)
 }
 
-BrightnessQueueValue(key, value) {
+BrightnessQueueValue(key, value, immediate := false) {
     global brightnessPanel, brightnessSelectedKey, brightnessLastActivity, brightnessPending, brightnessValues, brightnessLinked, availableMonitors
+    BrightnessCancelTypedValue()
     value := BrightnessClamp(value)
     brightnessSelectedKey := key
     brightnessValues[key] := value
     if brightnessLinked
         for monitor in availableMonitors
             brightnessValues[monitor.key] := value
+    if immediate && IsObject(brightnessPanel)
+        for monitor in availableMonitors
+            if (monitor.key = key || brightnessLinked)
+                && brightnessPanel.rows.Has(monitor.key)
+                brightnessPanel.rows[monitor.key].slider.SetImmediate(value)
     BrightnessRefreshPanel()
     brightnessPending[key] := value
     brightnessLastActivity := A_TickCount
@@ -1005,6 +1523,7 @@ BrightnessSliderMouseDown(wParam, lParam, msg, hwnd) {
         return 0
     }
     if hwnd = panel.window.Hwnd && !panel.linkedView
+        && !panel.numericActive && panel.numericOpacity <= 0
         for index, monitor in availableMonitors
             if point.y >= 7 + (index - 1) * 96 && point.y < 97 + (index - 1) * 96 {
                 SelectBrightnessMonitor(monitor.key)
@@ -1024,7 +1543,9 @@ BrightnessBarMouseMove(wParam, lParam, msg, hwnd) {
             brightnessPanel.iconHover := icon
             BrightnessInvalidateIconArea(brightnessPanel)
         }
-        if icon = '' && !brightnessPanel.linkedView
+        if icon = '' && !brightnessPanel.numericActive
+            && brightnessPanel.numericOpacity <= 0
+            && !brightnessPanel.linkedView
             && availableMonitors.Length > 1 && point.x >= 8 && point.x < 392 {
             for index, monitor in availableMonitors {
                 top := 7 + (index - 1) * 96
@@ -1355,6 +1876,7 @@ HideBrightnessPanel(*) {
     SetTimer(BrightnessHideCheck, 0)
     if !IsObject(brightnessPanel)
         return
+    BrightnessCancelTypedValue()
     if uiTest
         BrightnessDestroyPanel()
     else
@@ -1430,6 +1952,9 @@ BrightnessDestroyPanel() {
     global brightnessPanel
     SetTimer(BrightnessAnimate, 0)
     SetTimer(BrightnessHideCheck, 0)
+    SetTimer(BrightnessCommitTypedValue, 0)
+    SetTimer(BrightnessTypingCountdown, 0)
+    SetTimer(BrightnessAnimateTyping, 0)
     if !IsObject(brightnessPanel)
         return
     panel := brightnessPanel

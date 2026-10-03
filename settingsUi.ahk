@@ -527,7 +527,7 @@ OpenLearning(*) {
         else if hovered = 'brightnessUp'
             ToolTip('Increase brightness: tap for 1, hold for 5-point steps, then 10-point steps.', mx + 14, my + 18, 20)
         else if hovered = 'brightnessNext'
-            ToolTip('Select the next monitor for brightness shortcuts.', mx + 14, my + 18, 20)
+            ToolTip('Select the next monitor. With the brightness panel open, hold * for 1 second to link or unlink brightness.', mx + 14, my + 18, 20)
         else if hovered = 'brightnessLink'
             ToolTip('Apply the same brightness value to all detected monitors.', mx + 14, my + 18, 20)
         state.hover := hovered
