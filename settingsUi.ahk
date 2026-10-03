@@ -19,6 +19,8 @@ OpenLearning(*) {
             'brightnessDown', globalShortcuts['brightnessDown'], 'brightnessUp', globalShortcuts['brightnessUp'],
             'brightnessNext', globalShortcuts['brightnessNext']),
         linked: brightnessLinked, originalLinked: brightnessLinked,
+        mainDisplayName: BrightnessMainDisplayName(),
+        originalMainDisplayName: BrightnessMainDisplayName(),
         selected: 0, refresh: false, hover: '', mock: 'valid'}
     labels := []
     for index, monitor in availableMonitors {
@@ -32,14 +34,16 @@ OpenLearning(*) {
     window.SetFont('s10 cD4D4D4', 'Segoe UI')
     window.AddText('x40 y32 w480 h38 Center cFFFFFF', 'Settings').SetFont('s22 Bold')
     window.AddText('x40 y88 w480 h20 Center cB7B7B7', 'Choose inputs and keyboard shortcuts.').SetFont('s9')
-    window.AddText('x130 y128 w72 h25 cFFFFFF', 'Monitor:').SetFont('s10 Bold')
-    ui.choice := window.AddDropDownList('x210 y123 w210 Choose' state.index, labels)
+    window.AddText('x40 y128 w72 h25 cFFFFFF', 'Monitor:').SetFont('s10 Bold')
+    ui.choice := window.AddDropDownList('x120 y123 w165 Choose' state.index, labels)
     ui.choice.Enabled := availableMonitors.Length > 1
     if availableMonitors.Length = 1 {
         ui.choice.Visible := false
-        window.AddText('x210 y123 w210 h31 Background2D2D2D cFFFFFF +0x200', '  ' labels[1])
+        window.AddText('x120 y123 w165 h31 Background2D2D2D cFFFFFF +0x200', '  ' labels[1])
     }
     ui.choice.OnEvent('Change', ChooseMonitor)
+    ui.mainDisplay := window.AddCheckBox('x299 y127 w124 h24 cFFFFFF', 'Main display')
+    ui.mainDisplay.OnEvent('Click', SetMainDisplayDraft)
     ui.refresh := SolidButton(window, 'x430 y123 w90 h31', 'Detect', '3C3C3C')
     ui.refresh.OnEvent('Click', Reload)
     window.AddText('x40 y167 w480 h1 Background3C3C3C')
@@ -126,6 +130,8 @@ OpenLearning(*) {
         if availableMonitors.Length = 1 {
             if ui.choice.Enabled || ui.rows.Length != state.rows.Length || ui.linkButton.Enabled
                 throw Error('Single-monitor settings did not render its input rows.')
+            if ui.mainDisplay.Enabled
+                throw Error('Single-monitor settings enabled the main-display choice.')
             Close()
             return
         }
@@ -133,6 +139,8 @@ OpenLearning(*) {
             throw Error('Multi-monitor settings did not render its input rows.')
         if !ui.close.Visible || ui.cancel.Visible || ui.save.Visible
             throw Error('Clean settings should show only Close.')
+        if ui.mainDisplay.Enabled != BrightnessCanBeMainDisplay(availableMonitors[state.index])
+            throw Error('Main-display choice does not match Windows display availability.')
         SelectRow(1)
         ApplyPortShortcut(1, 'Ctrl|Alt|3')
         if state.rows[1].shortcut != 'Ctrl|Alt|3' || state.rows[3].shortcut != 'Ctrl|Alt|1'
@@ -164,6 +172,28 @@ OpenLearning(*) {
         ChooseMonitor()
         if state.rows[1].shortcut != 'Ctrl|Alt|K'
             throw Error('Draft changes were lost when changing monitors.')
+        for candidateIndex, candidate in availableMonitors {
+            candidateName := BrightnessDisplayName(candidate)
+            if !BrightnessCanBeMainDisplay(candidate)
+                || StrUpper(candidateName) = StrUpper(state.originalMainDisplayName)
+                continue
+            ui.choice.Choose(candidateIndex)
+            ChooseMonitor()
+            ui.mainDisplay.Value := 1
+            SetMainDisplayDraft()
+            if StrUpper(state.mainDisplayName) != StrUpper(candidateName)
+                || !ui.save.Visible
+                throw Error('Main-display checkbox did not create a single pending choice.')
+            ui.choice.Choose(1)
+            ChooseMonitor()
+            if ui.mainDisplay.Value != (StrUpper(BrightnessDisplayName(availableMonitors[1]))
+                = StrUpper(candidateName))
+                throw Error('Main-display checkbox did not follow the selected monitor.')
+            state.mainDisplayName := state.originalMainDisplayName
+            UpdateMainDisplayCheck()
+            RefreshActions()
+            break
+        }
         ui.rows[1].check.Value := 1
         CheckConnected(1, ui.rows[1].check)
         ui.rows[2].check.Value := 0
@@ -217,6 +247,7 @@ OpenLearning(*) {
             state.refresh := false
             ui.choice.Enabled := availableMonitors.Length > 1
             ui.refresh.Enabled := !IsInternalDisplay(availableMonitors[state.index])
+            UpdateMainDisplayCheck()
             RefreshActions()
             if state.closePending {
                 state.closePending := false
@@ -304,6 +335,7 @@ OpenLearning(*) {
     }
     RefreshActions() {
         dirty := state.linked != state.originalLinked
+            || StrUpper(state.mainDisplayName) != StrUpper(state.originalMainDisplayName)
         for kind, chord in state.globals
             if chord != state.originalGlobals[kind]
                 dirty := true
@@ -324,6 +356,30 @@ OpenLearning(*) {
         state.index := ui.choice.Value
         SelectActiveMonitor(state.index)
         LoadMonitor()
+    }
+    UpdateMainDisplayCheck() {
+        monitor := availableMonitors[state.index]
+        displayName := BrightnessDisplayName(monitor)
+        ui.mainDisplay.Enabled := BrightnessCanBeMainDisplay(monitor)
+        ui.mainDisplay.Value := displayName != ''
+            && StrUpper(displayName) = StrUpper(state.mainDisplayName)
+    }
+    SetMainDisplayDraft(*) {
+        if state.loading || state.capturing
+            return
+        monitor := availableMonitors[state.index]
+        if !BrightnessCanBeMainDisplay(monitor) {
+            UpdateMainDisplayCheck()
+            return
+        }
+        if !ui.mainDisplay.Value {
+            ui.mainDisplay.Value := 1
+            ui.status.Value := 'Choose another monitor to change the main display.'
+            return
+        }
+        state.mainDisplayName := BrightnessDisplayName(monitor)
+        ui.status.Value := 'Main display selection will apply when you save.'
+        RefreshActions()
     }
     Reload(*) {
         if state.loading || state.capturing
@@ -523,9 +579,9 @@ OpenLearning(*) {
         else if hovered = 'settings'
             ToolTip('Opens Settings for the selected monitor.', mx + 14, my + 18, 20)
         else if hovered = 'brightnessDown'
-            ToolTip('Decrease brightness: tap for 1, hold for 5-point steps, then 10-point steps.', mx + 14, my + 18, 20)
+            ToolTip('Decrease brightness: tap for 1, repeat quickly for 5-point steps, or hold 0.5 seconds for animated 10-point steps.', mx + 14, my + 18, 20)
         else if hovered = 'brightnessUp'
-            ToolTip('Increase brightness: tap for 1, hold for 5-point steps, then 10-point steps.', mx + 14, my + 18, 20)
+            ToolTip('Increase brightness: tap for 1, repeat quickly for 5-point steps, or hold 0.5 seconds for animated 10-point steps.', mx + 14, my + 18, 20)
         else if hovered = 'brightnessNext'
             ToolTip('Select the next monitor. With the brightness panel open, hold * for 1 second to link or unlink brightness.', mx + 14, my + 18, 20)
         else if hovered = 'brightnessLink'
@@ -627,6 +683,20 @@ OpenLearning(*) {
             proposed := ProfilesWithDrafts(availableMonitors, state.drafts, settingsFile)
             ValidateProfileShortcuts(proposed)
             ValidateGlobalShortcuts(proposed, state.globals)
+            if StrUpper(state.mainDisplayName) != StrUpper(state.originalMainDisplayName) {
+                targetMonitor := 0
+                for monitor in availableMonitors
+                    if StrUpper(BrightnessDisplayName(monitor)) = StrUpper(state.mainDisplayName)
+                        && BrightnessCanBeMainDisplay(monitor) {
+                        targetMonitor := monitor
+                        break
+                    }
+                if !IsObject(targetMonitor)
+                    throw Error('The selected main display is no longer available in Windows.')
+                changed := BrightnessSetMainDisplay(targetMonitor.key)
+                if !changed.ok
+                    throw Error('Could not change the main display: ' changed.error)
+            }
             for monitor in availableMonitors
                 if state.drafts.Has(monitor.key)
                     SaveAssignments(settingsFile, monitor, RowsToAssignments(state.drafts[monitor.key]))
@@ -634,6 +704,11 @@ OpenLearning(*) {
             for kind, chord in state.globals {
                 globalShortcuts[kind] := chord
                 IniWrite(chord, settingsFile, 'GlobalShortcuts', kind)
+            }
+            if state.linked && !brightnessLinked {
+                BrightnessFlushSlider()
+                if !BrightnessMatchLinkedValues()
+                    throw Error('Could not synchronize monitor brightness before linking.')
             }
             brightnessLinked := state.linked
             IniWrite(brightnessLinked ? '1' : '0', settingsFile, 'Brightness', 'Linked')

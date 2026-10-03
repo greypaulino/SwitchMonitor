@@ -1,6 +1,6 @@
-SWITCHMONITOR 1.8.0
+SWITCHMONITOR 1.9.0
 
-Install SwitchMonitor-Setup-1.8.0.exe on each computer. AutoHotkey and ControlMyMonitor are included. The portable ZIP can be extracted and run without installation.
+Install SwitchMonitor-Setup-1.9.0.exe on each computer. AutoHotkey and ControlMyMonitor are included. The portable ZIP can be extracted and run without installation.
 
 FIRST USE
 1. Select a monitor when more than one is detected.
@@ -16,7 +16,9 @@ When a newer GitHub release is available, a Windows notification and the monitor
 BRIGHTNESS CONTROL
 Click the sun icon in the tray to open or close a slider for each detected monitor. The default shortcuts are Ctrl+Alt+- (down), Ctrl+Alt++ (up), and Ctrl+Alt+* (next monitor). The numeric keypad works for all three; on a US keyboard the main-keyboard alternatives are -, Shift+=, and Shift+8. Edit these shortcuts in Settings if needed.
 
-A tap or mouse-wheel step changes one point. Hold a shortcut for at least 250 ms for repeated five-point steps; after two seconds the steps are ten points. The chain button in Settings or the slider panel applies the same brightness to all detected monitors. A built-in laptop display uses Windows brightness control and has no input shortcuts. With multiple displays, hover over one or press * to move the active highlight. Small or rapid slider changes respond immediately; larger jumps animate smoothly. The panel slides away after five seconds without interaction and stays open while the pointer is over it.
+An isolated tap or mouse-wheel step changes one point. The third rapid tap (less than 167 ms apart) moves to the next five-point mark. Holding a brightness key reaches the next five-point mark after 300 ms, then advances by ten-point marks from 500 ms onward. Linking brightness first raises lower displays to the highest displayed percentage, then shows one shared slider. A built-in laptop display uses Windows brightness control and has no input shortcuts. With multiple displays, hover over one or press * to move the active highlight. Small or rapid slider changes respond immediately; larger jumps animate smoothly. The panel slides away after five seconds without interaction and stays open while the pointer is over it.
+
+The circled M beside each monitor identifies the main Windows display. Click another M to make that display the main one. Settings also offers a Main display checkbox for the selected monitor; choose another monitor, check it, and save to apply the change. The checkbox is disabled when Windows does not permit selecting that display.
 
 The connected-input checkboxes are manual. They do not detect whether the other computer is powered on.
 

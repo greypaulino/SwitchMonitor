@@ -7,10 +7,10 @@
 #Include brightness.ahk
 ;@Ahk2Exe-SetName SwitchMonitor
 ;@Ahk2Exe-SetDescription SwitchMonitor - monitor input shortcuts
-;@Ahk2Exe-SetVersion 1.8.0.0
+;@Ahk2Exe-SetVersion 1.9.0.0
 ;@Ahk2Exe-SetOrigFilename SwitchMonitor.exe
 
-APP_VERSION := '1.8.0'
+APP_VERSION := '1.9.0'
 
 monitorTool := FileExist(A_ScriptDir '\ControlMyMonitor\ControlMyMonitor.exe')
     ? A_ScriptDir '\ControlMyMonitor\ControlMyMonitor.exe'
@@ -51,6 +51,7 @@ brightnessPending := Map()
 brightnessSelectedKey := ''
 brightnessLinked := false
 brightnessPanel := 0
+brightnessPainting := 0
 brightnessLastActivity := 0
 brightnessPointerDown := false
 brightnessHotkeyActive := false
@@ -1031,7 +1032,18 @@ SetSolidButtonImage(control, path, size := 14, offsetX := 0, offsetY := 0) {
     }
     if !buttonImages.Has(path) {
         output := Buffer(A_PtrSize, 0)
-        if DllCall('gdiplus\GdipLoadImageFromFile', 'WStr', path, 'Ptr', output, 'UInt') != 0
+        if RegExMatch(path, 'i)\.ico$') {
+            handle := DllCall('user32\LoadImageW', 'Ptr', 0, 'Str', path,
+                'UInt', 1, 'Int', 32, 'Int', 32, 'UInt', 0x10, 'Ptr')
+            if !handle
+                throw Error('Could not load icon: ' path)
+            try status := DllCall('gdiplus\GdipCreateBitmapFromHICON',
+                'Ptr', handle, 'Ptr', output, 'UInt')
+            finally DllCall('user32\DestroyIcon', 'Ptr', handle)
+        } else
+            status := DllCall('gdiplus\GdipLoadImageFromFile',
+                'WStr', path, 'Ptr', output, 'UInt')
+        if status != 0
             throw Error('Could not load icon: ' path)
         buttonImages[path] := NumGet(output, 0, 'Ptr')
     }
@@ -1821,10 +1833,26 @@ SelfTest() {
     if !IsNewerVersion('1.3.0', '1.2.0') || IsNewerVersion('1.2.0', '1.2.0')
         || IsNewerVersion('1.1.9', '1.2.0') || !IsNewerVersion('1.2.1', '1.2.0')
         throw Error('Update version comparison failed.')
-    if BrightnessStep(0) != 1 || BrightnessStep(249) != 1 || BrightnessStep(250) != 5
-        || BrightnessStep(1999) != 5 || BrightnessStep(2000) != 10
+    if BrightnessStep(0) != 1 || BrightnessStep(299) != 1 || BrightnessStep(300) != 5
+        || BrightnessStep(499) != 5 || BrightnessStep(500) != 10
         || BrightnessClamp(-5) != 0 || BrightnessClamp(105) != 100
         throw Error('Brightness repeat steps or limits failed.')
+    if BrightnessSteppedTarget(1, 1, 5) != 5
+        || BrightnessSteppedTarget(5, 1, 5) != 10
+        || BrightnessSteppedTarget(3, 1, 10) != 10
+        || BrightnessSteppedTarget(10, 1, 10) != 20
+        || BrightnessSteppedTarget(19, -1, 5) != 15
+        || BrightnessSteppedTarget(10, -1, 10) != 0
+        throw Error('Brightness steps did not align with five- and ten-point marks.')
+    firstTap := BrightnessTapPlan(0, 1000, 0, 1, 0)
+    secondTap := BrightnessTapPlan(1000, 1100, 1, 1, firstTap.streak)
+    thirdTap := BrightnessTapPlan(1100, 1200, 1, 1, secondTap.streak)
+    fourthTap := BrightnessTapPlan(1200, 1300, 1, 1, thirdTap.streak)
+    slowerTap := BrightnessTapPlan(1300, 1500, 1, 1, fourthTap.streak)
+    if firstTap.step != 1 || secondTap.step != 1 || thirdTap.step != 5
+        || fourthTap.step != 5 || slowerTap.step != 1
+        || BrightnessTapPlan(1300, 1400, 1, -1, fourthTap.streak).step != 1
+        throw Error('Rapid brightness taps did not start at the third press or reset on slower/reversed presses.')
     if BrightnessValueAtX(12, 7, 343, 9) != 0
         || BrightnessValueAtX(175, 7, 343, 9) != 50
         || BrightnessValueAtX(339, 7, 343, 9) != 100
@@ -1857,6 +1885,9 @@ SelfTest() {
     if MonitorListChanged(monitors, monitors) || !MonitorListChanged(monitors, [monitors[1]])
         || !MonitorListChanged(monitors, [monitors[2], monitors[1]])
         throw Error('Monitor topology comparison failed.')
+    if BrightnessDirectDisplayName(monitors[1]) != '\\.\DISPLAY1'
+        || BrightnessDirectDisplayName(monitors[2]) != '\\.\DISPLAY2'
+        throw Error('Brightness monitor names did not map to Windows displays.')
     backupSource := A_Temp '\SwitchMonitor-settings-source-' DllCall('GetCurrentProcessId') '.ini'
     backupTarget := A_Temp '\SwitchMonitor-settings-backup-' DllCall('GetCurrentProcessId') '.ini'
     try {
@@ -2018,6 +2049,28 @@ SelfTest() {
         if !IsObject(brightnessPanel) || !brightnessPanel.linkedView
             || brightnessPanel.rows[monitors[2].key].slider.Visible
             throw Error('Linked brightness did not show a single slider.')
+        panelRegion := DllCall('gdi32\CreateRectRgn', 'Int', 0, 'Int', 0,
+            'Int', 0, 'Int', 0, 'Ptr')
+        try {
+            if !DllCall('user32\GetWindowRgn', 'Ptr', brightnessPanel.window.Hwnd,
+                'Ptr', panelRegion, 'Int')
+                || DllCall('gdi32\PtInRegion', 'Ptr', panelRegion,
+                    'Int', 0, 'Int', 0, 'Int')
+                || !DllCall('gdi32\PtInRegion', 'Ptr', panelRegion,
+                    'Int', 0, 'Int', brightnessPanel.height - 1, 'Int')
+                throw Error('The brightness panel did not round only its upper corners.')
+        } finally DllCall('gdi32\DeleteObject', 'Ptr', panelRegion)
+        brightnessPanel.rows[monitors[1].key].label.GetPos(, &firstNameY, , &firstNameHeight)
+        brightnessPanel.rows[monitors[1].key].number.GetPos(, &firstPercentY, , &firstPercentHeight)
+        brightnessPanel.rows[monitors[1].key].mainButton.GetPos(, &firstMainY)
+        brightnessPanel.rows[monitors[2].key].label.GetPos(, &secondNameY)
+        brightnessPanel.rows[monitors[2].key].mainButton.GetPos(, &secondMainY)
+        brightnessPanel.link.GetPos(, &linkY)
+        if firstNameY != firstPercentY || firstNameY != firstMainY
+            || firstNameY != linkY || secondNameY != secondMainY
+            || firstNameHeight != firstPercentHeight
+            || brightnessPanel.height != 128
+            throw Error('Linked brightness header and main-display icons are misaligned.')
         if brightnessPanel.highlightKey != monitors[1].key
             throw Error('Linked brightness did not show the shared highlight.')
         brightnessPanel.rows[monitors[2].key].label.GetPos(, &lowerNameY, , &lowerNameHeight)
@@ -2033,18 +2086,41 @@ SelfTest() {
         BrightnessRefreshPanel()
         if brightnessPanel.linkedView || !brightnessPanel.rows[monitors[2].key].slider.Visible
             throw Error('Independent brightness did not restore both sliders.')
+        brightnessPanel.rows[monitors[1].key].label.GetPos(, &separateNameY, , &separateNameHeight)
+        brightnessPanel.rows[monitors[1].key].number.GetPos(, &separatePercentY, , &separatePercentHeight)
+        brightnessPanel.rows[monitors[1].key].mainButton.GetPos(, &separateMainY)
+        brightnessPanel.settings.GetPos(, &separateSettingsY)
+        if separateNameY != separatePercentY || separateNameY != separateMainY
+            || separateNameY != separateSettingsY
+            || separateNameHeight != separatePercentHeight
+            throw Error('Independent brightness header is misaligned.')
         if brightnessPanel.highlightKey != monitors[1].key
             throw Error('Brightness highlight did not select the first monitor.')
         NextBrightnessMonitor()
         if brightnessSelectedKey != monitors[2].key
             || brightnessPanel.highlightKey != monitors[2].key
             throw Error('Brightness highlight did not follow the next monitor.')
+        BrightnessApply(monitors[1], 27)
+        BrightnessApply(monitors[2], 53)
         BrightnessPanelStarAction(true)
         if !brightnessLinked || !brightnessPanel.linkedView
             throw Error('Holding star did not link monitor brightness.')
+        if brightnessValues[monitors[1].key] != 53
+            || brightnessValues[monitors[2].key] != 53
+            || brightnessPanel.rows[monitors[1].key].slider.Value != 53
+            throw Error('Linking brightness did not select and apply the highest slider value.')
         BrightnessPanelStarAction(true)
         if brightnessLinked || brightnessPanel.linkedView
             throw Error('Holding star did not unlink monitor brightness.')
+        BrightnessApply(monitors[1], 68)
+        BrightnessApply(monitors[2], 42)
+        BrightnessPanelStarAction(true)
+        if !brightnessLinked || brightnessValues[monitors[2].key] != 68
+            || brightnessPanel.rows[monitors[1].key].slider.Value != 68
+            throw Error('Linking brightness did not keep the first monitor higher value.')
+        BrightnessPanelStarAction(true)
+        BrightnessApply(monitors[1], 42)
+        BrightnessApply(monitors[2], 42)
         BrightnessPanelStarAction(false)
         if brightnessSelectedKey != monitors[1].key
             throw Error('Tapping star did not select the next monitor.')
@@ -2071,6 +2147,14 @@ SelfTest() {
         if brightnessValues[monitors[2].key] != 45 || secondSlider.Value != 45
             || brightnessPending.Get(monitors[2].key, -1) != 45
             throw Error('Brightness shortcut did not update the slider before the hardware write.')
+        BrightnessFlushSlider()
+        BrightnessQueueValue(monitors[2].key, 55, 'immediate')
+        if secondSlider.Value != 55 || secondSlider._display != 55
+            throw Error('Rapid keyboard brightness did not move immediately.')
+        BrightnessQueueValue(monitors[2].key, 65, 'animated')
+        if secondSlider.Value != 65 || secondSlider._display >= 65
+            throw Error('Sustained keyboard brightness did not animate its ten-point jump.')
+        BrightnessQueueValue(monitors[2].key, 45, 'immediate')
         BrightnessFlushSlider()
         BrightnessPanelDigit('7')
         BrightnessPanelDigit('5')

@@ -295,15 +295,15 @@ BrightnessHotkey(direction, kind) {
         trigger := '='
     brightnessHotkeyActive := true
     try {
-        started := A_TickCount
-        BrightnessAdjust(direction * BrightnessStep(0))
-        nextTick := started + 250
+        started := BrightnessKeyboardStart(direction)
+        nextTick := started + 300
         while GetKeyState(trigger, 'P') {
             now := A_TickCount
             if now >= nextTick {
                 duration := now - started
-                BrightnessAdjust(direction * BrightnessStep(duration))
-                nextTick := now + (duration >= 2000 ? 130 : 190)
+                sustained := duration >= 500
+                BrightnessAdjust(direction, BrightnessStep(duration), sustained)
+                nextTick := now + (sustained ? 230 : 200)
             }
             Sleep(20)
         }
@@ -329,15 +329,15 @@ BrightnessPanelKey(direction, trigger) {
         return
     brightnessHotkeyActive := true
     try {
-        started := A_TickCount
-        BrightnessAdjust(direction)
-        nextTick := started + 250
+        started := BrightnessKeyboardStart(direction)
+        nextTick := started + 300
         while GetKeyState(trigger, 'P') && BrightnessPanelHotkeysActive() {
             now := A_TickCount
             if now >= nextTick {
                 duration := now - started
-                BrightnessAdjust(direction * BrightnessStep(duration))
-                nextTick := now + (duration >= 2000 ? 130 : 190)
+                sustained := duration >= 500
+                BrightnessAdjust(direction, BrightnessStep(duration), sustained)
+                nextTick := now + (sustained ? 230 : 200)
             }
             Sleep(20)
         }
@@ -535,23 +535,45 @@ Esc::BrightnessPanelEscape()
 #HotIf
 
 BrightnessStep(heldMs) {
-    return heldMs >= 2000 ? 10 : heldMs >= 250 ? 5 : 1
+    return heldMs >= 500 ? 10 : heldMs >= 300 ? 5 : 1
+}
+
+BrightnessKeyboardStart(direction) {
+    static lastPress := 0, lastDirection := 0, rapidStreak := 0
+    now := A_TickCount
+    plan := BrightnessTapPlan(lastPress, now, lastDirection, direction, rapidStreak)
+    rapidStreak := plan.streak
+    lastPress := now
+    lastDirection := direction
+    BrightnessAdjust(direction, plan.step)
+    return now
+}
+
+BrightnessTapPlan(previousTick, now, previousDirection, direction, streak) {
+    nextStreak := previousTick && now - previousTick < 167
+        && previousDirection = direction ? streak + 1 : 0
+    return {streak: nextStreak, step: nextStreak >= 2 ? 5 : 1}
 }
 
 BrightnessClamp(value) {
     return Max(0, Min(100, Round(value)))
 }
 
-BrightnessAdjust(amount) {
+BrightnessSteppedTarget(current, direction, step) {
+    if step <= 1
+        return BrightnessClamp(current + direction)
+    if direction > 0
+        return BrightnessClamp((Floor(current / step) + 1) * step)
+    return BrightnessClamp((Ceil(current / step) - 1) * step)
+}
+
+BrightnessAdjust(direction, step := 1, animate := false) {
     global brightnessValues
-    static lastKeyboardTick := 0
-    now := A_TickCount
-    rapid := lastKeyboardTick && now - lastKeyboardTick < 330
-    lastKeyboardTick := now
     monitor := BrightnessActiveMonitor()
     current := brightnessValues.Has(monitor.key) ? brightnessValues[monitor.key] : BrightnessRead(monitor)
     ShowBrightnessPanel()
-    BrightnessQueueValue(monitor.key, current + amount, rapid)
+    BrightnessQueueValue(monitor.key, BrightnessSteppedTarget(current, direction, step),
+        animate ? 'animated' : 'immediate')
 }
 
 BrightnessPanelMonitorName(monitor) {
@@ -559,6 +581,140 @@ BrightnessPanelMonitorName(monitor) {
     if IsInternalDisplay(monitor) || RegExMatch(name, 'i)\bMonitor$')
         return name
     return name ' Monitor'
+}
+
+BrightnessDirectDisplayName(monitor) {
+    prefix := '\\.\DISPLAY'
+    if SubStr(monitor.device, 1, StrLen(prefix)) = prefix {
+        separator := InStr(monitor.device, '\', false, StrLen(prefix) + 1)
+        return separator ? SubStr(monitor.device, 1, separator - 1) : monitor.device
+    }
+    return ''
+}
+
+BrightnessDisplayName(monitor) {
+    global availableMonitors
+    direct := BrightnessDirectDisplayName(monitor)
+    if direct != ''
+        return direct
+    ; WMI-only built-in panels have no GDI name. Match only an unambiguous
+    ; display that is not already represented by another detected monitor.
+    if !IsInternalDisplay(monitor)
+        return ''
+    used := Map()
+    for other in availableMonitors {
+        if other.key = monitor.key
+            continue
+        name := BrightnessDirectDisplayName(other)
+        if name != ''
+            used[StrUpper(name)] := true
+    }
+    unmatched := []
+    Loop MonitorGetCount() {
+        name := MonitorGetName(A_Index)
+        if !used.Has(StrUpper(name))
+            unmatched.Push(name)
+    }
+    return unmatched.Length = 1 ? unmatched[1] : ''
+}
+
+BrightnessMainDisplayName() {
+    try {
+        return MonitorGetName(MonitorGetPrimary())
+    } catch {
+        return ''
+    }
+}
+
+BrightnessCanBeMainDisplay(monitor) {
+    if MonitorGetCount() < 2
+        return false
+    target := BrightnessDisplayName(monitor)
+    if target = ''
+        return false
+    Loop MonitorGetCount() {
+        name := MonitorGetName(A_Index)
+        if StrUpper(name) != StrUpper(target)
+            continue
+        mode := Buffer(220, 0)
+        NumPut('UShort', mode.Size, mode, 68)
+        return !!DllCall('user32\EnumDisplaySettingsExW', 'Str', name,
+            'Int', -1, 'Ptr', mode, 'UInt', 0, 'Int')
+    }
+    return false
+}
+
+BrightnessSetMainDisplay(key) {
+    global brightnessPanel, brightnessLastActivity
+    monitor := BrightnessMonitor(key)
+    if !IsObject(monitor)
+        return {ok: false, error: 'The selected monitor is unavailable.'}
+    targetName := BrightnessDisplayName(monitor)
+    if targetName = ''
+        return {ok: false, error: 'Windows cannot identify this display.'}
+    if StrUpper(targetName) = StrUpper(BrightnessMainDisplayName())
+        return {ok: true, error: ''}
+    if !BrightnessCanBeMainDisplay(monitor)
+        return {ok: false, error: 'This display cannot become the main display in the current mode.'}
+    outcome := {ok: true, error: ''}
+    try {
+        displays := []
+        target := 0
+        Loop MonitorGetCount() {
+            name := MonitorGetName(A_Index)
+            mode := Buffer(220, 0)
+            NumPut('UShort', mode.Size, mode, 68)
+            if !DllCall('user32\EnumDisplaySettingsExW', 'Str', name,
+                'Int', -1, 'Ptr', mode, 'UInt', 0, 'Int')
+                throw Error('Windows could not read the display layout.')
+            display := {name: name, mode: mode,
+                x: NumGet(mode, 76, 'Int'), y: NumGet(mode, 80, 'Int')}
+            displays.Push(display)
+            if StrUpper(name) = StrUpper(targetName)
+                target := display
+        }
+        if !IsObject(target)
+            throw Error('The selected display is not active in Windows.')
+        for display in displays {
+            NumPut('UInt', 0x20, display.mode, 72) ; DM_POSITION
+            NumPut('Int', display.x - target.x, display.mode, 76)
+            NumPut('Int', display.y - target.y, display.mode, 80)
+            flags := 0x10000001 ; CDS_NORESET | CDS_UPDATEREGISTRY
+            if display.name = targetName
+                flags |= 0x10 ; CDS_SET_PRIMARY
+            result := DllCall('user32\ChangeDisplaySettingsExW', 'Str', display.name,
+                'Ptr', display.mode, 'Ptr', 0, 'UInt', flags, 'Ptr', 0, 'Int')
+            if result != 0
+                throw Error('Windows rejected the display change (' result ').')
+        }
+        result := DllCall('user32\ChangeDisplaySettingsExW', 'Ptr', 0,
+            'Ptr', 0, 'Ptr', 0, 'UInt', 0, 'Ptr', 0, 'Int')
+        if result != 0
+            throw Error('Windows could not apply the display change (' result ').')
+        if StrUpper(BrightnessMainDisplayName()) != StrUpper(targetName)
+            throw Error('Windows did not confirm the new main display.')
+        brightnessLastActivity := A_TickCount
+        if IsObject(brightnessPanel) {
+            MonitorGetWorkArea(MonitorGetPrimary(), &left, &top, &right, &bottom)
+            brightnessPanel.x := Max(left + 8, right - 408)
+            brightnessPanel.bottom := bottom
+            brightnessPanel.y := Max(top, bottom - brightnessPanel.height)
+            brightnessPanel.window.Show('NoActivate x' brightnessPanel.x
+                ' y' brightnessPanel.y)
+            brightnessPanel.status.Value := ''
+            BrightnessUpdateHighlight(brightnessPanel)
+        }
+    } catch as err {
+        outcome := {ok: false, error: err.Message}
+        FileAppend(FormatTime(, 'yyyy-MM-dd HH:mm:ss')
+            ' main display ERROR=' err.Message '`n', AppPath('monitor-switch.log'), 'UTF-8')
+        if IsObject(brightnessPanel) {
+            brightnessPanel.status.Value := err.Message
+            BrightnessInvalidateStatus(brightnessPanel)
+        }
+    }
+    BrightnessInvalidateMainIcons(brightnessPanel)
+    return outcome
 }
 
 NextBrightnessMonitor(*) {
@@ -596,6 +752,8 @@ ToggleBrightnessLink(*) {
         return
     BrightnessCancelTypedValue()
     BrightnessFlushSlider()
+    if !brightnessLinked && !BrightnessMatchLinkedValues()
+        return
     brightnessLinked := !brightnessLinked
     IniWrite(brightnessLinked ? '1' : '0', settingsFile, 'Brightness', 'Linked')
     brightnessLastActivity := A_TickCount
@@ -605,6 +763,35 @@ ToggleBrightnessLink(*) {
         BrightnessBeginTransition(brightnessPanel, 1)
         SetTimer(BrightnessHideCheck, 30)
     }
+}
+
+BrightnessMatchLinkedValues() {
+    global availableMonitors, brightnessValues, brightnessPanel
+    highest := -1
+    targets := []
+    for monitor in availableMonitors {
+        key := monitor.key
+        if IsObject(brightnessPanel) && brightnessPanel.rows.Has(key)
+            if !brightnessPanel.rows[key].slider.Enabled
+                continue
+        if !brightnessValues.Has(key) {
+            try brightnessValues[key] := BrightnessRead(monitor)
+            catch
+                continue
+        }
+        targets.Push(monitor)
+        highest := Max(highest, brightnessValues[key])
+    }
+    if highest < 0
+        return false
+    for monitor in targets {
+        key := monitor.key
+        if !brightnessValues.Has(key) || brightnessValues[key] >= highest
+            continue
+        if !BrightnessApply(monitor, highest)
+            return false
+    }
+    return true
 }
 
 ShowBrightnessPanel(*) {
@@ -644,8 +831,14 @@ ShowBrightnessPanel(*) {
     rows := Map()
     for index, monitor in availableMonitors {
         y := 12 + (index - 1) * 96
-        label := window.AddText('x27 y' y ' w142 h22 cFFFFFF BackgroundTrans +0x200', BrightnessPanelMonitorName(monitor))
-        number := window.AddText('x165 y' y ' w70 h20 Center cFFFFFF BackgroundTrans', '')
+        label := window.AddText('x27 y' y ' w155 h22 cFFFFFF BackgroundTrans +0x200', BrightnessPanelMonitorName(monitor))
+        number := window.AddText('x218 y' y ' w70 h20 Center cFFFFFF BackgroundTrans', '')
+        mainButton := 0
+        if availableMonitors.Length > 1 {
+            mainButton := SolidButton(window, 'x185 y' y ' w20 h20', '', '2D2D2D')
+            SetSolidButtonImage(mainButton, A_ScriptDir '\main-display.ico', 13, -1, -2)
+            mainButton.Visible := false
+        }
         label.Visible := false
         number.Visible := false
         slider := BrightnessBar(window, 16, y + 50, 368, 24)
@@ -655,13 +848,16 @@ ShowBrightnessPanel(*) {
         } catch {
             slider.Enabled := false
         }
+        displayName := BrightnessDisplayName(monitor)
         rows[monitor.key] := {label: label, number: number, numberShown: true,
-            slider: slider, name: BrightnessPanelMonitorName(monitor)}
+            slider: slider, name: BrightnessPanelMonitorName(monitor),
+            displayName: displayName, mainAvailable: displayName != '',
+            mainButton: mainButton}
     }
     height := 110 + (availableMonitors.Length - 1) * 96
     status := {Value: ''}
     brightnessPanel := {window: window, rows: rows, status: status,
-        link: linkButton, settings: settingsButton, iconHover: '',
+        link: linkButton, settings: settingsButton, iconHover: '', mainHoverKey: '',
         x: 0, y: 0, bottom: 0, height: height, linkedView: false, updating: false,
         dragKey: '', numericActive: false, numericInput: '', numericKey: '',
         numericOverlayKey: '', numericOpacity: 0, numericSeconds: 2,
@@ -681,6 +877,7 @@ ShowBrightnessPanel(*) {
     brightnessPanel.bottom := bottom
     window.Show('Hide x' x ' y' brightnessPanel.y ' w400 h' height)
     ApplyDarkWindow(window)
+    BrightnessSetVisibleRegion(brightnessPanel, height)
     DllCall('user32\RedrawWindow', 'Ptr', window.Hwnd, 'Ptr', 0, 'Ptr', 0, 'UInt', 0x85)
     if uiTest {
         brightnessPanel.progress := 1
@@ -710,22 +907,26 @@ BrightnessSuppressErase(dc, lParam, msg, hwnd) {
 }
 
 BrightnessPaint(wParam, lParam, msg, hwnd) {
-    global brightnessPanel
-    if !IsObject(brightnessPanel) || hwnd != brightnessPanel.window.Hwnd
+    global brightnessPanel, brightnessPainting
+    panel := brightnessPanel
+    if !IsObject(panel) || hwnd != panel.window.Hwnd
         return
-    paint := Buffer(A_PtrSize = 8 ? 72 : 64, 0)
-    dc := DllCall('user32\BeginPaint', 'Ptr', hwnd, 'Ptr', paint, 'Ptr')
-    if dc {
-        BrightnessDrawPanel(dc, hwnd)
-        DllCall('user32\EndPaint', 'Ptr', hwnd, 'Ptr', paint)
+    brightnessPainting += 1
+    try {
+        paint := Buffer(A_PtrSize = 8 ? 72 : 64, 0)
+        dc := DllCall('user32\BeginPaint', 'Ptr', hwnd, 'Ptr', paint, 'Ptr')
+        if dc {
+            try BrightnessDrawPanel(dc, hwnd, panel)
+            finally DllCall('user32\EndPaint', 'Ptr', hwnd, 'Ptr', paint)
+        }
+    } finally {
+        brightnessPainting -= 1
     }
     return 0
 }
 
-BrightnessDrawPanel(dc, hwnd) {
-    global brightnessPanel, availableMonitors
-    if !IsObject(brightnessPanel)
-        return
+BrightnessDrawPanel(dc, hwnd, panel) {
+    global availableMonitors
     bounds := Buffer(16, 0)
     DllCall('user32\GetClientRect', 'Ptr', hwnd, 'Ptr', bounds)
     width := NumGet(bounds, 8, 'Int')
@@ -739,25 +940,24 @@ BrightnessDrawPanel(dc, hwnd) {
     brush := DllCall('gdi32\CreateSolidBrush', 'UInt', GdiColor('1E1E1E'), 'Ptr')
     DllCall('user32\FillRect', 'Ptr', canvas, 'Ptr', bounds, 'Ptr', brush)
     DllCall('gdi32\DeleteObject', 'Ptr', brush)
-    if availableMonitors.Length > 1 && !brightnessPanel.linkedView
-        && brightnessPanel.highlightKey != '' {
-        shape := BrightnessHighlightBounds(brightnessPanel,
-            brightnessPanel.highlightKey)
-        top := brightnessPanel.HasOwnProp('highlightTop')
-            ? brightnessPanel.highlightTop : shape.top
-        bottom := brightnessPanel.HasOwnProp('highlightBottom')
-            ? brightnessPanel.highlightBottom : shape.bottom
+    if availableMonitors.Length > 1 && !panel.linkedView
+        && panel.highlightKey != '' {
+        shape := BrightnessHighlightBounds(panel, panel.highlightKey)
+        top := panel.HasOwnProp('highlightTop')
+            ? panel.highlightTop : shape.top
+        bottom := panel.HasOwnProp('highlightBottom')
+            ? panel.highlightBottom : shape.bottom
         BrightnessDrawShape(canvas, 8, Round(top), 392, Round(bottom), '292929')
     }
-    BrightnessDrawPanelRows(canvas, hwnd, brightnessPanel, width, height)
-    if brightnessPanel.status.Value != ''
-        BrightnessDrawStatus(canvas, brightnessPanel)
-    if brightnessPanel.numericOpacity > 0 && brightnessPanel.numericOverlayKey != ''
-        BrightnessDrawTypingOverlay(canvas, brightnessPanel, width, height)
-    BrightnessDrawPanelIcons(canvas, brightnessPanel)
+    BrightnessDrawPanelRows(canvas, hwnd, panel, width, height)
+    if panel.status.Value != ''
+        BrightnessDrawStatus(canvas, panel)
+    if panel.numericOpacity > 0 && panel.numericOverlayKey != ''
+        BrightnessDrawTypingOverlay(canvas, panel, width, height)
+    BrightnessDrawPanelIcons(canvas, panel)
     if oldBitmap {
-        opacity := brightnessPanel.HasOwnProp('contentOpacity')
-            ? brightnessPanel.contentOpacity : 255
+        opacity := panel.HasOwnProp('contentOpacity')
+            ? panel.contentOpacity : 255
         if opacity < 255 {
             backgroundDc := DllCall('gdi32\CreateCompatibleDC', 'Ptr', dc, 'Ptr')
             backgroundBitmap := backgroundDc ? DllCall('gdi32\CreateCompatibleBitmap',
@@ -1055,7 +1255,7 @@ BrightnessRadialGlowLayer(dc, info, width, height, centerX, centerY, radius) {
             if distanceSquared >= radiusSquared
                 continue
             fade := 1 - Sqrt(distanceSquared) / radius
-            alpha := Round(56 * fade * fade * (3 - 2 * fade))
+            alpha := Round(26 * fade * fade * (3 - 2 * fade))
             NumPut('UInt', (alpha << 24) | (alpha << 16)
                 | (alpha << 8) | alpha, bits + 4 * (y * width + x))
         }
@@ -1128,13 +1328,27 @@ BrightnessDrawPanelIcons(dc, panel) {
     if DllCall('gdiplus\GdipCreateFromHDC', 'Ptr', dc, 'Ptr*', &graphics) != 0
         return
     DllCall('gdiplus\GdipSetInterpolationMode', 'Ptr', graphics, 'Int', 7)
+    if availableMonitors.Length > 1 {
+        primary := StrUpper(BrightnessMainDisplayName())
+        for monitor in availableMonitors {
+            row := panel.rows[monitor.key]
+            if !row.mainAvailable
+                continue
+            style := buttonStyles[row.mainButton.Hwnd]
+            active := StrUpper(row.displayName) = primary
+            style.iconOpacity := active ? 1.0 : 0.42
+            style.iconHoverOpacity := active ? 1.0 : 0.65
+            BrightnessDrawPanelIcon(graphics, panel, row.mainButton, 'main',
+                panel.mainHoverKey = monitor.key)
+        }
+    }
     if availableMonitors.Length > 1
         BrightnessDrawPanelIcon(graphics, panel, panel.link, 'link')
     BrightnessDrawPanelIcon(graphics, panel, panel.settings, 'settings')
     DllCall('gdiplus\GdipDeleteGraphics', 'Ptr', graphics)
 }
 
-BrightnessDrawPanelIcon(graphics, panel, control, kind) {
+BrightnessDrawPanelIcon(graphics, panel, control, kind, hovered := false) {
     global buttonStyles
     if !buttonStyles.Has(control.Hwnd)
         return
@@ -1144,8 +1358,10 @@ BrightnessDrawPanelIcon(graphics, panel, control, kind) {
     rect := BrightnessControlRect(panel.window.Hwnd, control.Hwnd)
     size := style.iconSize
     x := NumGet(rect, 0, 'Int') + Round((20 - size) / 2) + style.iconOffsetX
-    y := NumGet(rect, 4, 'Int') + Round((20 - size) / 2) + style.iconOffsetY
-    opacity := panel.iconHover = kind ? style.iconHoverOpacity : style.iconOpacity
+    y := NumGet(rect, 4, 'Int') + Round((20 - size) / 2)
+        + style.iconOffsetY + 2
+    opacity := hovered || panel.iconHover = kind
+        ? style.iconHoverOpacity : style.iconOpacity
     attributes := 0
     if opacity < 1 {
         matrix := Buffer(100, 0)
@@ -1379,26 +1595,30 @@ BrightnessApplyLayout(panel, linked) {
     panel.linkedView := linked
     first := panel.rows[availableMonitors[1].key]
     if panel.linkedView {
-        first.slider.Move(16, 54 + 28 * availableMonitors.Length)
+        first.slider.Move(16, 24 + 28 * availableMonitors.Length)
     } else {
         first.slider.Move(16, 62)
     }
     for index, monitor in availableMonitors {
         row := panel.rows[monitor.key]
-        row.number.Move(165)
+        row.number.Move(218)
         if panel.linkedView {
-            y := 42 + (index - 1) * 28
-            row.label.Move(27, y, 340, 26)
+            y := 12 + (index - 1) * 28
+            row.label.Move(27, y, 155, 20)
+            if IsObject(row.mainButton)
+                row.mainButton.Move(185, y)
             row.numberShown := index = 1
             row.slider.Visible := index = 1
         } else {
             y := 12 + (index - 1) * 96
-            row.label.Move(27, y, 142, 22)
+            row.label.Move(27, y, 155, 20)
+            if IsObject(row.mainButton)
+                row.mainButton.Move(185, y)
             row.numberShown := true
             row.slider.Visible := true
         }
     }
-    panel.height := panel.linkedView ? 102 + 28 * availableMonitors.Length
+    panel.height := panel.linkedView ? 72 + 28 * availableMonitors.Length
         : 110 + (availableMonitors.Length - 1) * 96
     if panel.highlightKey != '' {
         shape := BrightnessHighlightBounds(panel, panel.highlightKey)
@@ -1463,7 +1683,7 @@ BrightnessSliderChanged(key, control, *) {
     BrightnessQueueValue(key, control.Value)
 }
 
-BrightnessQueueValue(key, value, immediate := false) {
+BrightnessQueueValue(key, value, motion := 'auto') {
     global brightnessPanel, brightnessSelectedKey, brightnessLastActivity, brightnessPending, brightnessValues, brightnessLinked, availableMonitors
     BrightnessCancelTypedValue()
     value := BrightnessClamp(value)
@@ -1472,11 +1692,16 @@ BrightnessQueueValue(key, value, immediate := false) {
     if brightnessLinked
         for monitor in availableMonitors
             brightnessValues[monitor.key] := value
-    if immediate && IsObject(brightnessPanel)
+    if motion != 'auto' && IsObject(brightnessPanel)
         for monitor in availableMonitors
             if (monitor.key = key || brightnessLinked)
-                && brightnessPanel.rows.Has(monitor.key)
-                brightnessPanel.rows[monitor.key].slider.SetImmediate(value)
+                && brightnessPanel.rows.Has(monitor.key) {
+                slider := brightnessPanel.rows[monitor.key].slider
+                if motion = 'animated'
+                    slider.SetAnimated(value)
+                else
+                    slider.SetImmediate(value)
+            }
     BrightnessRefreshPanel()
     brightnessPending[key] := value
     brightnessLastActivity := A_TickCount
@@ -1500,6 +1725,11 @@ BrightnessSliderMouseDown(wParam, lParam, msg, hwnd) {
     }
     point := BrightnessPointerClient(panel.window.Hwnd)
     if hwnd = panel.window.Hwnd {
+        mainKey := BrightnessMainIconAtPoint(panel, point)
+        if mainKey != '' {
+            BrightnessSetMainDisplay(mainKey)
+            return 0
+        }
         icon := BrightnessIconAtPoint(panel, point)
         if icon = 'link' {
             ToggleBrightnessLink()
@@ -1537,6 +1767,12 @@ BrightnessBarMouseMove(wParam, lParam, msg, hwnd) {
         return
     if brightnessPanel.dragKey = '' {
         point := BrightnessPointerClient(brightnessPanel.window.Hwnd)
+        mainKey := hwnd = brightnessPanel.window.Hwnd
+            ? BrightnessMainIconAtPoint(brightnessPanel, point) : ''
+        if brightnessPanel.mainHoverKey != mainKey {
+            brightnessPanel.mainHoverKey := mainKey
+            BrightnessInvalidateMainIcons(brightnessPanel)
+        }
         icon := hwnd = brightnessPanel.window.Hwnd
             ? BrightnessIconAtPoint(brightnessPanel, point) : ''
         if brightnessPanel.iconHover != icon {
@@ -1576,6 +1812,32 @@ BrightnessIconAtPoint(panel, point) {
     if point.x >= 351 && point.x < 375
         return 'settings'
     return ''
+}
+
+BrightnessMainIconAtPoint(panel, point) {
+    global availableMonitors
+    if availableMonitors.Length < 2 || point.x < 183 || point.x >= 205
+        return ''
+    for monitor in availableMonitors {
+        row := panel.rows[monitor.key]
+        if !row.mainAvailable
+            continue
+        rect := BrightnessControlRect(panel.window.Hwnd, row.label.Hwnd)
+        y := NumGet(rect, 4, 'Int')
+        if point.y >= y && point.y < y + 21
+            return monitor.key
+    }
+    return ''
+}
+
+BrightnessInvalidateMainIcons(panel) {
+    if !IsObject(panel) || !panel.bottom
+        return
+    rect := Buffer(16, 0)
+    NumPut('Int', 181, rect, 0), NumPut('Int', 8, rect, 4)
+    NumPut('Int', 207, rect, 8), NumPut('Int', panel.height - 8, rect, 12)
+    DllCall('user32\RedrawWindow', 'Ptr', panel.window.Hwnd, 'Ptr', rect,
+        'Ptr', 0, 'UInt', 0x105)
 }
 
 BrightnessInvalidateIconArea(panel) {
@@ -1668,6 +1930,7 @@ class BrightnessBar {
         this._display := 0
         this._from := 0
         this._started := 0
+        this._duration := 150
         this._visible := true
         this.control := window.AddText('x' x ' y' y ' w' width ' h' height
             ' BackgroundTrans +0x100', '')
@@ -1715,6 +1978,7 @@ class BrightnessBar {
             }
             this._from := this._display
             this._started := now
+            this._duration := 150
             SetTimer(BrightnessAnimateBars, 15)
         }
     }
@@ -1737,8 +2001,18 @@ class BrightnessBar {
         this._display := this._value
         this.Render(true)
     }
+    SetAnimated(value) {
+        value := BrightnessClamp(value)
+        if value = this._value && this._display = value
+            return
+        this._value := value
+        this._from := this._display
+        this._started := A_TickCount
+        this._duration := 220
+        SetTimer(BrightnessAnimateBars, 15)
+    }
     Step() {
-        elapsed := Min(1, Max(0, (A_TickCount - this._started) / 150))
+        elapsed := Min(1, Max(0, (A_TickCount - this._started) / this._duration))
         eased := elapsed * elapsed * (3 - 2 * elapsed)
         this._display := this._from + (this._value - this._from) * eased
         this.Render()
@@ -1933,11 +2207,7 @@ BrightnessRenderFrame(panel, progress) {
     visibleHeight := Max(1, Round(panel.height * progress))
     expanding := visibleHeight > (panel.HasOwnProp('paintedHeight') ? panel.paintedHeight : 0)
     panel.y := panel.bottom - visibleHeight
-    region := DllCall('gdi32\CreateRectRgn', 'Int', 0, 'Int', 0,
-        'Int', 400, 'Int', visibleHeight, 'Ptr')
-    if region && !DllCall('user32\SetWindowRgn', 'Ptr', panel.window.Hwnd,
-        'Ptr', region, 'Int', 1)
-        DllCall('gdi32\DeleteObject', 'Ptr', region)
+    BrightnessSetVisibleRegion(panel, visibleHeight)
     DllCall('user32\SetWindowPos', 'Ptr', panel.window.Hwnd, 'Ptr', 0,
         'Int', panel.x, 'Int', panel.y, 'Int', 0, 'Int', 0, 'UInt', 0x15)
     if expanding {
@@ -1948,8 +2218,33 @@ BrightnessRenderFrame(panel, progress) {
     panel.paintedHeight := visibleHeight
 }
 
+BrightnessSetVisibleRegion(panel, visibleHeight) {
+    region := DllCall('gdi32\CreateRectRgn', 'Int', 0, 'Int', 0,
+        'Int', 400, 'Int', visibleHeight, 'Ptr')
+    if !region
+        return
+    if visibleHeight >= 18 {
+        ; Extend the rounded region below the visible edge so only the
+        ; two upper corners are rounded; the taskbar edge stays square.
+        rounded := DllCall('gdi32\CreateRoundRectRgn', 'Int', 0, 'Int', 0,
+            'Int', 400, 'Int', visibleHeight + 12, 'Int', 24, 'Int', 24, 'Ptr')
+        if rounded {
+            DllCall('gdi32\CombineRgn', 'Ptr', region, 'Ptr', region,
+                'Ptr', rounded, 'Int', 1)
+            DllCall('gdi32\DeleteObject', 'Ptr', rounded)
+        }
+    }
+    if !DllCall('user32\SetWindowRgn', 'Ptr', panel.window.Hwnd,
+        'Ptr', region, 'Int', 1)
+        DllCall('gdi32\DeleteObject', 'Ptr', region)
+}
+
 BrightnessDestroyPanel() {
-    global brightnessPanel
+    global brightnessPanel, brightnessPainting
+    if brightnessPainting {
+        SetTimer(BrightnessDestroyPanel, -15)
+        return
+    }
     SetTimer(BrightnessAnimate, 0)
     SetTimer(BrightnessHideCheck, 0)
     SetTimer(BrightnessCommitTypedValue, 0)
