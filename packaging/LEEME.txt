@@ -1,6 +1,6 @@
-SWITCHMONITOR 1.9.0
+SWITCHMONITOR 1.10.0
 
-Install SwitchMonitor-Setup-1.9.0.exe on each computer. AutoHotkey and ControlMyMonitor are included. The portable ZIP can be extracted and run without installation.
+Install SwitchMonitor-Setup-1.10.0.exe on each computer. AutoHotkey and ControlMyMonitor are included. The portable ZIP can be extracted and run without installation.
 
 FIRST USE
 1. Select a monitor when more than one is detected.
@@ -19,6 +19,10 @@ Click the sun icon in the tray to open or close a slider for each detected monit
 An isolated tap or mouse-wheel step changes one point. The third rapid tap (less than 167 ms apart) moves to the next five-point mark. Holding a brightness key reaches the next five-point mark after 300 ms, then advances by ten-point marks from 500 ms onward. Linking brightness first raises lower displays to the highest displayed percentage, then shows one shared slider. A built-in laptop display uses Windows brightness control and has no input shortcuts. With multiple displays, hover over one or press * to move the active highlight. Small or rapid slider changes respond immediately; larger jumps animate smoothly. The panel slides away after five seconds without interaction and stays open while the pointer is over it.
 
 The circled M beside each monitor identifies the main Windows display. Click another M to make that display the main one. Settings also offers a Main display checkbox for the selected monitor; choose another monitor, check it, and save to apply the change. The checkbox is disabled when Windows does not permit selecting that display.
+
+With the brightness panel open, hold M for more than half a second to change the main display. Type a brightness percentage from 0 to 100; one second after the last digit it is applied, or press Enter to apply immediately. Escape cancels the entry. The numeric overlay shows the value without a countdown.
+
+In an extended desktop, cycling the main monitor to another computer moves the main display to a remaining screen. When that monitor returns to its original input, SwitchMonitor restores its main-display status. This does not run in PC screen only or Second screen only modes.
 
 The connected-input checkboxes are manual. They do not detect whether the other computer is powered on.
 

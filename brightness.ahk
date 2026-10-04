@@ -367,6 +367,36 @@ BrightnessPanelStarAction(held) {
         NextBrightnessMonitor()
 }
 
+BrightnessPanelMainKey(*) {
+    if !BrightnessPanelHotkeysActive()
+        return
+    released := KeyWait('m', 'T0.5')
+    if !released && BrightnessPanelHotkeysActive()
+        BrightnessSwitchMainDisplay()
+    if !released
+        KeyWait('m')
+}
+
+BrightnessSwitchMainDisplay() {
+    global availableMonitors, brightnessSelectedKey
+    if availableMonitors.Length < 2
+        return
+    current := StrUpper(BrightnessMainDisplayName())
+    selected := BrightnessMonitor(brightnessSelectedKey)
+    if IsObject(selected) && BrightnessCanBeMainDisplay(selected)
+        && StrUpper(BrightnessDisplayName(selected)) != current {
+        BrightnessSetMainDisplay(selected.key)
+        return
+    }
+    for monitor in availableMonitors {
+        if BrightnessCanBeMainDisplay(monitor)
+            && StrUpper(BrightnessDisplayName(monitor)) != current {
+            BrightnessSetMainDisplay(monitor.key)
+            return
+        }
+    }
+}
+
 BrightnessPanelDigit(digit) {
     global brightnessPanel, brightnessSelectedKey, brightnessLastActivity, availableMonitors
     if !BrightnessPanelHotkeysActive()
@@ -386,16 +416,13 @@ BrightnessPanelDigit(digit) {
     panel.numericKey := key
     panel.numericOverlayKey := key
     panel.numericInput := candidate
-    panel.numericLastDigit := A_TickCount
-    panel.numericSeconds := 2
     row.number.Value := 'Listening'
     if firstDigit
         BrightnessStartTypingFade(panel, 1)
     else
         BrightnessInvalidateTypingArea(panel)
     brightnessLastActivity := A_TickCount
-    SetTimer(BrightnessCommitTypedValue, -2000)
-    SetTimer(BrightnessTypingCountdown, 80)
+    SetTimer(BrightnessCommitTypedValue, -1000)
 }
 
 BrightnessCommitTypedValue(*) {
@@ -406,9 +433,7 @@ BrightnessCommitTypedValue(*) {
     key := panel.numericKey
     value := panel.numericInput + 0
     panel.numericActive := false
-    panel.numericSeconds := 0
     SetTimer(BrightnessCommitTypedValue, 0)
-    SetTimer(BrightnessTypingCountdown, 0)
     BrightnessQueueValue(key, value)
     BrightnessStartTypingFade(panel, 0)
     return true
@@ -420,25 +445,10 @@ BrightnessCancelTypedValue() {
         return false
     brightnessPanel.numericActive := false
     SetTimer(BrightnessCommitTypedValue, 0)
-    SetTimer(BrightnessTypingCountdown, 0)
     brightnessLastActivity := A_TickCount
     BrightnessRefreshPanel()
     BrightnessStartTypingFade(brightnessPanel, 0)
     return true
-}
-
-BrightnessTypingCountdown(*) {
-    global brightnessPanel
-    if !IsObject(brightnessPanel) || !brightnessPanel.numericActive {
-        SetTimer(BrightnessTypingCountdown, 0)
-        return
-    }
-    seconds := Max(1, Ceil((2000 - (A_TickCount
-        - brightnessPanel.numericLastDigit)) / 1000))
-    if seconds != brightnessPanel.numericSeconds {
-        brightnessPanel.numericSeconds := seconds
-        BrightnessInvalidateTypingArea(brightnessPanel)
-    }
 }
 
 BrightnessStartTypingFade(panel, target) {
@@ -506,6 +516,7 @@ BrightnessPanelEscape(*) {
 NumpadAdd::BrightnessPanelKey(1, 'NumpadAdd')
 NumpadSub::BrightnessPanelKey(-1, 'NumpadSub')
 NumpadMult::BrightnessPanelNext('NumpadMult')
+m::BrightnessPanelMainKey()
 +=::BrightnessPanelKey(1, '=')
 -::BrightnessPanelKey(-1, '-')
 +8::BrightnessPanelNext('8')
@@ -644,6 +655,77 @@ BrightnessCanBeMainDisplay(monitor) {
     return false
 }
 
+BrightnessApplyPrimaryDisplay(targetName, validateOnly := false) {
+    ; CCD applies the complete layout atomically. Staging each display through
+    ; ChangeDisplaySettingsEx can fail on AMD when returning to the old primary.
+    displays := Map()
+    Loop MonitorGetCount() {
+        name := MonitorGetName(A_Index)
+        mode := Buffer(220, 0)
+        NumPut('UShort', mode.Size, mode, 68)
+        if !DllCall('user32\EnumDisplaySettingsExW', 'Str', name,
+            'Int', -1, 'Ptr', mode, 'UInt', 0, 'Int')
+            throw Error('Windows could not read the display layout.')
+        displays[NumGet(mode, 76, 'Int') ',' NumGet(mode, 80, 'Int')] :=
+            {name: name, x: NumGet(mode, 76, 'Int'), y: NumGet(mode, 80, 'Int')}
+    }
+    target := 0
+    for _, display in displays {
+        if StrUpper(display.name) = StrUpper(targetName) {
+            target := display
+            break
+        }
+    }
+    if !IsObject(target)
+        throw Error('The selected display is not active in Windows.')
+
+    Loop 3 {
+        pathCount := 0, modeCount := 0
+        result := DllCall('user32\GetDisplayConfigBufferSizes', 'UInt', 2,
+            'UInt*', &pathCount, 'UInt*', &modeCount, 'Int')
+        if result != 0
+            throw Error('Windows could not read the active display paths (' result ').')
+        paths := Buffer(pathCount * 72, 0)
+        modes := Buffer(modeCount * 64, 0)
+        result := DllCall('user32\QueryDisplayConfig', 'UInt', 2,
+            'UInt*', &pathCount, 'Ptr', paths, 'UInt*', &modeCount,
+            'Ptr', modes, 'Ptr', 0, 'Int')
+        if result != 122
+            break
+    }
+    if result != 0
+        throw Error('Windows could not query the display layout (' result ').')
+    seen := Map()
+    Loop pathCount {
+        modeIndex := NumGet(paths, (A_Index - 1) * 72 + 12, 'UInt')
+        if modeIndex >= modeCount || NumGet(modes, modeIndex * 64, 'UInt') != 1
+            throw Error('Windows returned a display path without a source mode.')
+        offset := modeIndex * 64
+        x := NumGet(modes, offset + 28, 'Int')
+        y := NumGet(modes, offset + 32, 'Int')
+        position := x ',' y
+        if !displays.Has(position)
+            throw Error('Windows returned a display position that does not match the active monitors.')
+        if !seen.Has(modeIndex) {
+            NumPut('Int', x - target.x, modes, offset + 28)
+            NumPut('Int', y - target.y, modes, offset + 32)
+            seen[modeIndex] := true
+        }
+    }
+    if seen.Count != displays.Count
+        throw Error('The active displays cannot be matched to the Windows display paths.')
+    result := DllCall('user32\SetDisplayConfig', 'UInt', pathCount, 'Ptr', paths,
+        'UInt', modeCount, 'Ptr', modes, 'UInt', 0x60, 'Int') ; VALIDATE | SUPPLIED
+    if result != 0
+        throw Error('Windows rejected the new display layout (' result ').')
+    if validateOnly
+        return
+    result := DllCall('user32\SetDisplayConfig', 'UInt', pathCount, 'Ptr', paths,
+        'UInt', modeCount, 'Ptr', modes, 'UInt', 0x2A0, 'Int') ; APPLY | SUPPLIED | SAVE
+    if result != 0
+        throw Error('Windows could not apply the main display (' result ').')
+}
+
 BrightnessSetMainDisplay(key) {
     global brightnessPanel, brightnessLastActivity
     monitor := BrightnessMonitor(key)
@@ -658,39 +740,7 @@ BrightnessSetMainDisplay(key) {
         return {ok: false, error: 'This display cannot become the main display in the current mode.'}
     outcome := {ok: true, error: ''}
     try {
-        displays := []
-        target := 0
-        Loop MonitorGetCount() {
-            name := MonitorGetName(A_Index)
-            mode := Buffer(220, 0)
-            NumPut('UShort', mode.Size, mode, 68)
-            if !DllCall('user32\EnumDisplaySettingsExW', 'Str', name,
-                'Int', -1, 'Ptr', mode, 'UInt', 0, 'Int')
-                throw Error('Windows could not read the display layout.')
-            display := {name: name, mode: mode,
-                x: NumGet(mode, 76, 'Int'), y: NumGet(mode, 80, 'Int')}
-            displays.Push(display)
-            if StrUpper(name) = StrUpper(targetName)
-                target := display
-        }
-        if !IsObject(target)
-            throw Error('The selected display is not active in Windows.')
-        for display in displays {
-            NumPut('UInt', 0x20, display.mode, 72) ; DM_POSITION
-            NumPut('Int', display.x - target.x, display.mode, 76)
-            NumPut('Int', display.y - target.y, display.mode, 80)
-            flags := 0x10000001 ; CDS_NORESET | CDS_UPDATEREGISTRY
-            if display.name = targetName
-                flags |= 0x10 ; CDS_SET_PRIMARY
-            result := DllCall('user32\ChangeDisplaySettingsExW', 'Str', display.name,
-                'Ptr', display.mode, 'Ptr', 0, 'UInt', flags, 'Ptr', 0, 'Int')
-            if result != 0
-                throw Error('Windows rejected the display change (' result ').')
-        }
-        result := DllCall('user32\ChangeDisplaySettingsExW', 'Ptr', 0,
-            'Ptr', 0, 'Ptr', 0, 'UInt', 0, 'Ptr', 0, 'Int')
-        if result != 0
-            throw Error('Windows could not apply the display change (' result ').')
+        BrightnessApplyPrimaryDisplay(targetName)
         if StrUpper(BrightnessMainDisplayName()) != StrUpper(targetName)
             throw Error('Windows did not confirm the new main display.')
         brightnessLastActivity := A_TickCount
@@ -860,8 +910,7 @@ ShowBrightnessPanel(*) {
         link: linkButton, settings: settingsButton, iconHover: '', mainHoverKey: '',
         x: 0, y: 0, bottom: 0, height: height, linkedView: false, updating: false,
         dragKey: '', numericActive: false, numericInput: '', numericKey: '',
-        numericOverlayKey: '', numericOpacity: 0, numericSeconds: 2,
-        numericLastDigit: 0,
+        numericOverlayKey: '', numericOpacity: 0,
         progress: 0, target: 1, from: 0, started: A_TickCount, duration: 280,
         fadeEntrance: !uiTest, highlightKey: '', highlightedKey: '', highlightLinked: false}
     for _, row in rows
@@ -1084,7 +1133,6 @@ BrightnessDrawTypingOverlay(dc, panel, width, height) {
 }
 
 BrightnessDrawTypingText(dc, panel, area) {
-    global availableMonitors
     height := area.bottom - area.top
     digitBottom := area.top + Round(height * 0.77)
     digitRect := Buffer(16, 0)
@@ -1105,22 +1153,6 @@ BrightnessDrawTypingText(dc, panel, area) {
         DllCall('gdi32\SelectObject', 'Ptr', dc, 'Ptr', oldFont)
     if largeFont
         DllCall('gdi32\DeleteObject', 'Ptr', largeFont)
-    countdownRect := Buffer(16, 0)
-    NumPut('Int', 8, countdownRect, 0)
-    NumPut('Int', digitBottom - 2, countdownRect, 4)
-    NumPut('Int', 392, countdownRect, 8)
-    NumPut('Int', area.bottom - 3, countdownRect, 12)
-    label := panel.rows[availableMonitors[1].key].label
-    font := DllCall('user32\SendMessageW', 'Ptr', label.Hwnd,
-        'UInt', 0x31, 'Ptr', 0, 'Ptr', 0, 'Ptr')
-    oldFont := font ? DllCall('gdi32\SelectObject', 'Ptr', dc, 'Ptr', font,
-        'Ptr') : 0
-    DllCall('gdi32\SetTextColor', 'Ptr', dc, 'UInt', GdiColor('D4D4D4'))
-    DllCall('user32\DrawTextW', 'Ptr', dc, 'Str',
-        'Catching: ' panel.numericSeconds ' sec',
-        'Int', -1, 'Ptr', countdownRect, 'UInt', 0x825)
-    if oldFont
-        DllCall('gdi32\SelectObject', 'Ptr', dc, 'Ptr', oldFont)
 }
 
 BrightnessDrawGlowText(dc, value, rect, area) {
@@ -2248,7 +2280,6 @@ BrightnessDestroyPanel() {
     SetTimer(BrightnessAnimate, 0)
     SetTimer(BrightnessHideCheck, 0)
     SetTimer(BrightnessCommitTypedValue, 0)
-    SetTimer(BrightnessTypingCountdown, 0)
     SetTimer(BrightnessAnimateTyping, 0)
     if !IsObject(brightnessPanel)
         return

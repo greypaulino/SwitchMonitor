@@ -7,10 +7,10 @@
 #Include brightness.ahk
 ;@Ahk2Exe-SetName SwitchMonitor
 ;@Ahk2Exe-SetDescription SwitchMonitor - monitor input shortcuts
-;@Ahk2Exe-SetVersion 1.9.0.0
+;@Ahk2Exe-SetVersion 1.10.0.0
 ;@Ahk2Exe-SetOrigFilename SwitchMonitor.exe
 
-APP_VERSION := '1.9.0'
+APP_VERSION := '1.10.0'
 
 monitorTool := FileExist(A_ScriptDir '\ControlMyMonitor\ControlMyMonitor.exe')
     ? A_ScriptDir '\ControlMyMonitor\ControlMyMonitor.exe'
@@ -41,6 +41,10 @@ buttonImages := Map()
 gdipToken := 0
 buttonHoverHwnd := 0
 cycleEntries := []
+inputReturnHistory := Map()
+inputReturnFile := AppPath('inputReturn.ini')
+mainDisplayHandoff := 0
+mainDisplayHandoffFile := AppPath('mainDisplayHandoff.ini')
 wizardCycle := 0
 returnWatches := Map()
 returnWatchEnabled := false
@@ -130,6 +134,8 @@ try {
     }
     returnWatchEnabled := true
     availableMonitors := monitors
+    LoadInputReturnHistory()
+    LoadMainDisplayHandoff()
     LoadGlobalShortcuts()
     brightnessLinked := IniRead(settingsFile, 'Brightness', 'Linked', '0') = '1'
     LoadMonitorProfiles()
@@ -155,6 +161,8 @@ try {
     SetTimer(CheckForUpdatesSilent, -5000)
     SetTimer(CheckForUpdatesSilent, 21600000)
     SetTimer(PollMonitorTopology, 30000)
+    if IsObject(mainDisplayHandoff)
+        SetTimer(CheckMainDisplayHandoff, 1500)
 } catch as err {
     if A_Args.Length {
         FileAppend('FAIL: ' err.Message '`n' err.Stack '`n', AppPath('monitor-test-errors.txt'), 'UTF-8')
@@ -247,7 +255,7 @@ SelectTrayMonitor(key, *) {
 }
 
 BuildTrayMenu() {
-    global availableMonitors, selectedMonitor, globalShortcuts, availableUpdate
+    global availableMonitors, selectedMonitor, globalShortcuts, availableUpdate, inputReturnHistory
     A_TrayMenu.Delete()
     if availableMonitors.Length = 1 {
         title := MonitorLabel(availableMonitors[1])
@@ -265,6 +273,9 @@ BuildTrayMenu() {
     A_TrayMenu.Add('Settings', OpenLearning)
     A_TrayMenu.Add('Shortcuts', ShowAssignments)
     A_TrayMenu.Add('Next input (' ShortcutLabel(globalShortcuts['cycle']) ')', NextConnected)
+    A_TrayMenu.Add('Return to previous input', ReturnPreviousInput)
+    if !IsObject(selectedMonitor) || !inputReturnHistory.Has(selectedMonitor.key)
+        A_TrayMenu.Disable('Return to previous input')
     A_TrayMenu.Add('Brightness control', ShowBrightnessPanel)
     if availableUpdate.version != ''
         A_TrayMenu.Add('Update available! Click to install', InstallAvailableUpdate)
@@ -543,7 +554,7 @@ CompatibilityInfo(monitor) {
 TransportLabel(monitor) {
     return IsInternalDisplay(monitor) ? 'Windows WMI / built-in brightness'
         : UsesIntelLg(monitor) ? 'Intel CUI direct / LG F4 (source 0x50)'
-        : UsesAmdLg(monitor) ? 'AMD ADL2 / LG F4 (source 0x50), experimental'
+        : UsesAmdLg(monitor) ? 'AMD ADL2 / VCP 60 (LG F4 fallback), experimental'
         : IsLg29wk600(monitor) ? 'LG: no GPU transport implemented' : 'ControlMyMonitor / VCP 60'
 }
 
@@ -595,6 +606,14 @@ ExportDiagnostic(*) {
 }
 
 ReadMonitorInput(monitor, quiet := false) {
+    if UsesAmdLg(monitor) {
+        try return AmdLgDdc(monitor.device, monitor.name).ReadInput()
+        catch as err {
+            if !quiet
+                FileAppend('AMD input read: ' err.Message '`n', AppPath('monitor-switch.log'), 'UTF-8')
+            return 0
+        }
+    }
     if !UsesIntelLg(monitor)
         return TryReadInput(monitor.target)
     try {
@@ -683,11 +702,6 @@ ControlStatus(monitor) {
     compatibility := CompatibilityInfo(monitor)
     if !compatibility.supported
         return {current: 0, message: compatibility.message}
-    if UsesAmdLg(monitor) {
-        try api := AmdLgDdc(monitor.device, monitor.name)
-        catch as err
-            return {current: 0, message: err.Message}
-    }
     current := ReadMonitorInput(monitor)
     if current
         return {current: current, message: 'Monitor control is available from this computer. Reported input: ' PortName(current) '.'}
@@ -1198,7 +1212,8 @@ SelectSlot(monitorKey, slot, *) {
     SendInputCommand(profile.monitor, profile.assignments[slot])
 }
 
-SendInputCommand(monitor, entry, knownBefore := -1, showMessage := true) {
+SendInputCommand(monitor, entry, knownBefore := -1, showMessage := true,
+    armReturnWatch := true) {
     global monitorTool, busy
     if busy
         return
@@ -1208,12 +1223,47 @@ SendInputCommand(monitor, entry, knownBefore := -1, showMessage := true) {
         if !compatibility.supported
             throw Error(compatibility.message)
         if UsesIntelLg(monitor) || UsesAmdLg(monitor) {
+            amd := UsesAmdLg(monitor)
             previous := UsesIntelLg(monitor) ? (knownBefore >= 0 ? knownBefore : ReadMonitorInput(monitor)) : 0
-            api := UsesIntelLg(monitor) ? IntelLegacyDdc(monitor.device) : AmdLgDdc(monitor.device, monitor.name)
-            api.SendLgInput(entry.code)
-            ArmReturnSync(monitor, previous, entry.code)
+            api := amd ? AmdLgDdc(monitor.device, monitor.name) : IntelLegacyDdc(monitor.device)
+            if amd {
+                ; On the tested AMD LG, F4 was acknowledged but left the input
+                ; on DP. VCP 60 initiated the physical switch, so send it first.
+                api.SendStandardInput(entry.code)
+                ; ADL_OK means the driver accepted the packet, not that the LG
+                ; actually selected the requested input. Read back when possible.
+                observed := 0
+                Loop 2 {
+                    Sleep(A_Index = 1 ? 280 : 350)
+                    try observed := api.ReadInput()
+                    catch as err {
+                        FileAppend('AMD input confirmation: ' err.Message '`n',
+                            AppPath('monitor-switch.log'), 'UTF-8')
+                        observed := 0
+                    }
+                    if observed = entry.code || !observed
+                        break
+                }
+                if observed && observed != entry.code {
+                    api.SendLgInput(entry.code)
+                    Sleep(400)
+                    try observed := api.ReadInput()
+                    catch as err {
+                        FileAppend('AMD LG F4 confirmation: ' err.Message '`n',
+                            AppPath('monitor-switch.log'), 'UTF-8')
+                        observed := 0
+                    }
+                    if observed && observed != entry.code
+                        throw Error('AMD accepted both input commands, but the LG still reports '
+                            PortName(observed) '. The input did not change.')
+                }
+            } else
+                api.SendLgInput(entry.code)
+            if armReturnWatch
+                ArmReturnSync(monitor, previous, entry.code)
+            RememberInputSwitch(monitor, knownBefore >= 0 ? knownBefore : previous, entry.code)
             FileAppend(FormatTime(, 'yyyy-MM-dd HH:mm:ss') ' target=' monitor.target ' transport=' TransportLabel(monitor) ' requested='
-                entry.code ' lg-value=' Format('{:02X}', IntelLegacyDdc.LgValue(entry.code)) ' accepted=1 physical=unverified`n',
+                entry.code ' accepted=1 physical=unverified`n',
                 AppPath('monitor-switch.log'), 'UTF-8')
             if showMessage {
                 ToolTip('Requested ' entry.name '. Check the image and the monitor input menu.')
@@ -1225,6 +1275,7 @@ SendInputCommand(monitor, entry, knownBefore := -1, showMessage := true) {
         code := RunWait('"' monitorTool '" /SetValue "' monitor.target '" 60 ' entry.code, , 'Hide')
         if code != 0
             throw Error('ControlMyMonitor returned code ' code '.')
+        RememberInputSwitch(monitor, before, entry.code)
         Sleep(1200)
         after := TryReadInput(monitor.target)
         FileAppend(FormatTime(, 'yyyy-MM-dd HH:mm:ss') ' target=' monitor.target ' requested=' entry.code ' before=' before ' after=' after ' exit=' code '`n', AppPath('monitor-switch.log'), 'UTF-8')
@@ -1240,12 +1291,101 @@ SendInputCommand(monitor, entry, knownBefore := -1, showMessage := true) {
         FileAppend(FormatTime(, 'yyyy-MM-dd HH:mm:ss') ' target=' monitor.target ' requested=' entry.code
             ' ERROR=' err.Message '`n', AppPath('monitor-switch.log'), 'UTF-8')
         if showMessage {
-            detail := IsLg29wk600(monitor) ? '`n`nWhen another computer is shown, the LG may stop responding on this connection. Return to this computer with the monitor joystick. You can export diagnostics from Settings.' : ''
+            detail := IsLg29wk600(monitor)
+                ? '`n`nThis PC cannot send DDC/CI commands while the LG shows another input. Switch back from the displayed PC if its monitor control is configured, or use the monitor joystick. The previous input remains saved for a later attempt.'
+                : ''
             MsgBox(err.Message detail, 'Switch input', 'Iconx')
         }
         return false
     } finally {
         busy := false
+    }
+}
+
+RememberInputSwitch(monitor, previous, requested) {
+    global inputReturnHistory, inputReturnFile, selectedMonitor
+    if previous <= 0 || previous = requested
+        return
+    inputReturnHistory[monitor.key] := {origin: previous, destination: requested,
+        tick: A_TickCount}
+    try {
+        IniWrite(previous ',' requested, inputReturnFile, monitor.key, 'Switch')
+    } catch as err {
+        FileAppend('Could not save the previous monitor input: ' err.Message '`n',
+            AppPath('monitor-switch.log'), 'UTF-8')
+    }
+    if IsObject(selectedMonitor) && selectedMonitor.key = monitor.key
+        BuildTrayMenu()
+}
+
+LoadInputReturnHistory() {
+    global inputReturnHistory, inputReturnFile, availableMonitors
+    inputReturnHistory.Clear()
+    for monitor in availableMonitors {
+        pair := StrSplit(IniRead(inputReturnFile, monitor.key, 'Switch', ''), ',')
+        if pair.Length != 2
+            continue
+        origin := pair[1]
+        destination := pair[2]
+        if RegExMatch(origin, '^\d+$') && RegExMatch(destination, '^\d+$')
+            && Integer(origin) > 0 && Integer(destination) > 0
+            && Integer(origin) != Integer(destination)
+            inputReturnHistory[monitor.key] := {origin: Integer(origin),
+                destination: Integer(destination), tick: -10001}
+    }
+}
+
+ForgetInputSwitch(monitor) {
+    global inputReturnHistory, inputReturnFile
+    if inputReturnHistory.Has(monitor.key)
+        inputReturnHistory.Delete(monitor.key)
+    try IniDelete(inputReturnFile, monitor.key)
+    BuildTrayMenu()
+}
+
+FindReturnInput(rows, current, history) {
+    if !IsObject(history) || current != history.destination
+        return 0
+    for row in rows
+        if row.code = history.origin && row.connected
+            return row
+    return 0
+}
+
+ChooseCycleInput(rows, current, history, now) {
+    recent := IsObject(history) && now - history.tick >= 0
+        && now - history.tick <= 10000
+    returning := recent ? FindReturnInput(rows, current, history) : 0
+    return IsObject(returning)
+        ? {entry: returning, reversing: true}
+        : {entry: FindNextConnected(rows, current), reversing: false}
+}
+
+ReturnPreviousInput(*) {
+    global selectedMonitor, cycleEntries, inputReturnHistory, busy, wizardOpen
+    if busy || wizardOpen || !IsObject(selectedMonitor)
+        return
+    monitor := selectedMonitor
+    if !inputReturnHistory.Has(monitor.key)
+        return
+    history := inputReturnHistory[monitor.key]
+    result := ControlStatus(monitor)
+    previous := FindReturnInput(cycleEntries,
+        result.current ? result.current : history.destination, history)
+    if !IsObject(previous) {
+        ForgetInputSwitch(monitor)
+        MsgBox('The input changed or the previous port is no longer marked as connected. No command was sent.',
+            'Return to previous input', 'Icon!')
+        return
+    }
+    if !result.current
+        FileAppend(FormatTime(, 'yyyy-MM-dd HH:mm:ss') ' input return with unreadable current source target='
+            monitor.target ' destination=' history.destination ' origin=' history.origin '`n',
+            AppPath('monitor-switch.log'), 'UTF-8')
+    if SendInputCommand(monitor, previous, result.current ? result.current : history.destination,
+        true, !!result.current) {
+        MarkMainDisplayDeparted(monitor.key)
+        ForgetInputSwitch(monitor)
     }
 }
 
@@ -1293,8 +1433,170 @@ NextConnected(*) {
     }
 }
 
+MainDisplayHasExtendedLayout() {
+    if MonitorGetCount() < 2
+        return false
+    positions := Map()
+    Loop MonitorGetCount() {
+        mode := Buffer(220, 0)
+        NumPut('UShort', mode.Size, mode, 68)
+        if !DllCall('user32\EnumDisplaySettingsExW', 'Str', MonitorGetName(A_Index),
+            'Int', -1, 'Ptr', mode, 'UInt', 0, 'Int')
+            return false
+        position := NumGet(mode, 76, 'Int') ',' NumGet(mode, 80, 'Int')
+        if positions.Has(position)
+            return false ; Cloned screens do not have independent desktops.
+        positions[position] := true
+    }
+    return positions.Count > 1
+}
+
+SaveMainDisplayHandoff() {
+    global mainDisplayHandoff, mainDisplayHandoffFile
+    try {
+        if IsObject(mainDisplayHandoff) {
+            pending := mainDisplayHandoff
+            IniWrite(pending.monitorKey '|' pending.alternateKey '|'
+                pending.originInput '|' (pending.departed ? '1' : '0'),
+                mainDisplayHandoffFile, 'Return', 'State')
+        } else if FileExist(mainDisplayHandoffFile)
+            IniDelete(mainDisplayHandoffFile, 'Return')
+    } catch as err {
+        FileAppend('Main display handoff state: ' err.Message '`n',
+            AppPath('monitor-switch.log'), 'UTF-8')
+    }
+}
+
+LoadMainDisplayHandoff() {
+    global mainDisplayHandoff, mainDisplayHandoffFile
+    parts := StrSplit(IniRead(mainDisplayHandoffFile, 'Return', 'State', ''), '|')
+    if parts.Length != 4 || !RegExMatch(parts[3], '^\d+$')
+        return
+    mainDisplayHandoff := {monitorKey: parts[1], alternateKey: parts[2],
+        originInput: Integer(parts[3]), departed: parts[4] = '1',
+        lastRestoreAttempt: 0, misses: 0, matches: 0}
+}
+
+ClearMainDisplayHandoff() {
+    global mainDisplayHandoff
+    mainDisplayHandoff := 0
+    SetTimer(CheckMainDisplayHandoff, 0)
+    SaveMainDisplayHandoff()
+}
+
+MarkMainDisplayDeparted(key := '') {
+    global mainDisplayHandoff
+    if !IsObject(mainDisplayHandoff) || mainDisplayHandoff.departed
+        || (key != '' && mainDisplayHandoff.monitorKey != key)
+        return
+    mainDisplayHandoff.departed := true
+    SaveMainDisplayHandoff()
+}
+
+PrepareMainDisplayHandoff(monitor, originInput) {
+    global availableMonitors, mainDisplayHandoff
+    if IsObject(mainDisplayHandoff) || originInput <= 0
+        || !MainDisplayHasExtendedLayout()
+        return false
+    displayName := BrightnessDisplayName(monitor)
+    if displayName = '' || StrUpper(displayName) != StrUpper(BrightnessMainDisplayName())
+        return false
+    for alternate in availableMonitors {
+        if alternate.key = monitor.key || !BrightnessCanBeMainDisplay(alternate)
+            continue
+        result := BrightnessSetMainDisplay(alternate.key)
+        if !result.ok
+            throw Error('The input was not changed because Windows could not move the main display: '
+                result.error)
+        mainDisplayHandoff := {monitorKey: monitor.key,
+            alternateKey: alternate.key, originInput: originInput,
+            departed: false, lastRestoreAttempt: 0, misses: 0, matches: 0}
+        SaveMainDisplayHandoff()
+        SetTimer(CheckMainDisplayHandoff, 1500)
+        Sleep(150) ; Let the graphics driver settle before sending DDC/CI.
+        return true
+    }
+    return false
+}
+
+AbortMainDisplayHandoff(monitor) {
+    global mainDisplayHandoff
+    if !IsObject(mainDisplayHandoff) || mainDisplayHandoff.monitorKey != monitor.key
+        return
+    result := BrightnessSetMainDisplay(monitor.key)
+    if result.ok
+        ClearMainDisplayHandoff()
+    else {
+        MarkMainDisplayDeparted(monitor.key)
+        FileAppend('Main display handoff rollback: ' result.error '`n',
+            AppPath('monitor-switch.log'), 'UTF-8')
+    }
+}
+
+CheckMainDisplayHandoff(*) {
+    try CheckMainDisplayHandoffCore()
+    catch as err {
+        FileAppend('Main display return check: ' err.Message '`n',
+            AppPath('monitor-switch.log'), 'UTF-8')
+    }
+}
+
+CheckMainDisplayHandoffCore() {
+    global mainDisplayHandoff, busy, availableMonitors
+    if !IsObject(mainDisplayHandoff) || busy
+        return
+    pending := mainDisplayHandoff
+    if !MainDisplayHasExtendedLayout() {
+        if MonitorGetCount() < 2
+            MarkMainDisplayDeparted()
+        return
+    }
+    original := BrightnessMonitor(pending.monitorKey)
+    alternate := BrightnessMonitor(pending.alternateKey)
+    if !IsObject(original) {
+        MarkMainDisplayDeparted()
+        return
+    }
+    if !IsObject(alternate)
+        return
+    primary := StrUpper(BrightnessMainDisplayName())
+    if primary = StrUpper(BrightnessDisplayName(original)) {
+        ClearMainDisplayHandoff() ; Windows already restored it.
+        return
+    }
+    if primary != StrUpper(BrightnessDisplayName(alternate)) {
+        ClearMainDisplayHandoff() ; Respect a manual change of main display.
+        return
+    }
+    current := ReadMonitorInput(original, true)
+    if current != pending.originInput {
+        pending.matches := 0
+        if current = 0 {
+            pending.misses += 1
+            if pending.misses >= 2
+                MarkMainDisplayDeparted()
+        } else
+            MarkMainDisplayDeparted()
+        return
+    }
+    pending.misses := 0
+    if !pending.departed
+        return
+    pending.matches += 1
+    if pending.matches < 2 || A_TickCount - pending.lastRestoreAttempt < 5000
+        return
+    pending.lastRestoreAttempt := A_TickCount
+    result := BrightnessSetMainDisplay(original.key)
+    if result.ok {
+        FileAppend(FormatTime(, 'yyyy-MM-dd HH:mm:ss')
+            ' main display restored after input return target=' original.target '`n',
+            AppPath('monitor-switch.log'), 'UTF-8')
+        ClearMainDisplayHandoff()
+    }
+}
+
 CycleConnected(monitor, rows) {
-    global busy
+    global busy, inputReturnHistory
     if busy
         return
     busy := true
@@ -1307,16 +1609,39 @@ CycleConnected(monitor, rows) {
             throw Error('Check the connected inputs in Settings, then choose Save and activate.')
         result := ControlStatus(monitor)
         current := result.current
-        if !current
-            throw Error(result.message '`n`nNext input needs the current input. No switch was sent.')
-        next := FindNextConnected(rows, current)
+        history := inputReturnHistory.Has(monitor.key)
+            ? inputReturnHistory[monitor.key] : 0
+        if !current {
+            returning := IsObject(history)
+                ? FindReturnInput(rows, history.destination, history) : 0
+            if !IsObject(returning)
+                throw Error(result.message '`n`nNo previous input is available for a safe return. No switch was sent.')
+            busy := false
+            FileAppend(FormatTime(, 'yyyy-MM-dd HH:mm:ss') ' input cycle return with unreadable current source target='
+                monitor.target ' destination=' history.destination ' origin=' history.origin '`n',
+                AppPath('monitor-switch.log'), 'UTF-8')
+            if SendInputCommand(monitor, returning, history.destination, true, false) {
+                MarkMainDisplayDeparted(monitor.key)
+                ForgetInputSwitch(monitor)
+            }
+            return
+        }
+        choice := ChooseCycleInput(rows, current, history, A_TickCount)
+        next := choice.entry
         if next.code = current {
             ToolTip('No other input is marked as connected.')
             SetTimer(() => ToolTip(), -3000)
             return
         }
         busy := false
-        SendInputCommand(monitor, next, current)
+        handedOff := PrepareMainDisplayHandoff(monitor, current)
+        sent := SendInputCommand(monitor, next, current)
+        if !sent && handedOff
+            AbortMainDisplayHandoff(monitor)
+        if sent && choice.reversing {
+            MarkMainDisplayDeparted(monitor.key)
+            ForgetInputSwitch(monitor)
+        }
     } catch as err {
         MsgBox(err.Message, 'Next connected input', 'Iconx')
     } finally {
@@ -1828,7 +2153,7 @@ ShowAbout(*) {
 SelfTest() {
     global assignments, selectedMonitor, settingsFile, uiTest, availableMonitors, testCodes, monitorProfiles, registeredBindings, returnWatches
     global brightnessValues, brightnessSelectedKey, brightnessLinked, brightnessPanel, brightnessPending
-    global availableUpdate
+    global availableUpdate, inputReturnFile, inputReturnHistory
 
     if !IsNewerVersion('1.3.0', '1.2.0') || IsNewerVersion('1.2.0', '1.2.0')
         || IsNewerVersion('1.1.9', '1.2.0') || !IsNewerVersion('1.2.1', '1.2.0')
@@ -1885,6 +2210,28 @@ SelfTest() {
     if MonitorListChanged(monitors, monitors) || !MonitorListChanged(monitors, [monitors[1]])
         || !MonitorListChanged(monitors, [monitors[2], monitors[1]])
         throw Error('Monitor topology comparison failed.')
+    originalReturnFile := inputReturnFile
+    inputReturnFile := A_Temp '\SwitchMonitor-input-return-test-'
+        DllCall('GetCurrentProcessId') '.ini'
+    try {
+        availableMonitors := monitors
+        RememberInputSwitch(monitors[1], 17, 15)
+        inputReturnHistory.Clear()
+        LoadInputReturnHistory()
+        if !inputReturnHistory.Has(monitors[1].key)
+            || inputReturnHistory[monitors[1].key].origin != 17
+            || inputReturnHistory[monitors[1].key].destination != 15
+            throw Error('The previous input was not restored after restart.')
+        ForgetInputSwitch(monitors[1])
+        if inputReturnHistory.Has(monitors[1].key)
+            || IniRead(inputReturnFile, monitors[1].key, 'Switch', '') != ''
+            throw Error('The previous input was not removed after returning.')
+    } finally {
+        if FileExist(inputReturnFile)
+            FileDelete(inputReturnFile)
+        inputReturnFile := originalReturnFile
+        inputReturnHistory.Clear()
+    }
     if BrightnessDirectDisplayName(monitors[1]) != '\\.\DISPLAY1'
         || BrightnessDirectDisplayName(monitors[2]) != '\\.\DISPLAY2'
         throw Error('Brightness monitor names did not map to Windows displays.')
@@ -1926,15 +2273,15 @@ SelfTest() {
     availableMonitors := monitors
     selectedMonitor := monitors[2]
     BuildTrayMenu()
-    if DllCall('user32\GetMenuItemCount', 'Ptr', A_TrayMenu.Handle, 'Int') != 11
+    if DllCall('user32\GetMenuItemCount', 'Ptr', A_TrayMenu.Handle, 'Int') != 12
         throw Error('Menu de bandeja con varios monitores incorrecto.')
     availableMonitors := [monitors[1]]
     BuildTrayMenu()
-    if DllCall('user32\GetMenuItemCount', 'Ptr', A_TrayMenu.Handle, 'Int') != 10
+    if DllCall('user32\GetMenuItemCount', 'Ptr', A_TrayMenu.Handle, 'Int') != 11
         throw Error('Menu de bandeja con un monitor incorrecto.')
     availableUpdate := {version: '9.9.9', url: 'https://example.invalid/update.exe', hash: ''}
     BuildTrayMenu()
-    if DllCall('user32\GetMenuItemCount', 'Ptr', A_TrayMenu.Handle, 'Int') != 10
+    if DllCall('user32\GetMenuItemCount', 'Ptr', A_TrayMenu.Handle, 'Int') != 11
         throw Error('The update action is missing from the tray menu.')
     availableUpdate := {version: '', url: '', hash: ''}
     BuildTrayMenu()
@@ -2217,6 +2564,29 @@ SelfTest() {
         cycle := MakeRows(testCodes, learned)
         if FindNextConnected(cycle, 17).code != 15 || FindNextConnected(cycle, 15).code != 17 || FindNextConnected(cycle, 18).code != 15
             throw Error('El ciclo no salta puertos desconectados o no vuelve al principio.')
+        history := {origin: 17, destination: 15, tick: A_TickCount}
+        if FindReturnInput(cycle, 15, history).code != 17
+            || IsObject(FindReturnInput(cycle, 17, history))
+            throw Error('The previous input was not limited to the matching destination.')
+        for row in cycle
+            if row.code = 18
+                row.connected := true
+        history := {origin: 18, destination: 15, tick: A_TickCount}
+        if ChooseCycleInput(cycle, 15, history, history.tick + 9000).entry.code != 18
+            || ChooseCycleInput(cycle, 15, history, history.tick + 10001).entry.code != 17
+            throw Error('The quick return did not expire before the normal input cycle.')
+        for row in cycle
+            if row.code = 18
+                row.connected := false
+        history := {origin: 17, destination: 15, tick: A_TickCount}
+        for row in cycle
+            if row.code = 17
+                row.connected := false
+        if IsObject(FindReturnInput(cycle, 15, history))
+            throw Error('The previous input must remain marked as connected.')
+        for row in cycle
+            if row.code = 17
+                row.connected := true
         for row in cycle
             row.connected := row.code = 17
         if FindNextConnected(cycle, 17).code != 17

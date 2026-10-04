@@ -12,7 +12,7 @@ Project author: [@greypaulino](https://github.com/greypaulino). The [privacy not
 
 The [privacy notice](PRIVACY.md) describes the app's GitHub release checks and locally stored settings.
 
-SwitchMonitor is a Windows utility for changing monitor inputs with keyboard shortcuts. It supports separate settings for multiple monitors, a shortcut for cycling through connected inputs, and an optional shortcut in the Windows Startup folder. The interface is in English.
+SwitchMonitor is a Windows utility for changing monitor inputs with keyboard shortcuts. It supports separate settings for multiple monitors, a shortcut for cycling through connected inputs, and an optional shortcut in the Windows Startup folder. The interface is in English. Pressing the cycle shortcut again within ten seconds returns to the previous input; the monitor tray menu also offers **Return to previous input**. SwitchMonitor remembers the previous input across restarts. When the monitor stops reporting its current input after switching to another PC, the shortcut uses that saved origin for one return attempt. On the tested Intel HD Graphics 3000 and LG 29WK600 setup, the driver rejects DDC/CI writes while the other PC's input is displayed, so returning requires control from that PC or the monitor joystick.
 
 The current source is an AutoHotkey v2 application. It uses [ControlMyMonitor](https://www.nirsoft.net/utils/control_my_monitor.html) for standard DDC/CI monitors and includes experimental LG 29WK600 transports for the Intel and AMD systems used during development. A monitor and its active connection must support the required control command for switching to work.
 
@@ -26,7 +26,7 @@ The detailed project notes are in [SWITCHMONITOR-LEEME.md](SWITCHMONITOR-LEEME.m
 
 The app checks GitHub releases at startup, every six hours, and through **Check for updates** in the monitor tray menu. A newer version changes that menu item to **Update available! Click to install** and shows a clickable Windows notification. Only clicking the notification or menu item downloads the installer, verifies the published SHA-256 checksum, upgrades the installed edition, and reopens the app. Settings in `%LOCALAPPDATA%\SwitchMonitor` are preserved. Portable and source copies open the release page instead.
 
-For each release, use a version tag such as `v1.9.0` and attach the installer as `SwitchMonitor-Setup-1.9.0.exe` and its `SHA256.json` checksum manifest. The version in `switchMonitor.ahk` (`APP_VERSION` and the Ahk2Exe directive), `packaging/SwitchMonitor.iss`, and `packaging/Build.ps1` must match. Publish a non-draft, non-prerelease GitHub release so the latest-release API can find it.
+For each release, use a version tag such as `v1.10.0` and attach the installer as `SwitchMonitor-Setup-1.10.0.exe` and its `SHA256.json` checksum manifest. The version in `switchMonitor.ahk` (`APP_VERSION` and the Ahk2Exe directive), `packaging/SwitchMonitor.iss`, and `packaging/Build.ps1` must match. Publish a non-draft, non-prerelease GitHub release so the latest-release API can find it.
 
 Version 1.3.0 is the first release with update notices and one-click installer downloads.
 The 1.4.0 installer bundles the official AutoHotkey interpreter and the application scripts, because Windows Defender blocked the Ahk2Exe-generated binary during packaging. The installed app still preserves settings in `%LOCALAPPDATA%\SwitchMonitor`.
