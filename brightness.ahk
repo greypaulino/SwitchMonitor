@@ -2,8 +2,9 @@
 
 InitBrightness() {
     global availableMonitors, brightnessSelectedKey, sunIconHandle, sunIconData
-    if availableMonitors.Length
-        brightnessSelectedKey := availableMonitors[availableMonitors.Length].key
+    active := BrightnessActiveMonitors()
+    if active.Length
+        brightnessSelectedKey := active[active.Length].key
     iconPath := A_ScriptDir '\brightness-sun.ico'
     if !FileExist(iconPath)
         return
@@ -149,7 +150,7 @@ BrightnessStartRangeJobs() {
     if uiTest
         return
     for index, monitor in availableMonitors {
-        if IsInternalDisplay(monitor)
+        if IsInternalDisplay(monitor) || !BrightnessMonitorActive(monitor)
             continue
         saved := IniRead(settingsFile, 'BrightnessRanges', monitor.key, '')
         if RegExMatch(saved, '^\d+$') && Integer(saved) >= 1 && Integer(saved) <= 65535
@@ -203,7 +204,7 @@ BrightnessPollRangeJobs(*) {
             range.fresh := false
             if IsObject(brightnessPanel) && brightnessPanel.rows.Has(key) {
                 row := brightnessPanel.rows[key]
-                row.slider.Enabled := true
+                row.slider.Enabled := row.active
                 row.slider.SetImmediate(brightnessValues[key])
                 BrightnessRefreshPanel()
             }
@@ -236,12 +237,46 @@ BrightnessMonitor(key) {
     return 0
 }
 
+BrightnessMonitorActive(monitor) {
+    global uiTest
+    if uiTest
+        return !monitor.HasOwnProp('testActive') || monitor.testActive
+    name := BrightnessDisplayName(monitor)
+    if name = ''
+        return false
+    Loop MonitorGetCount()
+        if StrUpper(MonitorGetName(A_Index)) = StrUpper(name)
+            return true
+    return false
+}
+
+BrightnessActiveMonitors() {
+    global availableMonitors
+    active := []
+    for monitor in availableMonitors
+        if BrightnessMonitorActive(monitor)
+            active.Push(monitor)
+    return active
+}
+
+BrightnessEffectiveLinked() {
+    global brightnessLinked
+    return brightnessLinked && BrightnessActiveMonitors().Length > 1
+}
+
 BrightnessActiveMonitor() {
     global brightnessSelectedKey, selectedMonitor, availableMonitors
     monitor := BrightnessMonitor(brightnessSelectedKey)
-    if IsObject(monitor)
+    if IsObject(monitor) && BrightnessMonitorActive(monitor)
         return monitor
-    monitor := IsObject(selectedMonitor) ? selectedMonitor : availableMonitors[1]
+    monitor := IsObject(selectedMonitor) && BrightnessMonitorActive(selectedMonitor)
+        ? selectedMonitor : 0
+    if !IsObject(monitor) {
+        active := BrightnessActiveMonitors()
+        if !active.Length
+            return 0
+        monitor := active[1]
+    }
     brightnessSelectedKey := monitor.key
     return monitor
 }
@@ -250,7 +285,9 @@ BrightnessApply(monitor, value) {
     global brightnessLinked, availableMonitors, brightnessValues, brightnessLastActivity, brightnessPanel
     value := BrightnessClamp(value)
     failures := []
-    targets := brightnessLinked ? availableMonitors : [monitor]
+    if !BrightnessMonitorActive(monitor)
+        return false
+    targets := BrightnessEffectiveLinked() ? BrightnessActiveMonitors() : [monitor]
     for target in targets {
         try {
             BrightnessWrite(target, value)
@@ -379,7 +416,7 @@ BrightnessPanelMainKey(*) {
 
 BrightnessSwitchMainDisplay() {
     global availableMonitors, brightnessSelectedKey
-    if availableMonitors.Length < 2
+    if BrightnessActiveMonitors().Length < 2
         return
     current := StrUpper(BrightnessMainDisplayName())
     selected := BrightnessMonitor(brightnessSelectedKey)
@@ -581,6 +618,8 @@ BrightnessSteppedTarget(current, direction, step) {
 BrightnessAdjust(direction, step := 1, animate := false) {
     global brightnessValues
     monitor := BrightnessActiveMonitor()
+    if !IsObject(monitor)
+        return
     current := brightnessValues.Has(monitor.key) ? brightnessValues[monitor.key] : BrightnessRead(monitor)
     ShowBrightnessPanel()
     BrightnessQueueValue(monitor.key, BrightnessSteppedTarget(current, direction, step),
@@ -771,12 +810,13 @@ NextBrightnessMonitor(*) {
     global availableMonitors, brightnessSelectedKey, brightnessLastActivity, globalShortcuts, brightnessCaptureActive
     if brightnessCaptureActive
         return
-    if availableMonitors.Length < 2
+    active := BrightnessActiveMonitors()
+    if active.Length < 2
         return
     BrightnessCancelTypedValue()
-    for index, monitor in availableMonitors
+    for index, monitor in active
         if monitor.key = brightnessSelectedKey {
-            brightnessSelectedKey := availableMonitors[Mod(index, availableMonitors.Length) + 1].key
+            brightnessSelectedKey := active[Mod(index, active.Length) + 1].key
             break
         }
     brightnessLastActivity := A_TickCount
@@ -788,7 +828,8 @@ NextBrightnessMonitor(*) {
 
 SelectBrightnessMonitor(key, *) {
     global brightnessSelectedKey, brightnessLastActivity
-    if !IsObject(BrightnessMonitor(key))
+    monitor := BrightnessMonitor(key)
+    if !IsObject(monitor) || !BrightnessMonitorActive(monitor)
         return
     brightnessSelectedKey := key
     brightnessLastActivity := A_TickCount
@@ -798,7 +839,7 @@ SelectBrightnessMonitor(key, *) {
 ToggleBrightnessLink(*) {
     global brightnessLinked, settingsFile, brightnessLastActivity, availableMonitors
     global brightnessPanel, brightnessPointerDown
-    if availableMonitors.Length < 2
+    if BrightnessActiveMonitors().Length < 2
         return
     BrightnessCancelTypedValue()
     BrightnessFlushSlider()
@@ -819,7 +860,7 @@ BrightnessMatchLinkedValues() {
     global availableMonitors, brightnessValues, brightnessPanel
     highest := -1
     targets := []
-    for monitor in availableMonitors {
+    for monitor in BrightnessActiveMonitors() {
         key := monitor.key
         if IsObject(brightnessPanel) && brightnessPanel.rows.Has(key)
             if !brightnessPanel.rows[key].slider.Enabled
@@ -856,8 +897,9 @@ ShowBrightnessPanel(*) {
     }
     if !availableMonitors.Length
         return
-    if !IsObject(BrightnessMonitor(brightnessSelectedKey))
-        brightnessSelectedKey := availableMonitors[1].key
+    selected := BrightnessActiveMonitor()
+    if !IsObject(selected)
+        return
     window := Gui('+AlwaysOnTop -Caption +ToolWindow', 'Brightness Control')
     window.BackColor := '1E1E1E'
     disableDwmTransition := Buffer(4, 0)
@@ -884,7 +926,7 @@ ShowBrightnessPanel(*) {
         label := window.AddText('x27 y' y ' w155 h22 cFFFFFF BackgroundTrans +0x200', BrightnessPanelMonitorName(monitor))
         number := window.AddText('x218 y' y ' w70 h20 Center cFFFFFF BackgroundTrans', '')
         mainButton := 0
-        if availableMonitors.Length > 1 {
+        if BrightnessActiveMonitors().Length > 1 {
             mainButton := SolidButton(window, 'x185 y' y ' w20 h20', '', '2D2D2D')
             SetSolidButtonImage(mainButton, A_ScriptDir '\main-display.ico', 13, -1, -2)
             mainButton.Visible := false
@@ -892,16 +934,22 @@ ShowBrightnessPanel(*) {
         label.Visible := false
         number.Visible := false
         slider := BrightnessBar(window, 16, y + 50, 368, 24)
-        try {
-            brightnessValues[monitor.key] := BrightnessRead(monitor)
-            slider.SetImmediate(brightnessValues[monitor.key])
-        } catch {
+        active := BrightnessMonitorActive(monitor)
+        if active {
+            try {
+                brightnessValues[monitor.key] := BrightnessRead(monitor)
+                slider.SetImmediate(brightnessValues[monitor.key])
+            } catch {
+                slider.Enabled := false
+            }
+        } else {
             slider.Enabled := false
         }
         displayName := BrightnessDisplayName(monitor)
         rows[monitor.key] := {label: label, number: number, numberShown: true,
             slider: slider, name: BrightnessPanelMonitorName(monitor),
-            displayName: displayName, mainAvailable: displayName != '',
+            displayName: displayName, mainAvailable: active && displayName != '',
+            active: active,
             mainButton: mainButton}
     }
     height := 110 + (availableMonitors.Length - 1) * 96
@@ -916,6 +964,7 @@ ShowBrightnessPanel(*) {
     for _, row in rows
         row.slider.Render()
     window.OnEvent('Close', HideBrightnessPanel)
+    BrightnessApplyLayout(brightnessPanel, false)
     BrightnessRefreshPanel()
     height := brightnessPanel.height
     MonitorGetWorkArea(MonitorGetPrimary(), &left, &top, &right, &bottom)
@@ -989,7 +1038,7 @@ BrightnessDrawPanel(dc, hwnd, panel) {
     brush := DllCall('gdi32\CreateSolidBrush', 'UInt', GdiColor('1E1E1E'), 'Ptr')
     DllCall('user32\FillRect', 'Ptr', canvas, 'Ptr', bounds, 'Ptr', brush)
     DllCall('gdi32\DeleteObject', 'Ptr', brush)
-    if availableMonitors.Length > 1 && !panel.linkedView
+    if BrightnessActiveMonitors().Length > 1 && !panel.linkedView
         && panel.highlightKey != '' {
         shape := BrightnessHighlightBounds(panel, panel.highlightKey)
         top := panel.HasOwnProp('highlightTop')
@@ -1044,9 +1093,11 @@ BrightnessDrawPanel(dc, hwnd, panel) {
 }
 
 BrightnessDrawPanelRow(dc, hwnd, row) {
-    BrightnessDrawControlText(dc, hwnd, row.label, row.name, false)
+    BrightnessDrawControlText(dc, hwnd, row.label, row.name, false,
+        row.active ? 'FFFFFF' : '858585')
     if row.numberShown
-        BrightnessDrawControlText(dc, hwnd, row.number, row.number.Value, true)
+        BrightnessDrawControlText(dc, hwnd, row.number, row.number.Value, true,
+            row.active ? 'FFFFFF' : '858585')
     if row.slider.Visible
         BrightnessDrawSlider(dc, row.slider)
 }
@@ -1360,7 +1411,7 @@ BrightnessDrawPanelIcons(dc, panel) {
     if DllCall('gdiplus\GdipCreateFromHDC', 'Ptr', dc, 'Ptr*', &graphics) != 0
         return
     DllCall('gdiplus\GdipSetInterpolationMode', 'Ptr', graphics, 'Int', 7)
-    if availableMonitors.Length > 1 {
+    if BrightnessActiveMonitors().Length > 1 {
         primary := StrUpper(BrightnessMainDisplayName())
         for monitor in availableMonitors {
             row := panel.rows[monitor.key]
@@ -1374,7 +1425,7 @@ BrightnessDrawPanelIcons(dc, panel) {
                 panel.mainHoverKey = monitor.key)
         }
     }
-    if availableMonitors.Length > 1
+    if BrightnessActiveMonitors().Length > 1
         BrightnessDrawPanelIcon(graphics, panel, panel.link, 'link')
     BrightnessDrawPanelIcon(graphics, panel, panel.settings, 'settings')
     DllCall('gdiplus\GdipDeleteGraphics', 'Ptr', graphics)
@@ -1498,7 +1549,7 @@ BrightnessInvalidateText(panel, control) {
 
 BrightnessUpdateHighlight(panel) {
     global availableMonitors
-    if availableMonitors.Length < 2
+    if BrightnessActiveMonitors().Length < 2
         return
     if !panel.bottom
         return
@@ -1519,7 +1570,9 @@ BrightnessHighlightBounds(panel, key) {
     global availableMonitors
     for index, monitor in availableMonitors
         if monitor.key = key {
-            top := 7 + (index - 1) * 96
+            row := panel.rows[monitor.key]
+            top := row.HasOwnProp('headerY') ? row.headerY - 5
+                : 7 + (index - 1) * 96
             return {top: top, bottom: index = availableMonitors.Length
                 ? panel.height - 7 : top + 90}
         }
@@ -1568,19 +1621,28 @@ BrightnessRefreshPanel() {
     global brightnessPanel, brightnessValues, brightnessSelectedKey, brightnessLinked, buttonStyles, availableMonitors
     if !IsObject(brightnessPanel)
         return
-    desiredLinked := brightnessLinked && availableMonitors.Length > 1
+    active := BrightnessActiveMonitors()
+    desiredLinked := brightnessLinked && active.Length > 1
+        && active.Length = availableMonitors.Length
     if brightnessPanel.HasOwnProp('layouting') && brightnessPanel.layouting {
         if brightnessPanel.layoutTarget != desiredLinked
             BrightnessLayoutPanel(brightnessPanel)
     } else if brightnessPanel.linkedView != desiredLinked
         BrightnessLayoutPanel(brightnessPanel)
     brightnessPanel.updating := true
-    newHighlight := availableMonitors.Length > 1 ? brightnessSelectedKey : ''
+    if active.Length && (!IsObject(BrightnessMonitor(brightnessSelectedKey))
+        || !BrightnessMonitorActive(BrightnessMonitor(brightnessSelectedKey)))
+        brightnessSelectedKey := active[1].key
+    newHighlight := active.Length > 1 ? brightnessSelectedKey : ''
     if brightnessPanel.highlightKey != newHighlight {
         brightnessPanel.highlightKey := newHighlight
         BrightnessRetargetHighlight(brightnessPanel)
     }
     for key, row in brightnessPanel.rows {
+        if !row.active {
+            row.number.Value := 'OFF'
+            continue
+        }
         if brightnessPanel.linkedView && key != availableMonitors[1].key
             continue
         typingHere := brightnessPanel.numericActive
@@ -1615,11 +1677,13 @@ BrightnessRefreshPanel() {
 
 BrightnessLayoutPanel(panel) {
     global brightnessLinked, availableMonitors, uiTest
+    linked := BrightnessEffectiveLinked()
+        && BrightnessActiveMonitors().Length = availableMonitors.Length
     if panel.bottom && !uiTest {
-        BrightnessStartLayout(panel, brightnessLinked && availableMonitors.Length > 1)
+        BrightnessStartLayout(panel, linked)
         return
     }
-    BrightnessApplyLayout(panel, brightnessLinked && availableMonitors.Length > 1)
+    BrightnessApplyLayout(panel, linked)
 }
 
 BrightnessApplyLayout(panel, linked) {
@@ -1631,27 +1695,44 @@ BrightnessApplyLayout(panel, linked) {
     } else {
         first.slider.Move(16, 62)
     }
+    nextY := 12
+    firstActiveY := 12
+    foundActive := false
     for index, monitor in availableMonitors {
         row := panel.rows[monitor.key]
-        row.number.Move(218)
         if panel.linkedView {
             y := 12 + (index - 1) * 28
             row.label.Move(27, y, 155, 20)
             if IsObject(row.mainButton)
                 row.mainButton.Move(185, y)
+            row.number.Move(218, y, 70, 20)
             row.numberShown := index = 1
             row.slider.Visible := index = 1
         } else {
-            y := 12 + (index - 1) * 96
-            row.label.Move(27, y, 155, 20)
+            y := nextY
+            row.headerY := y
+            row.rowHeight := row.active ? 96 : 32
+            nextY += row.rowHeight
+            row.label.Move(27, y, row.active ? 155 : 275, 20)
             if IsObject(row.mainButton)
                 row.mainButton.Move(185, y)
+            row.number.Move(row.active ? 218 : 318, y,
+                row.active ? 70 : 60, 20)
             row.numberShown := true
-            row.slider.Visible := true
+            row.slider.Visible := row.active
+            if row.active {
+                row.slider.Move(16, y + 50)
+                if !foundActive {
+                    firstActiveY := y
+                    foundActive := true
+                }
+            }
         }
     }
     panel.height := panel.linkedView ? 72 + 28 * availableMonitors.Length
-        : 110 + (availableMonitors.Length - 1) * 96
+        : nextY + 2
+    panel.settings.Move(353, firstActiveY)
+    panel.link.Move(325, firstActiveY)
     if panel.highlightKey != '' {
         shape := BrightnessHighlightBounds(panel, panel.highlightKey)
         panel.highlightTop := shape.top
@@ -1721,12 +1802,13 @@ BrightnessQueueValue(key, value, motion := 'auto') {
     value := BrightnessClamp(value)
     brightnessSelectedKey := key
     brightnessValues[key] := value
-    if brightnessLinked
-        for monitor in availableMonitors
+    linked := BrightnessEffectiveLinked()
+    if linked
+        for monitor in BrightnessActiveMonitors()
             brightnessValues[monitor.key] := value
     if motion != 'auto' && IsObject(brightnessPanel)
         for monitor in availableMonitors
-            if (monitor.key = key || brightnessLinked)
+            if (monitor.key = key || linked)
                 && brightnessPanel.rows.Has(monitor.key) {
                 slider := brightnessPanel.rows[monitor.key].slider
                 if motion = 'animated'
@@ -1787,7 +1869,9 @@ BrightnessSliderMouseDown(wParam, lParam, msg, hwnd) {
     if hwnd = panel.window.Hwnd && !panel.linkedView
         && !panel.numericActive && panel.numericOpacity <= 0
         for index, monitor in availableMonitors
-            if point.y >= 7 + (index - 1) * 96 && point.y < 97 + (index - 1) * 96 {
+            if panel.rows[monitor.key].active
+                && point.y >= panel.rows[monitor.key].headerY - 5
+                && point.y < panel.rows[monitor.key].headerY + 91 {
                 SelectBrightnessMonitor(monitor.key)
                 return 0
             }
@@ -1814,9 +1898,12 @@ BrightnessBarMouseMove(wParam, lParam, msg, hwnd) {
         if icon = '' && !brightnessPanel.numericActive
             && brightnessPanel.numericOpacity <= 0
             && !brightnessPanel.linkedView
-            && availableMonitors.Length > 1 && point.x >= 8 && point.x < 392 {
+            && BrightnessActiveMonitors().Length > 1 && point.x >= 8 && point.x < 392 {
             for index, monitor in availableMonitors {
-                top := 7 + (index - 1) * 96
+                row := brightnessPanel.rows[monitor.key]
+                if !row.active
+                    continue
+                top := row.headerY - 5
                 bottom := index = availableMonitors.Length
                     ? brightnessPanel.height - 7 : top + 90
                 if point.y >= top && point.y < bottom {
@@ -1836,19 +1923,23 @@ BrightnessBarMouseMove(wParam, lParam, msg, hwnd) {
 }
 
 BrightnessIconAtPoint(panel, point) {
-    global availableMonitors
-    if point.y < 10 || point.y >= 34
-        return ''
-    if availableMonitors.Length > 1 && point.x >= 323 && point.x < 347
-        return 'link'
-    if point.x >= 351 && point.x < 375
-        return 'settings'
+    for item in [{control: panel.link, kind: 'link'},
+        {control: panel.settings, kind: 'settings'}] {
+        if item.kind = 'link' && BrightnessActiveMonitors().Length < 2
+            continue
+        rect := BrightnessControlRect(panel.window.Hwnd, item.control.Hwnd)
+        if point.x >= NumGet(rect, 0, 'Int')
+            && point.x < NumGet(rect, 8, 'Int')
+            && point.y >= NumGet(rect, 4, 'Int')
+            && point.y < NumGet(rect, 12, 'Int')
+            return item.kind
+    }
     return ''
 }
 
 BrightnessMainIconAtPoint(panel, point) {
     global availableMonitors
-    if availableMonitors.Length < 2 || point.x < 183 || point.x >= 205
+    if BrightnessActiveMonitors().Length < 2 || point.x < 183 || point.x >= 205
         return ''
     for monitor in availableMonitors {
         row := panel.rows[monitor.key]
@@ -1938,9 +2029,20 @@ BrightnessPanelMouseWheel(wParam, lParam, msg, hwnd) {
 
 BrightnessWheelAt(panel, mx, my, steps) {
     global availableMonitors
-    index := panel.linkedView ? 1 : Max(1, Min(availableMonitors.Length,
-        Floor((my - panel.y - 12) / 96) + 1))
-    key := availableMonitors[index].key
+    key := ''
+    if panel.linkedView
+        key := availableMonitors[1].key
+    else
+        for monitor in availableMonitors {
+            row := panel.rows[monitor.key]
+            if row.active && my - panel.y >= row.headerY - 5
+                && my - panel.y < row.headerY + row.rowHeight - 5 {
+                key := monitor.key
+                break
+            }
+        }
+    if key = ''
+        return
     slider := panel.rows[key].slider
     if !slider.Enabled
         return
@@ -2121,7 +2223,7 @@ BrightnessFlushSlider(*) {
             continue
         if BrightnessApply(monitor, value)
             continue
-        targets := brightnessLinked ? availableMonitors : [monitor]
+        targets := BrightnessEffectiveLinked() ? BrightnessActiveMonitors() : [monitor]
         for target in targets {
             try brightnessValues[target.key] := BrightnessRead(target)
             catch {

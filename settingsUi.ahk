@@ -75,8 +75,8 @@ OpenLearning(*) {
     ui.linkName := window.AddText('x68 y678 w160 h32 cFFFFFF +0x200', 'Link monitor brightness')
     ui.linkButton := SolidButton(window, 'x240 y678 w275 h32', state.linked ? 'Linked' : 'Independent', '2D2D2D')
     ui.linkButton.OnEvent('Click', ToggleLink)
-    ui.linkButton.Enabled := availableMonitors.Length > 1
-    if availableMonitors.Length = 1
+    ui.linkButton.Enabled := BrightnessActiveMonitors().Length > 1
+    if BrightnessActiveMonitors().Length < 2
         ui.linkName.SetFont('c808080')
     ui.actionLine := window.AddText('x40 y728 w480 h1 Background3C3C3C')
     ui.check := SolidButton(window, 'x120 y746 w154 h36', 'Check connection', '3C3C3C')
@@ -548,7 +548,7 @@ OpenLearning(*) {
         return true
     }
     ToggleLink(*) {
-        if availableMonitors.Length < 2
+        if BrightnessActiveMonitors().Length < 2
             return
         state.linked := !state.linked
         ui.linkButton.Text := state.linked ? 'Linked' : 'Independent'

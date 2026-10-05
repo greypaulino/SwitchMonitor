@@ -7,10 +7,10 @@
 #Include brightness.ahk
 ;@Ahk2Exe-SetName SwitchMonitor
 ;@Ahk2Exe-SetDescription SwitchMonitor - monitor input shortcuts
-;@Ahk2Exe-SetVersion 1.10.0.0
+;@Ahk2Exe-SetVersion 1.10.1.0
 ;@Ahk2Exe-SetOrigFilename SwitchMonitor.exe
 
-APP_VERSION := '1.10.0'
+APP_VERSION := '1.10.1'
 
 monitorTool := FileExist(A_ScriptDir '\ControlMyMonitor\ControlMyMonitor.exe')
     ? A_ScriptDir '\ControlMyMonitor\ControlMyMonitor.exe'
@@ -34,6 +34,7 @@ wizardOpen := false
 uiTest := false
 capabilitiesFile := AppPath('monitorCapabilities.ini')
 availableMonitors := []
+brightnessTopologySignature := ''
 testCodes := []
 registeredBindings := []
 buttonStyles := Map()
@@ -134,6 +135,7 @@ try {
     }
     returnWatchEnabled := true
     availableMonitors := monitors
+    brightnessTopologySignature := CurrentDisplayTopologySignature()
     LoadInputReturnHistory()
     LoadMainDisplayHandoff()
     LoadGlobalShortcuts()
@@ -762,25 +764,42 @@ PollMonitorTopology(*) {
 }
 
 RefreshMonitorsAfterChange(*) {
-    global availableMonitors, brightnessPanel, brightnessSelectedKey, wizardOpen, busy, uiTest
+    global availableMonitors, brightnessPanel, brightnessSelectedKey, brightnessTopologySignature
+        , wizardOpen, busy, uiTest
     if uiTest || wizardOpen || busy
         return
     try {
         detected := ParseMonitors(ExportMonitors())
-        if !detected.Length || !MonitorListChanged(availableMonitors, detected)
+        topology := CurrentDisplayTopologySignature()
+        listChanged := MonitorListChanged(availableMonitors, detected)
+        if !detected.Length || (!listChanged && topology = brightnessTopologySignature)
             return
         wasVisible := IsObject(brightnessPanel) && brightnessPanel.target != 0
         if IsObject(brightnessPanel)
             BrightnessDestroyPanel()
-        RefreshAvailableMonitors(detected)
-        if !IsObject(BrightnessMonitor(brightnessSelectedKey))
-            brightnessSelectedKey := availableMonitors[1].key
+        if listChanged
+            RefreshAvailableMonitors(detected)
+        brightnessTopologySignature := topology
+        active := BrightnessActiveMonitors()
+        if active.Length && (!IsObject(BrightnessMonitor(brightnessSelectedKey))
+            || !BrightnessMonitorActive(BrightnessMonitor(brightnessSelectedKey)))
+            brightnessSelectedKey := active[1].key
         BrightnessStartRangeJobs()
         if wasVisible
             ShowBrightnessPanel()
     } catch as err {
         FileAppend('Monitor refresh: ' err.Message '`n', AppPath('monitor-switch.log'), 'UTF-8')
     }
+}
+
+CurrentDisplayTopologySignature() {
+    names := []
+    Loop MonitorGetCount()
+        names.Push(StrUpper(MonitorGetName(A_Index)))
+    signature := ''
+    for name in names
+        signature .= '|' name
+    return signature
 }
 
 MonitorListChanged(previous, current) {
@@ -2392,6 +2411,24 @@ SelfTest() {
         if brightnessValues.Get(monitors[1].key, -1) != 42
             || brightnessValues.Get(monitors[2].key, -1) != 42
             throw Error('Linked brightness did not update both monitors.')
+        monitors[2].testActive := false
+        if BrightnessActiveMonitors().Length != 1
+            || BrightnessEffectiveLinked()
+            throw Error('An inactive second display was included in brightness linking.')
+        ShowBrightnessPanel()
+        offRow := brightnessPanel.rows[monitors[2].key]
+        if offRow.number.Value != 'OFF' || offRow.slider.Visible
+            || offRow.rowHeight >= brightnessPanel.rows[monitors[1].key].rowHeight
+            throw Error('The inactive display was not rendered as a compact OFF row: '
+                offRow.number.Value ', visible=' offRow.slider.Visible ', height=' offRow.rowHeight)
+        NextBrightnessMonitor()
+        if brightnessSelectedKey != monitors[1].key
+            throw Error('The keyboard selected an inactive display.')
+        ToggleBrightnessLink()
+        if !brightnessLinked
+            throw Error('An inactive display changed the saved chain preference.')
+        BrightnessDestroyPanel()
+        monitors[2].testActive := true
         ShowBrightnessPanel()
         if !IsObject(brightnessPanel) || !brightnessPanel.linkedView
             || brightnessPanel.rows[monitors[2].key].slider.Visible
