@@ -1,0 +1,38 @@
+name: v2 core
+
+on:
+  push:
+    paths:
+      - '.github/workflows/v2-core.yml'
+      - 'src/**'
+      - 'tests/**'
+  pull_request:
+    paths:
+      - '.github/workflows/v2-core.yml'
+      - 'src/**'
+      - 'tests/**'
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Build
+        run: |
+          dotnet build .\src\SwitchMonitor.Core\SwitchMonitor.Core.csproj -c Release
+          dotnet build .\src\SwitchMonitor.Probe\SwitchMonitor.Probe.csproj -c Release
+          dotnet build .\tests\SwitchMonitor.Core.Tests\SwitchMonitor.Core.Tests.csproj -c Release
+      - name: Hardware-free tests
+        run: dotnet run --no-build -c Release --project .\tests\SwitchMonitor.Core.Tests\SwitchMonitor.Core.Tests.csproj
+      - name: Check for third-party packages
+        shell: pwsh
+        run: |
+          $refs = Get-ChildItem -Recurse -Include *.csproj -Path src, tests | Select-String -Pattern '<PackageReference'
+          if ($refs) { $refs; throw 'v2 must not depend on third-party packages.' }
+          'No package references.'

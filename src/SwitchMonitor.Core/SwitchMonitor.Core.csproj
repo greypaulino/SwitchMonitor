@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>SwitchMonitor.Core</RootNamespace>
+    <Version>2.0.0-alpha.1</Version>
+    <!-- v2 policy: no third-party runtime dependencies. Only Windows and .NET in-box APIs. -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Quirks\quirks.json" LogicalName="SwitchMonitor.Core.quirks.json" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="SwitchMonitor.Core.Tests" />
+  </ItemGroup>
+
+</Project>
