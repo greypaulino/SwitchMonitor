@@ -12,12 +12,25 @@ Goal: one C# / .NET 10 code base with no third-party runtime dependencies that c
 - [x] Hardware-free tests and CI, plus a CI check that no package references are added
 - [x] Read-only probe for testing on real computers
 
-## Phase 2 — more controls
+## Phase 2 — more controls ✅
 
-- [ ] Contrast `0x12`, volume `0x62`, mute `0x8D`, power `0xD6`
-- [ ] Color presets `0x14`, RGB gains `0x16`/`0x18`/`0x1A`
-- [ ] Vendor picture or game modes, shown only when advertised
-- [ ] Scene profiles ("Work", "Night", "Game") applying several values with one shortcut
+- [x] Control catalog: brightness, contrast, volume, mute, color preset, picture mode, RGB gains, power (MCCS 2.2a value names)
+- [x] Controls and choices shown only when the monitor advertises them; choice values are never guessed
+- [x] Capabilities read through the Intel CUI and AMD ADL2 drivers (DDC/CI 0xF3), so GPU-transport monitors show every control
+- [x] Scene profiles (`scenes.json`: Work, Night, Game) that skip what a monitor lacks; power and input can never be in a scene
+- [x] Inactive displays (e.g. closed laptop lid) listed as OFF and never commanded, matching 1.10.1
+- [x] Read-only probe lists every control; round-trip write test (+/-1 and restore) for brightness, contrast, volume
+
+Validated on DESKTOP-BPMFO0B (Intel HD 3000 + LG 29WK600): capabilities read, all controls read, brightness write round-trip.
+Writes use the MCCS host address 0x51 (0x50 only for the LG 0xF4 input switch); with 0x50 the LG ignored every write except brightness.
+
+## Phase 2b — vendor controls ✅
+
+- [x] Advertised vendor codes shown read-only until mapped; MCCS reset/command codes never read or written
+- [x] Learn mode: snapshot, change one setting on the monitor's own menu, snapshot again, diff (works for any DDC/CI monitor)
+- [x] `quirks.json` controls with value names, decimal capability lists and real maximums; `quirks.user.json` overlay for mappings learned locally
+- [x] LG 29WK600 mapped: picture mode (0x15, 10 modes), response time (0xF7), FreeSync (0xF8), black stabilizer (0xF9), gamma (0xFE)
+- [x] Write-verified on the LG: picture mode, response time, FreeSync. Gamma and black stabilizer ignore DDC writes, so they are marked read-only
 
 ## Phase 3 — interface
 
@@ -36,5 +49,5 @@ Goal: one C# / .NET 10 code base with no third-party runtime dependencies that c
 ## Hardware validation still needed
 
 - AMD ADL2 writes (brightness and input) on the Radeon 7 + LG 29WK600 setup
-- WMI brightness on a laptop through the new transport
+- WMI brightness on a laptop through the new transport (the test laptop panel was inactive)
 - Run `SwitchMonitor.Probe -- --log` on each test computer and compare with the 1.x behavior

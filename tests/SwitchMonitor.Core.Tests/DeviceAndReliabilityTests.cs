@@ -211,3 +211,33 @@ internal static class LogTests
         finally { if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true); }
     }
 }
+
+internal static class InactiveDisplayTests
+{
+    [Test]
+    public static void InactiveDisplayIsListedButNeverCommanded()
+    {
+        // Seen on DESKTOP-BPMFO0B: WMI reports the laptop panel while Windows outputs only to the LG.
+        var fake = new FakeTransport { Capabilities = "(vcp(10))" };
+        fake.Values[0x10] = new VcpValue(40, 100);
+        var identity = new MonitorIdentity("wmi|x", "N5050 Laptop Screen", @"DISPLAY\CMO15A4\4&0&UID0_0", "", "CMO15A4",
+            false, true, IsActive: false);
+        using var monitor = new MonitorDevice(identity, fake, null, null, new RecordingDelay());
+        Assert.True(!monitor.IsActive && !monitor.IsControllable, "inactive");
+        Assert.True(!monitor.Supports(VcpCode.Brightness), "no features while inactive");
+        Assert.Equal(0, monitor.Capabilities.VcpCodes.Count, "capabilities not queried");
+        var error = Assert.Throws<NotSupportedException>(() => monitor.Read(VcpCode.Brightness));
+        Assert.True(error.Message.Contains("not using"), error.Message);
+        Assert.Throws<NotSupportedException>(() => monitor.SetPercent(VcpCode.Brightness, 50));
+        Assert.Equal(0, fake.Writes.Count);
+    }
+
+    [Test]
+    public static void BuiltInDisplayNamesFollowOneX()
+    {
+        Assert.Equal("N5050 Laptop Screen", MonitorEnumerator.BuiltInDisplayName("Inspiron N5050"));
+        Assert.Equal("Built-in display", MonitorEnumerator.BuiltInDisplayName("To Be Filled By O.E.M."));
+        Assert.Equal("Built-in display", MonitorEnumerator.BuiltInDisplayName(null));
+        Assert.Equal("Surface Laptop Screen", MonitorEnumerator.BuiltInDisplayName("Surface"));
+    }
+}

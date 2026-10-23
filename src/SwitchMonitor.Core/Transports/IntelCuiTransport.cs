@@ -38,7 +38,18 @@ internal sealed class IntelCuiTransport : IMonitorTransport
         }
     }
 
-    public string? ReadCapabilities() => null;
+    /// <summary>Capabilities over the Intel I2C channel (DDC/CI 0xF3), fragment by fragment. Read-only.</summary>
+    public string? ReadCapabilities() => Sta.Run(() =>
+    {
+        using var session = new Session(gdiName);
+        return DdcPacket.ReadCapabilities(offset =>
+        {
+            byte[] request = session.BuildRequest(DdcPacket.HostReadSource,
+                DdcPacket.CapabilitiesRequestPayload(offset), DdcPacket.MaxCapabilitiesReplyLength);
+            session.Exchange(request, write: false);
+            return request.AsSpan(52, DdcPacket.MaxCapabilitiesReplyLength).ToArray();
+        }, Id);
+    });
 
     public VcpValue Read(byte code) => Sta.Run(() =>
     {
@@ -53,7 +64,7 @@ internal sealed class IntelCuiTransport : IMonitorTransport
     public void Write(byte code, uint value) => Sta.Run(() =>
     {
         using var session = new Session(gdiName);
-        byte[] request = session.BuildRequest(DdcPacket.HostWriteSource, DdcPacket.SetVcpPayload(code, value), 0);
+        byte[] request = session.BuildRequest(DdcPacket.WriteSourceFor(code), DdcPacket.SetVcpPayload(code, value), 0);
         session.Exchange(request, write: true);
         return true;
     });

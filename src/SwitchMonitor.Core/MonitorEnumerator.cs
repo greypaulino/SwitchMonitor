@@ -34,7 +34,7 @@ public static class MonitorEnumerator
     public static IReadOnlyList<MonitorDevice> Enumerate(CoreOptions? options = null, QuirkDatabase? quirks = null, ICoreLog? log = null)
     {
         options ??= new CoreOptions();
-        quirks ??= QuirkDatabase.LoadEmbedded();
+        quirks ??= QuirkDatabase.LoadDefault();
         log ??= NullLog.Instance;
 
         var wmiByPnp = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -45,11 +45,15 @@ public static class MonitorEnumerator
             else wmiUnmatched.Add(instance);
         }
 
+        var hMonitors = WindowsMonitors();
+        var activePnp = ActivePnpIds(hMonitors);
+        string builtInName = BuiltInDisplayName(WmiBrightnessTransport.ComputerModel());
+
         var devices = new List<MonitorDevice>();
         var usedWmi = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (IntPtr hMonitor in WindowsMonitors())
+        foreach (IntPtr hMonitor in hMonitors)
         {
-            try { devices.AddRange(FromHMonitor(hMonitor, options, quirks, log, wmiByPnp, usedWmi)); }
+            try { devices.AddRange(FromHMonitor(hMonitor, options, quirks, log, wmiByPnp, usedWmi, builtInName)); }
             catch (Exception error) when (error is COMException or ExternalException or InvalidOperationException)
             {
                 log.Write(LogLevel.Warning, "Skipped a display that Windows could not describe.", error);
@@ -60,14 +64,47 @@ public static class MonitorEnumerator
             if (!usedWmi.Contains(instance)) wmiUnmatched.Add(instance);
         foreach (string instance in wmiUnmatched)
         {
+            // WMI keeps reporting a built-in panel that Windows is not using (lid closed, external display only).
+            // List it as inactive, like the 1.x OFF row, instead of sending commands that fail.
             string? pnp = QuirkDatabase.ExtractPnpId(instance);
-            var identity = new MonitorIdentity($"wmi|{instance}", "Built-in display", instance, "", pnp, false, true);
+            bool active = pnp is not null && activePnp.Contains(pnp);
+            var identity = new MonitorIdentity($"wmi|{instance}", builtInName, instance, "", pnp, false, true, active);
             devices.Add(new MonitorDevice(identity, new WmiBrightnessTransport(instance), null, log));
+            if (!active) log.Write(LogLevel.Info, $"{builtInName}: Windows is not using this display; it is listed as inactive.");
         }
 
         foreach (var device in devices)
             log.Write(LogLevel.Info, $"Found {device} ({device.Identity.DeviceId}).");
         return devices;
+    }
+
+    /// <summary>"Inspiron N5050" → "N5050 Laptop Screen"; generic or missing model → "Built-in display".</summary>
+    internal static string BuiltInDisplayName(string? computerModel)
+    {
+        string model = (computerModel ?? "").Trim();
+        if (model.Length == 0 || System.Text.RegularExpressions.Regex.IsMatch(model,
+                @"(?i)^(?:N/?A|Unknown|Default string|System Product Name|To Be Filled By O\.E\.M\.)$"))
+            return "Built-in display";
+        var shortName = System.Text.RegularExpressions.Regex.Match(model, @"(?i)\b([A-Z]+\d{3,})$");
+        return (shortName.Success ? shortName.Groups[1].Value : model) + " Laptop Screen";
+    }
+
+    /// <summary>PnP IDs of every monitor attached to an active Windows display source.</summary>
+    private static HashSet<string> ActivePnpIds(IEnumerable<IntPtr> hMonitors)
+    {
+        var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (IntPtr hMonitor in hMonitors)
+        {
+            var info = new NativeMethods.MONITORINFOEX { cbSize = (uint)Marshal.SizeOf<NativeMethods.MONITORINFOEX>() };
+            if (!NativeMethods.GetMonitorInfo(hMonitor, ref info)) continue;
+            for (uint i = 0; i < 16; i++)
+            {
+                string? id = MonitorDeviceId(info.szDevice, i);
+                if (id is null) break;
+                if (QuirkDatabase.ExtractPnpId(id) is string pnp) result.Add(pnp);
+            }
+        }
+        return result;
     }
 
     private static List<IntPtr> WindowsMonitors()
@@ -80,7 +117,7 @@ public static class MonitorEnumerator
     }
 
     private static IEnumerable<MonitorDevice> FromHMonitor(IntPtr hMonitor, CoreOptions options, QuirkDatabase quirks,
-        ICoreLog log, Dictionary<string, string> wmiByPnp, HashSet<string> usedWmi)
+        ICoreLog log, Dictionary<string, string> wmiByPnp, HashSet<string> usedWmi, string builtInName)
     {
         var info = new NativeMethods.MONITORINFOEX { cbSize = (uint)Marshal.SizeOf<NativeMethods.MONITORINFOEX>() };
         string gdiName = NativeMethods.GetMonitorInfo(hMonitor, ref info) ? info.szDevice : "";
@@ -105,7 +142,7 @@ public static class MonitorEnumerator
                 var quirk = quirks.Match(deviceId);
 
                 bool builtIn = pnp is not null && wmiByPnp.ContainsKey(pnp);
-                var identity = new MonitorIdentity($"{deviceId}|{i}", builtIn ? "Built-in display" : description,
+                var identity = new MonitorIdentity($"{deviceId}|{i}", builtIn ? builtInName : description,
                     deviceId, gdiName, pnp, primary, builtIn);
                 var transport = ChooseTransport(physical.hPhysicalMonitor, identity, quirk, options, log, wmiByPnp, usedWmi);
                 result.Add(new MonitorDevice(identity, transport, quirk, log));

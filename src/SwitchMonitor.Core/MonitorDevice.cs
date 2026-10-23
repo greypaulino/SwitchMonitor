@@ -49,7 +49,11 @@ public sealed class MonitorDevice : IDisposable
     public string Key => Identity.Key;
     public string Name => Quirk?.Name ?? Identity.FriendlyName;
     public string TransportId => transport.Id;
-    public bool IsControllable => transport is not UnavailableTransport;
+    /// <summary>False when Windows is not currently using this display (for example a closed laptop lid).</summary>
+    public bool IsActive => Identity.IsActive;
+
+    /// <summary>True when commands can be sent now: a working transport and an active display.</summary>
+    public bool IsControllable => IsActive && transport is not UnavailableTransport;
     public RetryPolicy ReadPolicy { get; init; } = RetryPolicy.Default;
     public RetryPolicy WritePolicy { get; init; } = RetryPolicy.Default;
     public RetryPolicy InputPolicy { get; init; } = RetryPolicy.InputSwitch;
@@ -62,6 +66,7 @@ public sealed class MonitorDevice : IDisposable
             lock (gate)
             {
                 if (capabilities is not null) return capabilities;
+                if (!IsControllable) return MonitorCapabilities.Empty;   // Not cached: the display may become active.
                 try
                 {
                     string? raw = ReadPolicy.Execute($"{Name}: capabilities", () => transport.ReadCapabilities(), delay, log);
@@ -125,10 +130,106 @@ public sealed class MonitorDevice : IDisposable
         lock (gate)
         {
             EnsureWritable();
-            if (!maximums.TryGetValue(code, out uint maximum)) maximum = Read(code).Maximum;
+            if (FeatureCatalog.Find(code) is { Kind: not FeatureKind.Continuous } definition)
+                throw new ArgumentException($"{definition.Name} is not a percentage; use SetChoice.", nameof(code));
+            if (FeatureCatalog.Find(code) is null)
+            {
+                var feature = Features.FirstOrDefault(f => f.Code == code)
+                    ?? throw new NotSupportedException($"{Name} does not offer {VcpCode.Describe(code)}.");
+                if (feature.Definition.Risk is FeatureRisk.Unmapped or FeatureRisk.ReadOnly)
+                    throw new NotSupportedException(ReadOnlyMessage(feature));
+                if (feature.Kind != FeatureKind.Continuous)
+                    throw new ArgumentException($"{feature.Name} is not a percentage; use SetChoice.", nameof(code));
+            }
+            uint maximum = Features.FirstOrDefault(f => f.Code == code)?.Definition.Maximum ?? 0;
+            if (maximum == 0 && !maximums.TryGetValue(code, out maximum)) maximum = Read(code).Maximum;
             uint raw = VcpValue.FromPercent(percent, maximum);
             Write(code, raw);
             return Verify(code, raw, ReadPolicy);
+        }
+    }
+
+    /// <summary>
+    /// Controls this display offers, in interface order: standard controls first, then vendor controls.
+    /// Input is excluded (see <see cref="Inputs"/>). Choice and toggle controls carry the advertised values.
+    /// Advertised vendor codes without a known meaning appear as read-only <see cref="FeatureRisk.Unmapped"/> controls.
+    /// </summary>
+    public IReadOnlyList<MonitorFeature> Features
+    {
+        get
+        {
+            var quirkControls = Quirk?.Controls.ToDictionary(c => c.Code) ?? new Dictionary<byte, FeatureDefinition>();
+            var result = new List<MonitorFeature>();
+            var seen = new HashSet<byte>();
+            foreach (var standard in FeatureCatalog.All)
+            {
+                if (standard.Code == VcpCode.InputSource || !Supports(standard.Code)) continue;
+                var definition = quirkControls.GetValueOrDefault(standard.Code) ?? standard;
+                result.Add(new MonitorFeature(definition, AllowedValues(definition)));
+                seen.Add(standard.Code);
+            }
+            foreach (byte code in Capabilities.VcpCodes)
+            {
+                if (seen.Contains(code) || code == VcpCode.InputSource || code == Quirk?.InputWriteVcp
+                    || FeatureCatalog.IsCommand(code) || FeatureCatalog.IsInformational(code)) continue;
+                var definition = quirkControls.GetValueOrDefault(code)
+                    ?? FeatureCatalog.Unmapped(code, Capabilities.ValuesFor(code).Count > 0);
+                result.Add(new MonitorFeature(definition, AllowedValues(definition)));
+            }
+            return result;
+        }
+    }
+
+    private string ReadOnlyMessage(MonitorFeature feature) => feature.Definition.Risk == FeatureRisk.ReadOnly
+        ? $"{Name} ignores DDC writes to {feature.Name}; it is read-only."
+        : $"{feature.Name} has not been mapped yet; it is read-only.";
+
+    private IReadOnlyList<uint> AllowedValues(FeatureDefinition definition)
+    {
+        if (definition.Kind == FeatureKind.Continuous) return Array.Empty<uint>();
+        if (definition.IgnoreCapabilityValues) return definition.ValueNames.Keys.Order().ToArray();
+        var advertised = Capabilities.ValuesFor(definition.Code)
+            .Select(v => definition.CapabilityValuesAreDecimal ? DecimalDigits(v) : (uint?)v)
+            .OfType<uint>().ToArray();
+        // Quirk-named values are trusted even when the monitor leaves them out (LG omits HDR Effect).
+        if (advertised.Length > 0)
+        {
+            bool quirkControl = definition.Risk is FeatureRisk.Safe or FeatureRisk.ReadOnly && FeatureCatalog.Find(definition.Code) is null;
+            IEnumerable<uint> extra = quirkControl ? definition.ValueNames.Keys : Array.Empty<uint>();
+            return advertised.Union(extra).Order().ToArray();
+        }
+        // Toggles and quirk-named choices without a value list in the capabilities string.
+        return definition.ValueNames.Keys.Order().ToArray();
+    }
+
+    /// <summary>0x48 (hex digits "48") → 48. Returns null when the hex digits are not a decimal number (e.g. 0x2A).</summary>
+    internal static uint? DecimalDigits(int value) =>
+        uint.TryParse(value.ToString("X", System.Globalization.CultureInfo.InvariantCulture),
+            System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out uint parsed)
+            ? parsed : null;
+
+    /// <summary>
+    /// Sets a choice or toggle control to a raw MCCS value (e.g. color preset 0x05 = 6500 K).
+    /// The value must be one the monitor advertised; this never guesses unadvertised codes.
+    /// </summary>
+    public WriteOutcome SetChoice(byte code, uint value)
+    {
+        lock (gate)
+        {
+            EnsureWritable();
+            if (code == VcpCode.InputSource)
+                throw new ArgumentException("Use SetInput to change the input.", nameof(code));
+            var feature = Features.FirstOrDefault(f => f.Code == code)
+                ?? throw new NotSupportedException($"{Name} does not offer {VcpCode.Describe(code)}.");
+            if (feature.Definition.Risk is FeatureRisk.Unmapped or FeatureRisk.ReadOnly)
+                throw new NotSupportedException(ReadOnlyMessage(feature));
+            if (feature.Kind == FeatureKind.Continuous)
+                throw new ArgumentException($"{feature.Name} is continuous; use SetPercent.", nameof(code));
+            if (!feature.AllowedValues.Contains(value))
+                throw new ArgumentOutOfRangeException(nameof(value),
+                    $"{Name} does not advertise {feature.Name} = {feature.Definition.DescribeValue(value)}.");
+            Write(code, value);
+            return Verify(code, value, ReadPolicy);
         }
     }
 
@@ -178,6 +279,7 @@ public sealed class MonitorDevice : IDisposable
     private void EnsureUsable()
     {
         ObjectDisposedException.ThrowIf(disposed, this);
+        if (!IsActive) throw new NotSupportedException($"Windows is not using {Name} right now.");
         if (!IsControllable) throw new NotSupportedException($"{Name} has no working control path on this computer.");
     }
 
@@ -209,8 +311,10 @@ public sealed class MonitorDevice : IDisposable
 /// <param name="PnpId">EDID manufacturer + product, e.g. GSM7714, when known.</param>
 /// <param name="IsPrimary">Whether this source is the Windows main display.</param>
 /// <param name="IsBuiltIn">Built-in laptop panel controlled through WMI.</param>
+/// <param name="IsActive">Whether Windows currently outputs to this display; inactive ones are listed but not controlled.</param>
 public sealed record MonitorIdentity(
-    string Key, string FriendlyName, string DeviceId, string GdiName, string? PnpId, bool IsPrimary, bool IsBuiltIn);
+    string Key, string FriendlyName, string DeviceId, string GdiName, string? PnpId, bool IsPrimary, bool IsBuiltIn,
+    bool IsActive = true);
 
 /// <summary>Placeholder for displays that Windows lists but that no transport can control.</summary>
 internal sealed class UnavailableTransport : IMonitorTransport

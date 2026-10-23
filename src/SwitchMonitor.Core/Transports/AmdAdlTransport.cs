@@ -28,7 +28,19 @@ internal sealed class AmdAdlTransport : IMonitorTransport
     internal static bool IsAvailable => Environment.Is64BitProcess &&
         File.Exists(Path.Combine(Environment.SystemDirectory, "atiadlxx.dll"));
 
-    public string? ReadCapabilities() => null;
+    /// <summary>Capabilities over ADL2 DDC (DDC/CI 0xF3) with split send/receive, like VCP reads. Read-only.</summary>
+    public string? ReadCapabilities()
+    {
+        using var adl = new AdlSession();
+        var target = adl.Select(gdiName, productCode);
+        return DdcPacket.ReadCapabilities(offset =>
+        {
+            adl.Send(target, DdcPacket.Build(DdcPacket.HostReadSource, DdcPacket.CapabilitiesRequestPayload(offset)));
+            Thread.Sleep(50);
+            byte[] reply = adl.Receive(target, DdcPacket.MaxCapabilitiesReplyLength, out int received);
+            return reply.AsSpan(0, Math.Clamp(received, 0, reply.Length)).ToArray();
+        }, Id);
+    }
 
     public VcpValue Read(byte code)
     {
@@ -50,7 +62,7 @@ internal sealed class AmdAdlTransport : IMonitorTransport
             throw new TransportException(Id, "AMD DDC writes are disabled until they are validated on hardware.");
         using var adl = new AdlSession();
         var target = adl.Select(gdiName, productCode);
-        adl.Send(target, DdcPacket.Build(DdcPacket.HostWriteSource, DdcPacket.SetVcpPayload(code, value)));
+        adl.Send(target, DdcPacket.Build(DdcPacket.WriteSourceFor(code), DdcPacket.SetVcpPayload(code, value)));
     }
 
     public void Dispose() { }
