@@ -67,6 +67,22 @@ internal sealed class WmiBrightnessTransport : IMonitorTransport
         return names;
     }
 
+    /// <summary>Computer model from root\cimv2 Win32_ComputerSystem (e.g. "Inspiron N5050"), or null.</summary>
+    internal static string? ComputerModel()
+    {
+        try
+        {
+            foreach (object wmiObject in Query("SELECT Model FROM Win32_ComputerSystem", @"root\cimv2"))
+            {
+                dynamic item = wmiObject;
+                object model = item.Model;
+                return model as string;
+            }
+        }
+        catch (COMException) { }
+        return null;
+    }
+
     private bool Matches(object wmiObject)
     {
         dynamic item = wmiObject;
@@ -80,11 +96,11 @@ internal sealed class WmiBrightnessTransport : IMonitorTransport
             throw new TransportException(Id, $"WMI supports only brightness, not {VcpCode.Describe(code)}.");
     }
 
-    private static IEnumerable<object> Query(string wql)
+    private static IEnumerable<object> Query(string wql, string wmiNamespace = @"root\WMI")
     {
         Type locatorType = Type.GetTypeFromProgID("WbemScripting.SWbemLocator", throwOnError: true)!;
         dynamic locator = Activator.CreateInstance(locatorType)!;
-        dynamic service = locator.ConnectServer(".", @"root\WMI");
+        dynamic service = locator.ConnectServer(".", wmiNamespace);
         dynamic results = service.ExecQuery(wql);
         var items = new List<object>();
         foreach (object item in results) items.Add(item);

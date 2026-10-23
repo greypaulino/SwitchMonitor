@@ -27,6 +27,9 @@ public sealed class MonitorQuirk
 
     public string? Notes { get; init; }
 
+    /// <summary>Vendor controls this model is known to have (e.g. LG picture mode on VCP 0x15).</summary>
+    public IReadOnlyList<FeatureDefinition> Controls { get; init; } = [];
+
     /// <summary>The VCP code and raw value to write to select a standard input code.</summary>
     public (byte Vcp, uint Value) MapInputWrite(int inputCode)
     {
@@ -45,6 +48,45 @@ public sealed partial class QuirkDatabase
     private QuirkDatabase(List<MonitorQuirk> quirks) => this.quirks = quirks;
 
     public IReadOnlyList<MonitorQuirk> All => quirks;
+
+    /// <summary>quirks.user.json in the data directory: mappings learned on this computer.</summary>
+    public static string UserFilePath => Path.Combine(AppPaths.DataDirectory, "quirks.user.json");
+
+    /// <summary>Embedded quirks plus this computer's learned mappings (user controls win per VCP code).</summary>
+    public static QuirkDatabase LoadDefault(string? userFile = null)
+    {
+        var embedded = LoadEmbedded();
+        userFile ??= UserFilePath;
+        if (!File.Exists(userFile)) return embedded;
+        return embedded.Merge(Parse(File.ReadAllText(userFile)));
+    }
+
+    /// <summary>Overlays <paramref name="overlay"/>: same id merges controls by code; new ids are added.</summary>
+    public QuirkDatabase Merge(QuirkDatabase overlay)
+    {
+        var result = new List<MonitorQuirk>(quirks);
+        foreach (var extra in overlay.quirks)
+        {
+            int index = result.FindIndex(q => string.Equals(q.Id, extra.Id, StringComparison.OrdinalIgnoreCase));
+            if (index < 0) { result.Add(extra); continue; }
+            var baseQuirk = result[index];
+            var controls = baseQuirk.Controls.Where(c => extra.Controls.All(e => e.Code != c.Code)).Concat(extra.Controls)
+                .OrderBy(c => c.Code).ToArray();
+            result[index] = new MonitorQuirk
+            {
+                Id = baseQuirk.Id,
+                Name = baseQuirk.Name,
+                PnpIds = baseQuirk.PnpIds.Union(extra.PnpIds, StringComparer.OrdinalIgnoreCase).ToArray(),
+                Inputs = baseQuirk.Inputs,
+                InputWriteVcp = baseQuirk.InputWriteVcp,
+                InputWriteValues = baseQuirk.InputWriteValues,
+                Transports = baseQuirk.Transports,
+                Notes = baseQuirk.Notes,
+                Controls = controls
+            };
+        }
+        return new QuirkDatabase(result);
+    }
 
     public static QuirkDatabase LoadEmbedded()
     {
@@ -129,7 +171,47 @@ public sealed partial class QuirkDatabase
             Transports = entry.TryGetProperty("transports", out var transports)
                 ? transports.EnumerateArray().Select(e => e.GetString() ?? "").ToArray()
                 : [],
-            Notes = entry.TryGetProperty("notes", out var notes) ? notes.GetString() : null
+            Notes = entry.TryGetProperty("notes", out var notes) ? notes.GetString() : null,
+            Controls = entry.TryGetProperty("controls", out var controls)
+                ? controls.EnumerateArray().Select(c => ParseControl(c, id)).ToArray()
+                : []
+        };
+    }
+
+    /// <summary>{ "vcp": "15", "name": "Picture mode", "kind": "choice", "values": { "01": "Reader" } }</summary>
+    private static FeatureDefinition ParseControl(JsonElement control, string quirkId)
+    {
+        byte code = (byte)Hex(RequiredString(control, "vcp"), quirkId);
+        if (FeatureCatalog.IsCommand(code) || code == VcpCode.InputSource || code == VcpCode.PowerMode)
+            throw new FormatException($"Quirk {quirkId}: VCP {code:X2} cannot be a control.");
+        var names = new Dictionary<uint, string>();
+        if (control.TryGetProperty("values", out var values))
+            foreach (var pair in values.EnumerateObject())
+                names[(uint)Hex(pair.Name, quirkId)] = pair.Value.GetString() ?? pair.Name;
+        string kindText = control.TryGetProperty("kind", out var k) ? k.GetString() ?? "" : (names.Count > 0 ? "choice" : "continuous");
+        var kind = kindText.ToLowerInvariant() switch
+        {
+            "continuous" => FeatureKind.Continuous,
+            "choice" => FeatureKind.Choice,
+            "toggle" => FeatureKind.Toggle,
+            _ => throw new FormatException($"Quirk {quirkId}: kind \"{kindText}\" is not continuous, choice or toggle.")
+        };
+        string capsFormat = control.TryGetProperty("capabilityValues", out var format) ? format.GetString() ?? "" : "";
+        bool decimalCaps = string.Equals(capsFormat, "decimal", StringComparison.OrdinalIgnoreCase);
+        bool ignoreCaps = string.Equals(capsFormat, "ignore", StringComparison.OrdinalIgnoreCase);
+        if (capsFormat.Length > 0 && !decimalCaps && !ignoreCaps)
+            throw new FormatException($"Quirk {quirkId}: capabilityValues must be \"decimal\" or \"ignore\".");
+        if (ignoreCaps && names.Count == 0)
+            throw new FormatException($"Quirk {quirkId}: capabilityValues \"ignore\" needs named values.");
+        uint? maximum = control.TryGetProperty("maximum", out var max) && max.TryGetUInt32(out uint m) && m > 0 ? m : null;
+        if (maximum is not null && kind != FeatureKind.Continuous)
+            throw new FormatException($"Quirk {quirkId}: only continuous controls take a maximum.");
+        bool readOnly = control.TryGetProperty("readOnly", out var ro) && ro.ValueKind == JsonValueKind.True;
+        return new FeatureDefinition(code, RequiredString(control, "name"), kind, readOnly ? FeatureRisk.ReadOnly : FeatureRisk.Safe, names)
+        {
+            CapabilityValuesAreDecimal = decimalCaps,
+            IgnoreCapabilityValues = ignoreCaps,
+            Maximum = maximum
         };
     }
 

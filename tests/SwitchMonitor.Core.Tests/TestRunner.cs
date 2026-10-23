@@ -41,6 +41,7 @@ internal static class Program
 {
     private static int Main(string[] args)
     {
+        Console.OutputEncoding = new System.Text.UTF8Encoding(false);
         string? filter = args.FirstOrDefault();
         var tests = typeof(Program).Assembly.GetTypes()
             .SelectMany(type => type.GetMethods(BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic))
