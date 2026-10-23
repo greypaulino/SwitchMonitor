@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "monitors": [
+    {
+      "id": "lg-29wk600",
+      "name": "LG 29WK600",
+      "pnpIds": [ "GSM7714", "GSM7715" ],
+      "inputs": [
+        { "code": "11", "name": "HDMI 1" },
+        { "code": "12", "name": "HDMI 2" },
+        { "code": "0F", "name": "DisplayPort 1" }
+      ],
+      "inputWrite": {
+        "vcp": "F4",
+        "values": { "11": "90", "12": "91", "0F": "D0" }
+      },
+      "transports": [ "intel-cui", "amd-adl" ],
+      "notes": "Ignores standard VCP 0x60 writes; switches through LG vendor code 0xF4. Generic capabilities list an extra DisplayPort code the panel does not have."
+    }
+  ]
+}
