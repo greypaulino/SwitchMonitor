@@ -43,6 +43,35 @@ public sealed record FeatureDefinition(
     /// </summary>
     public uint? Maximum { get; init; }
 
+    /// <summary>Order the monitor's own menu uses for the values (quirks list them that way); null sorts by value.</summary>
+    public IReadOnlyList<uint>? DisplayOrder { get; init; }
+
+    /// <summary>
+    /// The control can only be changed while every listed control has one of the listed raw values
+    /// (LG: red/green/blue only in picture mode Custom). Set by quirks; the interface locks the control otherwise.
+    /// </summary>
+    public IReadOnlyList<(byte Code, IReadOnlyList<uint> Values)> EnabledWhen { get; init; } = [];
+
+    /// <summary>Older or alternative names accepted in scenes.json (e.g. "LG picture mode").</summary>
+    public IReadOnlyList<string> Aliases { get; init; } = [];
+
+    /// <summary>
+    /// For two-option controls whose names mean on and off (FreeSync On/Off, Mute Muted/Sound on): the raw values,
+    /// so the interface can show a switch. Null otherwise.
+    /// </summary>
+    public (uint On, uint Off)? OnOffValues(IReadOnlyCollection<uint> allowed)
+    {
+        if (Kind == FeatureKind.Continuous || allowed.Count != 2) return null;
+        uint? on = null, off = null;
+        foreach (uint value in allowed)
+        {
+            string name = DescribeValue(value).Trim().ToLowerInvariant();
+            if (name is "on" or "muted" or "enabled" or "enable" or "yes") on = value;
+            else if (name is "off" or "sound on" or "disabled" or "disable" or "no") off = value;
+        }
+        return on is uint o && off is uint f ? (o, f) : null;
+    }
+
     public string DescribeValue(uint value) =>
         ValueNames.TryGetValue(value, out var name) ? name : $"0x{value:X2}";
 }

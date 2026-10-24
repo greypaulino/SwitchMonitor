@@ -27,6 +27,7 @@ jobs:
         run: |
           dotnet build .\src\SwitchMonitor.Core\SwitchMonitor.Core.csproj -c Release
           dotnet build .\src\SwitchMonitor.Probe\SwitchMonitor.Probe.csproj -c Release
+          dotnet build .\src\SwitchMonitor.App\SwitchMonitor.App.csproj -c Release
           dotnet build .\tests\SwitchMonitor.Core.Tests\SwitchMonitor.Core.Tests.csproj -c Release
       - name: Hardware-free tests
         run: dotnet run --no-build -c Release --project .\tests\SwitchMonitor.Core.Tests\SwitchMonitor.Core.Tests.csproj

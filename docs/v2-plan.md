@@ -32,11 +32,29 @@ Writes use the MCCS host address 0x51 (0x50 only for the LG 0xF4 input switch); 
 - [x] LG 29WK600 mapped: picture mode (0x15, 10 modes), response time (0xF7), FreeSync (0xF8), black stabilizer (0xF9), gamma (0xFE)
 - [x] Write-verified on the LG: picture mode, response time, FreeSync. Gamma and black stabilizer ignore DDC writes, so they are marked read-only
 
-## Phase 3 — interface
+## Phase 3 — one app, two faces
 
-- [ ] Split the WPF code-behind into services and MVVM (`HotkeyService`, `TrayService`, `UpdateService`, `MonitorManager`)
-- [ ] Controls panel generated from each monitor's capabilities
-- [ ] Import 1.x (AutoHotkey) and WPF 0.1.x profiles
+One process and one Core own every monitor command (DDC/CI is a shared bus: two programs talking to it at once collide) and every global shortcut. The 1.x "SwitchMonitor" and "brightness" programs merge, separated by the question each answers:
+
+| | Connection — "which computer, where?" | Picture — "how does it look?" |
+|---|---|---|
+| Tray icon | Monitor | Sun |
+| Holds | Inputs, Next input, return to previous, LG menu correction, main display and its hand-off | Brightness (linked or not), contrast, picture mode, response time, FreeSync, color, scenes |
+
+One settings window (tabs: Displays, Shortcuts, Scenes, General) serves both. Showing the sun icon is optional.
+
+- [x] MVVM app with services (`HotkeyService`, `TrayIcon`), controls generated from each monitor's capabilities
+- [x] Block 1: 1.x keyboard behavior (keypad and main-keyboard shortcuts, one-point taps, third quick tap and hold acceleration), slider arrow keys, persistent shortcut warnings
+- [x] Block 2: Ctrl+Alt+1..9 input shortcuts, Next input with marked inputs and the ten-second return, Return to previous input (saved), LG menu correction on Intel
+- [x] Fixes from the block 1-2 hardware tests (laptop brightness through `\\.\LCD`, Next input pressed during a switch, unreadable controls reported)
+- [x] Shortcut editor as a tab: press the keys to record, several shortcuts per action, live conflict and "used by another program" checks, restore defaults
+- [x] Scenes shown as Profiles; value alternatives; modes applied before levels
+- [x] Panel: switches for on/off controls, speaker icon for mute, read-only codes hidden, picture mode in the monitor's menu order, auto re-read after mode changes, factory-value reset per slider and for all, quirk `enabledWhen` locks
+- [ ] Window reorganized into Connection / Picture / Settings
+- [ ] "Add setting" wizard: pick a general function (or name a new one), Learn = guided snapshot diff repeated per option, value-type detection, write test with automatic revert, saved to `quirks.user.json`
+- [ ] Sun panel (Picture): one row per display, OFF rows, wheel, linked brightness, keypad +/-/*, typed 0-100, auto-hide; main-display "M" moves to Connection
+- [ ] Profile export/import and a shared, checksum-verified model database fed by user contributions
+- [ ] Import 1.x settings, Start with Windows, backup/restore, diagnostics button
 - [ ] All settings and flags under `%LOCALAPPDATA%` (required for MSIX)
 
 ## Phase 4 — quality and distribution

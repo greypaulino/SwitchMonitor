@@ -20,6 +20,16 @@ public enum WriteOutcome
     Mismatch
 }
 
+/// <summary>MCCS factory-default commands the app may send (never 0x04, which resets everything).</summary>
+public enum DefaultsGroup : byte
+{
+    /// <summary>VCP 0x05: brightness and contrast of the current mode.</summary>
+    LuminanceContrast = 0x05,
+
+    /// <summary>VCP 0x08: color preset and red/green/blue gains of the current mode.</summary>
+    Color = 0x08
+}
+
 /// <summary>
 /// One controllable display: identity, quirks, capabilities and a transport.
 /// All commands are serialized per display and use <see cref="RetryPolicy"/> instead of fixed sleeps.
@@ -184,7 +194,21 @@ public sealed class MonitorDevice : IDisposable
         ? $"{Name} ignores DDC writes to {feature.Name}; it is read-only."
         : $"{feature.Name} has not been mapped yet; it is read-only.";
 
-    private IReadOnlyList<uint> AllowedValues(FeatureDefinition definition)
+    private static IReadOnlyList<uint> AllowedValues(FeatureDefinition definition, IReadOnlyList<uint> values)
+    {
+        if (definition.DisplayOrder is not { Count: > 0 } order) return values;
+        int Position(uint value)
+        {
+            for (int i = 0; i < order.Count; i++)
+                if (order[i] == value) return i;
+            return int.MaxValue;
+        }
+        return values.OrderBy(Position).ThenBy(v => v).ToArray();
+    }
+
+    private IReadOnlyList<uint> AllowedValues(FeatureDefinition definition) => AllowedValues(definition, AdvertisedValues(definition));
+
+    private IReadOnlyList<uint> AdvertisedValues(FeatureDefinition definition)
     {
         if (definition.Kind == FeatureKind.Continuous) return Array.Empty<uint>();
         if (definition.IgnoreCapabilityValues) return definition.ValueNames.Keys.Order().ToArray();
@@ -245,6 +269,81 @@ public sealed class MonitorDevice : IDisposable
             InputPolicy.Execute($"{Name}: switch to {DescribeInput(inputCode)}", () => transport.Write(vcp, value), delay, log);
             log.Write(LogLevel.Info, $"{Name}: input switch to {DescribeInput(inputCode)} sent via {transport.Id}.");
             return Verify(VcpCode.InputSource, (uint)inputCode, InputPolicy);
+        }
+    }
+
+    /// <summary>Wait after a factory-default command before reading the restored values.</summary>
+    public static TimeSpan RestoreSettle { get; } = TimeSpan.FromSeconds(1.5);
+
+    /// <summary>Controls each factory-default command restores.</summary>
+    public static IReadOnlyList<byte> CodesRestoredBy(DefaultsGroup group) => group switch
+    {
+        DefaultsGroup.LuminanceContrast => [VcpCode.Brightness, VcpCode.Contrast],
+        _ => [VcpCode.ColorPreset, VcpCode.RedGain, VcpCode.GreenGain, VcpCode.BlueGain]
+    };
+
+    /// <summary>The group whose factory-default command restores <paramref name="code"/>, if any.</summary>
+    public static DefaultsGroup? GroupOf(byte code) =>
+        CodesRestoredBy(DefaultsGroup.LuminanceContrast).Contains(code) ? DefaultsGroup.LuminanceContrast
+        : CodesRestoredBy(DefaultsGroup.Color).Contains(code) ? DefaultsGroup.Color
+        : null;
+
+    /// <summary>Whether the monitor advertises this factory-default command.</summary>
+    public bool CanRestore(DefaultsGroup group) => IsControllable && Capabilities.VcpCodes.Contains((byte)group);
+
+    /// <summary>
+    /// Restores factory defaults for a group in the current mode. With <paramref name="only"/>, just that control is reset:
+    /// the others in the group are written back to their previous values. Returns the factory values read afterwards.
+    /// </summary>
+    public IReadOnlyDictionary<byte, uint> RestoreDefaults(DefaultsGroup group, byte? only = null)
+    {
+        lock (gate)
+        {
+            EnsureWritable();
+            if (!CanRestore(group))
+                throw new NotSupportedException($"{Name} does not offer {VcpCode.Describe((byte)group)} (factory defaults).");
+            var codes = CodesRestoredBy(group).Where(Supports).ToArray();
+            var before = new Dictionary<byte, uint>();
+            foreach (byte code in codes)
+                try { before[code] = Read(code).Current; }
+                catch (Exception error) when (RetryPolicy.IsTransient(error)) { }
+
+            WritePolicy.Execute($"{Name}: restore factory {group}", () => transport.Write((byte)group, 1), delay, log);
+            log.Write(LogLevel.Info, $"{Name}: factory {group} defaults restored via {transport.Id}" +
+                (only is byte o ? $" (keeping everything except {VcpCode.Describe(o)})." : "."));
+            delay.Wait(RestoreSettle);
+
+            var after = new Dictionary<byte, uint>();
+            foreach (byte code in codes)
+                try { after[code] = Read(code).Current; }
+                catch (Exception error) when (RetryPolicy.IsTransient(error)) { }
+
+            if (only is byte keep)
+                foreach (var (code, value) in before)
+                    if (code != keep && after.TryGetValue(code, out uint now) && now != value)
+                        try { Write(code, value); after[code] = value; }
+                        catch (Exception error) when (RetryPolicy.IsTransient(error))
+                        {
+                            log.Write(LogLevel.Warning, $"{Name}: could not put {VcpCode.Describe(code)} back to {value}.", error);
+                        }
+            return after;
+        }
+    }
+
+    /// <summary>True when the input must be sent again after the picture returns from another computer (see quirks).</summary>
+    public bool ResendsInputOnReturn => Quirk?.ResendInputOnReturn.Contains(transport.Id, StringComparer.OrdinalIgnoreCase) == true;
+
+    /// <summary>
+    /// One quiet read of the current input: no retries and no log lines, null when the display does not answer.
+    /// Used for polling while another computer may own the monitor.
+    /// </summary>
+    public int? TryReadInputOnce()
+    {
+        lock (gate)
+        {
+            if (disposed || !IsControllable) return null;
+            try { return (int)transport.Read(VcpCode.InputSource).Current; }
+            catch (Exception error) when (error is not OutOfMemoryException) { return null; }
         }
     }
 

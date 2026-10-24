@@ -157,7 +157,8 @@ internal static class SceneTests
         var night = scenes[1];
         Assert.Equal(15.0, night.Settings[0].Percent);
         Assert.Equal<uint?>(0x05, night.Settings[1].Value, "6500 K");
-        Assert.Equal<uint?>(0x05, scenes[2].Settings[1].Value, "Games");
+        Assert.Equal<uint?>(0x1C, scenes[2].Settings[1].Value, "LG FPS Game 1 first");
+        Assert.Equal<uint?>(0x05, scenes[2].Settings[1].Alternatives[0].Value, "then the standard Games mode");
     }
 
     [Test]
@@ -278,8 +279,8 @@ internal static class VendorControlTests
     {
         using var lg = Lg(new FakeTransport { Capabilities = LgCaps });
         var names = lg.Features.Select(f => f.Name).ToArray();
-        Assert.Sequence(["Brightness", "Contrast", "Volume", "Mute", "Color preset", "Red", "Green", "Blue", "Power",
-            "LG picture mode", "VCP 0x4D", "VCP 0x4E", "VCP 0x4F", "Vendor 0xEF", "Vendor 0xF5", "Vendor 0xF6", "Response time",
+        Assert.Sequence(["Brightness", "Contrast", "Volume", "Mute", "Color temperature", "Red", "Green", "Blue", "Power",
+            "Picture mode", "VCP 0x4D", "VCP 0x4E", "VCP 0x4F", "Vendor 0xEF", "Vendor 0xF5", "Vendor 0xF6", "Response time",
             "FreeSync", "Black stabilizer", "Vendor 0xFD", "Gamma", "Vendor 0xFF"], names);
         Assert.True(!names.Contains("Vendor 0xF4"), "input-switch code hidden");
         Assert.True(lg.Features.All(f => f.Code is not (0x04 or 0x05 or 0x08 or 0xC0 or 0xDF)), "commands and info hidden");
@@ -314,7 +315,7 @@ internal static class VendorControlTests
         var merged = QuirkDatabase.LoadEmbedded().Merge(user);
         var quirk = merged.Match(LgId)!;
         Assert.Equal((byte?)0xF4, quirk.InputWriteVcp, "embedded input mapping kept");
-        Assert.Sequence(new byte[] { 0x15, 0xF6, 0xF7, 0xF8, 0xF9, 0xFE }, quirk.Controls.Select(c => c.Code), "embedded controls kept, user F6 added");
+        Assert.Sequence(new byte[] { 0x14, 0x15, 0x16, 0x18, 0x1A, 0xF6, 0xF7, 0xF8, 0xF9, 0xFE }, quirk.Controls.Select(c => c.Code), "embedded controls kept, user F6 added");
 
         var fake = new FakeTransport { Capabilities = LgCaps };
         fake.Values[0xF6] = new VcpValue(0x00, 0x02);
@@ -387,7 +388,7 @@ internal static class LgPictureModeTests
         fake.Values[0x15] = new VcpValue(1, 255);
         using var monitor = new MonitorDevice(TestMonitors.Identity(id), fake, db.Match(id), null, new RecordingDelay());
         var mode = monitor.Features.Single(f => f.Code == 0x15);
-        Assert.Sequence([1u, 6u, 28u, 39u, 48u], mode.AllowedValues, "decoded + named HDR Effect");
+        Assert.Sequence([1u, 39u, 6u, 28u, 48u], mode.AllowedValues, "named values in the quirk's menu order, then the other decoded ones");
         Assert.Equal(WriteOutcome.Verified, monitor.SetChoice(0x15, 48));
         // The hex reading of "48" (0x48 = 72) is not a real mode.
         Assert.Throws<ArgumentOutOfRangeException>(() => monitor.SetChoice(0x15, 0x48));
@@ -400,8 +401,8 @@ internal static class LgPictureModeTests
         fake.Values[0x15] = new VcpValue(11, 255);
         using var lg = new MonitorDevice(TestMonitors.Identity(LgId), fake, QuirkDatabase.LoadEmbedded().Match(LgId), null, new RecordingDelay());
         var mode = lg.Features.Single(f => f.Code == 0x15);
-        Assert.Sequence(["Reader", "Color Weakness", "Custom", "RTS Game", "Custom (Game)", "FPS Game 1", "FPS Game 2",
-            "Photo", "HDR Effect", "Cinema"], mode.AllowedValues.Select(mode.Definition.DescribeValue));
+        Assert.Sequence(["Custom", "Reader", "Photo", "Cinema", "Color Weakness", "FPS Game 1", "FPS Game 2", "RTS Game",
+            "Custom (Game)", "HDR Effect"], mode.AllowedValues.Select(mode.Definition.DescribeValue), "the monitor's own menu order");
         Assert.Throws<ArgumentOutOfRangeException>(() => lg.SetChoice(0x15, 9));
         Assert.Equal(WriteOutcome.Verified, lg.SetChoice(0x15, 39));
     }
