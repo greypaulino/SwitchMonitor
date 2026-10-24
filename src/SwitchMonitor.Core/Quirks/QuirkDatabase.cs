@@ -27,6 +27,12 @@ public sealed class MonitorQuirk
 
     public string? Notes { get; init; }
 
+    /// <summary>
+    /// Transports on which this model needs its input sent again when the picture returns from another computer,
+    /// because its menu keeps showing the other port (LG 29WK600 on Intel, 1.x "automatic menu correction").
+    /// </summary>
+    public IReadOnlyList<string> ResendInputOnReturn { get; init; } = [];
+
     /// <summary>Vendor controls this model is known to have (e.g. LG picture mode on VCP 0x15).</summary>
     public IReadOnlyList<FeatureDefinition> Controls { get; init; } = [];
 
@@ -81,6 +87,7 @@ public sealed partial class QuirkDatabase
                 InputWriteVcp = baseQuirk.InputWriteVcp,
                 InputWriteValues = baseQuirk.InputWriteValues,
                 Transports = baseQuirk.Transports,
+                ResendInputOnReturn = baseQuirk.ResendInputOnReturn,
                 Notes = baseQuirk.Notes,
                 Controls = controls
             };
@@ -171,6 +178,9 @@ public sealed partial class QuirkDatabase
             Transports = entry.TryGetProperty("transports", out var transports)
                 ? transports.EnumerateArray().Select(e => e.GetString() ?? "").ToArray()
                 : [],
+            ResendInputOnReturn = entry.TryGetProperty("resendInputOnReturn", out var resend)
+                ? resend.EnumerateArray().Select(e => e.GetString() ?? "").ToArray()
+                : [],
             Notes = entry.TryGetProperty("notes", out var notes) ? notes.GetString() : null,
             Controls = entry.TryGetProperty("controls", out var controls)
                 ? controls.EnumerateArray().Select(c => ParseControl(c, id)).ToArray()
@@ -182,12 +192,22 @@ public sealed partial class QuirkDatabase
     private static FeatureDefinition ParseControl(JsonElement control, string quirkId)
     {
         byte code = (byte)Hex(RequiredString(control, "vcp"), quirkId);
+        var enabledWhen = new List<(byte, IReadOnlyList<uint>)>();
+        if (control.TryGetProperty("enabledWhen", out var conditions))
+            foreach (var condition in conditions.EnumerateObject())
+                enabledWhen.Add(((byte)Hex(condition.Name, quirkId),
+                    condition.Value.EnumerateArray().Select(v => (uint)Hex(v.GetString() ?? "", quirkId)).ToArray()));
         if (FeatureCatalog.IsCommand(code) || code == VcpCode.InputSource || code == VcpCode.PowerMode)
             throw new FormatException($"Quirk {quirkId}: VCP {code:X2} cannot be a control.");
         var names = new Dictionary<uint, string>();
+        var order = new List<uint>();   // the order written in quirks.json = the monitor's own menu order
         if (control.TryGetProperty("values", out var values))
             foreach (var pair in values.EnumerateObject())
-                names[(uint)Hex(pair.Name, quirkId)] = pair.Value.GetString() ?? pair.Name;
+            {
+                uint raw = (uint)Hex(pair.Name, quirkId);
+                names[raw] = pair.Value.GetString() ?? pair.Name;
+                if (!order.Contains(raw)) order.Add(raw);
+            }
         string kindText = control.TryGetProperty("kind", out var k) ? k.GetString() ?? "" : (names.Count > 0 ? "choice" : "continuous");
         var kind = kindText.ToLowerInvariant() switch
         {
@@ -211,7 +231,12 @@ public sealed partial class QuirkDatabase
         {
             CapabilityValuesAreDecimal = decimalCaps,
             IgnoreCapabilityValues = ignoreCaps,
-            Maximum = maximum
+            Maximum = maximum,
+            DisplayOrder = order.Count > 0 ? order : null,
+            EnabledWhen = enabledWhen,
+            Aliases = control.TryGetProperty("aliases", out var aliases)
+                ? aliases.EnumerateArray().Select(a => a.GetString() ?? "").Where(a => a.Length > 0).ToArray()
+                : []
         };
     }
 

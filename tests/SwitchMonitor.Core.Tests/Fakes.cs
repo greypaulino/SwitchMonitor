@@ -15,7 +15,7 @@ internal sealed class FakeTransport : IMonitorTransport
     public int FailWritesRemaining { get; set; }
     public bool SupportsWrites { get; set; } = true;
     public bool Disposed { get; private set; }
-    public string Id => "fake";
+    public string Id { get; set; } = "fake";
 
     public string? ReadCapabilities() => Capabilities;
 
