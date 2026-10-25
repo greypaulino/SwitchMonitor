@@ -43,6 +43,22 @@ public sealed class MonitorViewModel : ObservableObject
     public bool HasInputs => Inputs.Count > 0;
     public ObservableCollection<ControlViewModel> Controls { get; } = [];
 
+    /// <summary>Red/green/blue and black levels: shown on the Advanced tab only (see <see cref="FeatureCatalog.IsAdvanced"/>).</summary>
+    public ObservableCollection<ControlViewModel> AdvancedControls { get; } = [];
+
+    public bool HasAdvanced => AdvancedControls.Count > 0;
+    public bool HasNoAdvanced => loaded && !isLoading && LoadError is null && AdvancedControls.Count == 0;
+
+    private string? advancedHint;
+
+    /// <summary>Why some advanced controls are hidden right now (LG red/green/blue outside the Custom picture modes).</summary>
+    public string? AdvancedHint { get => advancedHint; private set => Set(ref advancedHint, value); }
+
+    /// <summary>Every control of the panel, both tabs, plus mute (shown as the speaker of the volume slider).</summary>
+    public IEnumerable<ControlViewModel> AllControls =>
+        Controls.Concat(AdvancedControls)
+            .Concat(Controls.OfType<SliderControlViewModel>().Select(s => (ControlViewModel?)s.Mute).OfType<ControlViewModel>());
+
     public bool IsLoading { get => isLoading; private set => Set(ref isLoading, value); }
     public string? LoadError { get => loadError; private set => Set(ref loadError, value); }
 
@@ -90,9 +106,10 @@ public sealed class MonitorViewModel : ObservableObject
             foreach (var control in controls)
             {
                 control.Publish();
-                Controls.Add(control);
+                (FeatureCatalog.IsAdvanced(control.Feature.Code) ? AdvancedControls : Controls).Add(control);
             }
             Raise(nameof(HasInputs));
+            Raise(nameof(HasAdvanced));
             LinkMuteAndVolume();
             if (unreadable.Count > 0)
             {
@@ -105,15 +122,18 @@ public sealed class MonitorViewModel : ObservableObject
             LoadError = error.Message;
             loaded = false;
         }
-        finally { IsLoading = false; }
+        finally
+        {
+            IsLoading = false;
+            Raise(nameof(HasNoAdvanced));
+        }
     }
 
     /// <summary>Re-reads every control (after a scene or a change made on the monitor's own menu).</summary>
     public async Task ReloadValuesAsync()
     {
         if (!loaded) return;
-        var controls = Controls.Concat(Controls.OfType<SliderControlViewModel>().Select(s => (ControlViewModel?)s.Mute))
-            .OfType<ControlViewModel>().ToArray();
+        var controls = AllControls.ToArray();
         await RunExclusiveAsync(() =>
         {
             foreach (var control in controls)
@@ -130,7 +150,8 @@ public sealed class MonitorViewModel : ObservableObject
         if (feature.Kind == FeatureKind.Continuous)
             return new SliderControlViewModel(this, feature)
             {
-                ResetGroup = MonitorDevice.GroupOf(feature.Code) is { } group && Device.CanRestore(group) ? group : null
+                ResetGroup = MonitorDevice.GroupOf(feature.Code) is { } group && Device.CanRestore(group) ? group : null,
+                ResetValue = feature.Definition.DefaultValue
             };
         if (feature.Definition.OnOffValues(feature.AllowedValues.ToArray()) is { } pair)
             return new ToggleControlViewModel(this, feature, pair.On, pair.Off);
@@ -151,7 +172,7 @@ public sealed class MonitorViewModel : ObservableObject
             Controls.Remove(mute);
             mute.PropertyChanged += (_, e) => { if (e.PropertyName == nameof(ToggleControlViewModel.IsOn)) UpdateLocks(); };
         }
-        foreach (var control in Controls)
+        foreach (var control in Controls.Concat(AdvancedControls))
             control.PropertyChanged += (_, e) =>
             {
                 if (e.PropertyName is nameof(ChoiceControlViewModel.Selected) or nameof(ToggleControlViewModel.IsOn)) UpdateLocks();
@@ -159,13 +180,17 @@ public sealed class MonitorViewModel : ObservableObject
         UpdateLocks();
     }
 
-    /// <summary>Locks volume while muted and controls whose quirk rules are not met (LG red/green/blue outside Custom).</summary>
+    /// <summary>
+    /// Dims volume while muted and controls whose quirk rules are not met in the current mode (LG sharpness outside the
+    /// Custom picture modes); quirk controls marked "whenLocked": "hide" disappear instead (LG red/green/blue).
+    /// </summary>
     private void UpdateLocks()
     {
-        var all = Controls.ToList();
+        var all = Controls.Concat(AdvancedControls).ToList();
         foreach (var control in all)
         {
             string? reason = null;
+            bool modeRule = false;
             foreach (var (code, values) in control.Feature.Definition.EnabledWhen)
             {
                 var source = all.FirstOrDefault(c => c.Feature.Code == code);
@@ -173,12 +198,16 @@ public sealed class MonitorViewModel : ObservableObject
                 {
                     string allowed = string.Join(" or ", values.Select(source.Feature.Definition.DescribeValue));
                     reason = $"Adjustable only when {source.Name} is {allowed}.";
+                    modeRule = true;
                     break;
                 }
             }
             if (reason is null && control is SliderControlViewModel { Mute.IsOn: true }) reason = "Muted: click the speaker to unmute.";
-            control.SetLock(reason);
+            control.SetLock(reason, hide: modeRule && control.Feature.Definition.HideWhenLocked);
         }
+        AdvancedHint = AdvancedControls.FirstOrDefault(c => !c.IsShown)?.LockReason is { } why
+            ? $"Red, green and blue are hidden. {why}"
+            : null;
     }
 
     /// <summary>
@@ -187,16 +216,23 @@ public sealed class MonitorViewModel : ObservableObject
     /// </summary>
     public async Task ResetAsync(ControlViewModel? control)
     {
-        DefaultsGroup[] groups = control?.ResetGroup is { } one
-            ? new[] { one }
-            : new[] { DefaultsGroup.LuminanceContrast, DefaultsGroup.Color }.Where(Device.CanRestore).ToArray();
-        if (groups.Length == 0) return;
+        DefaultsGroup[] groups = control is null
+            ? new[] { DefaultsGroup.LuminanceContrast, DefaultsGroup.Color }.Where(Device.CanRestore).ToArray()
+            : control.ResetGroup is { } one ? new[] { one } : [];
+        // Controls without a factory command but with a known default (LG black levels): written directly.
+        byte[] direct = control is null
+            ? Controls.Concat(AdvancedControls).Where(c => c.ResetGroup is null && c.ResetValue is not null && c.IsEnabled)
+                .Select(c => c.Feature.Code).ToArray()
+            : control.ResetGroup is null && control.ResetValue is not null ? [control.Feature.Code] : [];
+        if (groups.Length == 0 && direct.Length == 0) return;
         string what = control is null ? "factory brightness, contrast and colors" : $"{control.Name} factory value";
+        inputs.SettingChangedByHand(this);
         try
         {
             await RunExclusiveAsync(() =>
             {
                 foreach (var group in groups) Device.RestoreDefaults(group, control?.Feature.Code);
+                foreach (byte code in direct) Device.RestoreDefaultValue(code);
                 return true;
             });
             report($"{Name}: {what} restored for the current mode.", true);
@@ -258,6 +294,13 @@ public sealed class MonitorViewModel : ObservableObject
         foreach (var input in Inputs) input.IsCurrent = input.Code == code;
     }
 
+    /// <summary>A write the person made on the panel (slider, list, switch, reset): Custom becomes the active profile.</summary>
+    public Task<bool> RunByHandAsync(string what, Func<MonitorDevice, WriteOutcome> action)
+    {
+        inputs.SettingChangedByHand(this);
+        return RunAsync(what, action);
+    }
+
     /// <summary>Runs one write and reports the outcome in the status bar. Returns false when it failed.</summary>
     public async Task<bool> RunAsync(string what, Func<MonitorDevice, WriteOutcome> action)
     {
@@ -267,6 +310,7 @@ public sealed class MonitorViewModel : ObservableObject
             string message = outcome switch
             {
                 WriteOutcome.Verified => $"{Name}: {what}",
+                WriteOutcome.Applied => $"{Name}: {what} (sent; this monitor does not report it back)",
                 WriteOutcome.Unverified => $"{Name}: {what} (sent; the monitor did not confirm)",
                 _ => $"{Name}: {what} — the monitor kept another value"
             };
@@ -280,6 +324,40 @@ public sealed class MonitorViewModel : ObservableObject
         }
     }
 
+    /// <summary>
+    /// After a profile: shows what was applied (or was already there) at once. Only when a mode or preset really
+    /// changed is the monitor read again, because the new mode brings its own values for the other controls.
+    /// </summary>
+    public void ShowApplied(IEnumerable<Core.Scenes.SceneStep> steps)
+    {
+        bool modeChanged = false;
+        foreach (var step in steps.Where(s => s.Monitor == Name))
+        {
+            if (step.Status is not (Core.Scenes.SceneStepStatus.Applied or Core.Scenes.SceneStepStatus.AlreadySet
+                or Core.Scenes.SceneStepStatus.Unconfirmed)) continue;
+            var control = AllControls.FirstOrDefault(c => c.Feature.Code == step.Setting.Feature.Code);
+            control?.Show(step.Setting.Percent, step.Setting.Value);
+            if (step.Setting.Percent is null && step.Status != Core.Scenes.SceneStepStatus.AlreadySet) modeChanged = true;
+        }
+        UpdateLocks();
+        if (modeChanged) RefreshSoon();
+    }
+
+    /// <summary>
+    /// The value the panel shows now for a control, for "capture current values" in the profile editor:
+    /// a percentage for sliders, a raw value otherwise. Null when the control is not on the panel.
+    /// </summary>
+    public (double? Percent, uint? Raw)? ShownValue(byte code)
+    {
+        var control = AllControls.FirstOrDefault(c => c.Feature.Code == code);
+        return control switch
+        {
+            SliderControlViewModel slider => (slider.Value, null),
+            ToggleControlViewModel or ChoiceControlViewModel when control.RawValue is uint raw => (null, raw),
+            _ => null
+        };
+    }
+
     public SliderControlViewModel? Brightness =>
         Controls.OfType<SliderControlViewModel>().FirstOrDefault(c => c.Feature.Code == VcpCode.Brightness);
 
@@ -291,4 +369,7 @@ public sealed class MonitorViewModel : ObservableObject
     }
 
     public void Dispose() => Device.Dispose();
+
+    /// <summary>The display name, for drop-downs whose template shows the item as text.</summary>
+    public override string ToString() => Name;
 }

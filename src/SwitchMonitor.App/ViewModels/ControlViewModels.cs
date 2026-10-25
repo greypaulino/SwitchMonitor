@@ -25,10 +25,23 @@ public abstract class ControlViewModel(MonitorViewModel owner, MonitorFeature fe
     /// <summary>Why the control is locked, shown as a tooltip.</summary>
     public string? LockReason { get => lockReason; private set => Set(ref lockReason, value); }
 
-    public void SetLock(string? reason)
+    private bool isShown = true;
+
+    /// <summary>
+    /// False while the current mode makes the control meaningless (LG red/green/blue outside the Custom picture modes):
+    /// the row is removed instead of dimmed. Temporary locks such as mute only dim.
+    /// </summary>
+    public bool IsShown { get => isShown; private set => Set(ref isShown, value); }
+
+    /// <summary>Tooltip of the row: why it is locked, or a note about the control.</summary>
+    public virtual string? ToolTipText => LockReason;
+
+    public void SetLock(string? reason, bool hide = false)
     {
         LockReason = reason;
+        Raise(nameof(ToolTipText));
         IsEnabled = reason is null;
+        IsShown = !(hide && reason is not null);
     }
 
     /// <summary>The raw value shown now, for rules such as "only in picture mode Custom" (null for sliders).</summary>
@@ -36,7 +49,9 @@ public abstract class ControlViewModel(MonitorViewModel owner, MonitorFeature fe
 
     /// <summary>The factory-default group that can reset this control, if the monitor offers it.</summary>
     public DefaultsGroup? ResetGroup { get; init; }
-    public bool CanReset => ResetGroup is not null;
+    /// <summary>Known default raw value written by the reset button when no factory command covers the control.</summary>
+    public uint? ResetValue { get; init; }
+    public bool CanReset => ResetGroup is not null || ResetValue is not null;
     public ICommand ResetCommand => new RelayCommand(() => _ = Owner.ResetAsync(this));
 
     /// <summary>Reads the current value from the monitor (called on a worker thread).</summary>
@@ -44,6 +59,9 @@ public abstract class ControlViewModel(MonitorViewModel owner, MonitorFeature fe
 
     /// <summary>Pushes the loaded value to bindings (called on the UI thread after <see cref="Load"/>).</summary>
     public abstract void Publish();
+
+    /// <summary>Shows a value just applied by a profile, without reading the monitor again (UI thread).</summary>
+    public virtual void Show(double? percent, uint? raw) { }
 }
 
 /// <summary>Continuous control shown as a 0-100 % slider. Writes are debounced while dragging.</summary>
@@ -87,7 +105,8 @@ public sealed class SliderControlViewModel(MonitorViewModel owner, MonitorFeatur
         get => value;
         set
         {
-            if (!Set(ref this.value, Math.Round(value))) return;
+            double rounded = SnapsToSteps ? Math.Round(value / SmallStep) * SmallStep : Math.Round(value);
+            if (!Set(ref this.value, Math.Clamp(rounded, 0, 100))) return;
             Raise(nameof(ValueText));
             if (!publishing) ScheduleWrite(this.value);
         }
@@ -95,9 +114,18 @@ public sealed class SliderControlViewModel(MonitorViewModel owner, MonitorFeatur
 
     public string ValueText => $"{Value:0}%";
 
+    /// <summary>Slider step in percent: 10 for LG sharpness (the monitor takes steps of 10), otherwise 1.</summary>
+    public double SmallStep => Feature.Definition.Step is uint step ? step * 100.0 / (Feature.Definition.Maximum ?? 100) : 1;
+    public double LargeStep => Math.Max(10, SmallStep);
+    public bool SnapsToSteps => Feature.Definition.Step is not null;
+
+    public override string? ToolTipText => LockReason ?? (Feature.Definition.WriteOnly
+        ? $"The monitor does not report {Name.ToLowerInvariant()}; the slider shows the last value set from this app."
+        : null);
+
     public override void Load(MonitorDevice device)
     {
-        var raw = device.Read(Feature.Code);
+        var raw = device.CurrentValue(Feature.Code);
         uint top = Feature.Definition.Maximum ?? raw.Maximum;
         loaded = top == 0 ? 0 : Math.Round(raw.Current * 100.0 / top);
     }
@@ -107,6 +135,13 @@ public sealed class SliderControlViewModel(MonitorViewModel owner, MonitorFeatur
         publishing = true;
         try { Value = loaded; }
         finally { publishing = false; }
+    }
+
+    public override void Show(double? percent, uint? raw)
+    {
+        if (percent is not double p) return;
+        loaded = p;
+        Publish();
     }
 
     /// <summary>Used by brightness shortcuts: moves the slider at once; the write follows the usual short debounce.</summary>
@@ -123,7 +158,7 @@ public sealed class SliderControlViewModel(MonitorViewModel owner, MonitorFeatur
     {
         try { await Task.Delay(150, token); }
         catch (TaskCanceledException) { return; }
-        await Owner.RunAsync($"{Name} {target:0}%", device => device.SetPercent(Feature.Code, target));
+        await Owner.RunByHandAsync($"{Name} {target:0}%", device => device.SetPercent(Feature.Code, target));
     }
 }
 
@@ -161,6 +196,13 @@ public sealed class ChoiceControlViewModel : ControlViewModel
 
     public override void Load(MonitorDevice device) => loaded = device.Read(Feature.Code).Current;
 
+    public override void Show(double? percent, uint? raw)
+    {
+        if (raw is not uint r) return;
+        loaded = r;
+        Publish();
+    }
+
     public override void Publish()
     {
         publishing = true;
@@ -180,7 +222,7 @@ public sealed class ChoiceControlViewModel : ControlViewModel
 
     private async Task ApplyAsync(ChoiceOption option, ChoiceOption? previous)
     {
-        bool ok = await Owner.RunAsync($"{Name}: {option.Label}", device => device.SetChoice(Feature.Code, option.Value));
+        bool ok = await Owner.RunByHandAsync($"{Name}: {option.Label}", device => device.SetChoice(Feature.Code, option.Value));
         if (!ok && previous is not null)
         {
             publishing = true;
@@ -225,10 +267,17 @@ public sealed class ToggleControlViewModel(MonitorViewModel owner, MonitorFeatur
         finally { publishing = false; }
     }
 
+    public override void Show(double? percent, uint? raw)
+    {
+        if (raw is not uint r) return;
+        loaded = r;
+        Publish();
+    }
+
     private async Task ApplyAsync(bool on, bool previous)
     {
         uint raw = on ? onValue : offValue;
-        bool ok = await Owner.RunAsync($"{Name}: {(on ? "ON" : "OFF")}", device => device.SetChoice(Feature.Code, raw));
+        bool ok = await Owner.RunByHandAsync($"{Name}: {(on ? "ON" : "OFF")}", device => device.SetChoice(Feature.Code, raw));
         if (!ok)
         {
             publishing = true;
@@ -276,6 +325,9 @@ public interface IInputCoordinator
     bool IsInCycle(MonitorViewModel monitor, int code);
     void SetInCycle(MonitorViewModel monitor, int code, bool included);
     void InputsLoaded(MonitorViewModel monitor);
+
+    /// <summary>A picture or sound setting was changed by hand: the active profile becomes Custom.</summary>
+    void SettingChangedByHand(MonitorViewModel monitor);
 }
 
 /// <summary>One input button (HDMI 1, DisplayPort 1 ...) with its shortcut and its Next input mark.</summary>

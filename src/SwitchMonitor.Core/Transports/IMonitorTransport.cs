@@ -20,6 +20,12 @@ public interface IMonitorTransport : IDisposable
     VcpValue Read(byte code);
 
     void Write(byte code, uint value);
+
+    /// <summary>
+    /// The panel only has some brightness levels (laptop screens over WMI: 15 % becomes 18 %), so a read-back near the
+    /// requested value is the closest level, not a failure.
+    /// </summary>
+    bool SnapsToLevels => false;
 }
 
 /// <summary>Thrown when a transport cannot perform the requested operation on this display.</summary>

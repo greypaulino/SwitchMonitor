@@ -25,12 +25,19 @@
           }
         },
         {
+          "vcp": "87", "name": "Sharpness", "kind": "continuous", "notAdvertised": true, "after": "12",
+          "writeOnly": true, "step": 10, "default": 50, "enabledWhen": { "15": [ "0B", "0E" ] }
+        },
+        {
           "vcp": "14", "name": "Color temperature", "aliases": [ "Color preset" ], "kind": "choice", "capabilityValues": "ignore",
           "values": { "05": "6500 K", "08": "9300 K" }
         },
-        { "vcp": "16", "name": "Red", "kind": "continuous", "enabledWhen": { "15": [ "0B" ] } },
-        { "vcp": "18", "name": "Green", "kind": "continuous", "enabledWhen": { "15": [ "0B" ] } },
-        { "vcp": "1A", "name": "Blue", "kind": "continuous", "enabledWhen": { "15": [ "0B" ] } },
+        { "vcp": "16", "name": "Red", "kind": "continuous", "enabledWhen": { "15": [ "0B", "0E" ] }, "whenLocked": "hide" },
+        { "vcp": "18", "name": "Green", "kind": "continuous", "enabledWhen": { "15": [ "0B", "0E" ] }, "whenLocked": "hide" },
+        { "vcp": "1A", "name": "Blue", "kind": "continuous", "enabledWhen": { "15": [ "0B", "0E" ] }, "whenLocked": "hide" },
+        { "vcp": "6C", "name": "Black level red", "kind": "continuous", "notAdvertised": true, "after": "1A", "default": 50 },
+        { "vcp": "6E", "name": "Black level green", "kind": "continuous", "notAdvertised": true, "after": "6C", "default": 50 },
+        { "vcp": "70", "name": "Black level blue", "kind": "continuous", "notAdvertised": true, "after": "6E", "default": 50 },
         {
           "vcp": "F7", "name": "Response time", "kind": "choice",
           "values": { "00": "Off", "01": "Faster", "02": "Fast", "03": "Normal" }
@@ -45,7 +52,7 @@
           "values": { "02": "Mode 1", "03": "Mode 2", "04": "Mode 3", "07": "Mode 4" }
         }
       ],
-      "notes": "Ignores standard VCP 0x60 writes; switches through LG vendor code 0xF4. Generic capabilities list an extra DisplayPort code the panel does not have. Picture-mode values are advertised in decimal and the list is wrong (it includes 9, 10 and 44, which are not modes on this unit, and omits HDR Effect = 39), so only the 10 known modes are offered. Learned on DESKTOP-BPMFO0B: Sharpness, Super Resolution+ and Buzzer change no DDC code; Color Temp (Warm, in Custom) changed no code in one try. Gamma (0xFE) reads 18 in HDR Effect and its advertised list (00 01 02) is wrong. Toggling FreeSync also changes the value read back on 0xF4. Write-verified (address 0x51): brightness, contrast, volume, picture mode, response time, FreeSync. Gamma and black stabilizer ignore DDC writes in Custom and FPS Game 1, so they are read-only. Color temperature (0x14): writing 6500 K or 9300 K sets the menu's Color Temp to Custom with that temperature; the menu presets Warm, Medium and Cool are not reachable over DDC, 0x14 does not report them, and User 1 (0x0B) is rejected. Red, green and blue only change in picture mode Custom."
+      "notes": "Ignores standard VCP 0x60 writes; switches through LG vendor code 0xF4. Generic capabilities list an extra DisplayPort code the panel does not have. Picture-mode values are advertised in decimal and the list is wrong (it includes 9, 10 and 44, which are not modes on this unit, and omits HDR Effect = 39), so only the 10 known modes are offered. Learned on DESKTOP-BPMFO0B: Sharpness, Super Resolution+ and Buzzer change no DDC code; Color Temp (Warm, in Custom) changed no code in one try. Gamma (0xFE) reads 18 in HDR Effect and its advertised list (00 01 02) is wrong. Toggling FreeSync also changes the value read back on 0xF4. Write-verified (address 0x51): brightness, contrast, volume, picture mode, response time, FreeSync. Gamma and black stabilizer ignore DDC writes in Custom and FPS Game 1, so they are read-only. Color temperature (0x14): writing 6500 K or 9300 K sets the menu's Color Temp to Custom with that temperature; the menu presets Warm, Medium and Cool are not reachable over DDC, 0x14 does not report them, and User 1 (0x0B) is rejected. Red, green and blue only change in the Custom picture modes (Custom and Custom (Game)); the panel hides them in the others. Deep scan + guided check (2026-10-24): black level red/green/blue (0x6C/0x6E/0x70) are not advertised but write, read back, restore and visibly tint blacks, in Custom and in Reader; default 50. Sharpness (0x87) is write-only: writes in steps of 10 visibly change the picture (checked by eye, there and back, in Custom, Custom (Game) and even Reader) but DDC and the menu keep reporting 50, so the app remembers the last value; it is offered only in the Custom picture modes, like the monitor's own menu. Color Temp presets (2026-10-25): the menu and DDC show red/green/blue 50/50/50 and 0x14 = 05 for Custom, Warm, Medium and Cool, so presets are not stored as gains; Warm looks the same as 6500 K and Cool the same as 9300 K (0x14 = 08); Medium has no DDC equivalent and 0x0C stays 35."
     }
   ]
 }

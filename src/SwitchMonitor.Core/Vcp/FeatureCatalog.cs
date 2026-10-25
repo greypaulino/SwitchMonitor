@@ -52,6 +52,33 @@ public sealed record FeatureDefinition(
     /// </summary>
     public IReadOnlyList<(byte Code, IReadOnlyList<uint> Values)> EnabledWhen { get; init; } = [];
 
+    /// <summary>
+    /// The monitor answers this code but leaves it out of its capabilities string (LG black levels, found by the deep scan
+    /// and confirmed by a guided write check). Only quirks set this, so unproven codes never reach the panel.
+    /// </summary>
+    public bool NotAdvertised { get; init; }
+
+    /// <summary>Where a not-advertised control goes in the panel: right after this code (null = at the end).</summary>
+    public byte? PlaceAfter { get; init; }
+
+    /// <summary>
+    /// The monitor applies writes but keeps reporting another value (LG sharpness always reads 50). The app shows the
+    /// last value it wrote instead (see <c>RememberedValues</c>). Only quirks set this, after a by-eye check.
+    /// </summary>
+    public bool WriteOnly { get; init; }
+
+    /// <summary>Raw step the monitor accepts (LG sharpness: 10). Writes are rounded to it and made one step at a time.</summary>
+    public uint? Step { get; init; }
+
+    /// <summary>
+    /// When <see cref="EnabledWhen"/> is not met, remove the control instead of dimming it (LG red/green/blue outside the
+    /// Custom picture modes). Set by quirks with "whenLocked": "hide".
+    /// </summary>
+    public bool HideWhenLocked { get; init; }
+
+    /// <summary>Known default raw value, for controls no factory-default command covers. The reset button writes it.</summary>
+    public uint? DefaultValue { get; init; }
+
     /// <summary>Older or alternative names accepted in scenes.json (e.g. "LG picture mode").</summary>
     public IReadOnlyList<string> Aliases { get; init; } = [];
 
@@ -120,6 +147,13 @@ public static class FeatureCatalog
     ];
 
     public static FeatureDefinition? Find(byte code) => All.FirstOrDefault(f => f.Code == code);
+
+    /// <summary>
+    /// Fine color controls kept on the Advanced tab: red/green/blue gains and the MCCS black levels (0x6C/0x6E/0x70).
+    /// They only matter when tuning a Custom mode or building a profile.
+    /// </summary>
+    public static bool IsAdvanced(byte code) =>
+        code is VcpCode.RedGain or VcpCode.GreenGain or VcpCode.BlueGain or 0x6C or 0x6E or 0x70;
 
     /// <summary>
     /// MCCS commands (degauss, factory resets, auto setup, save/restore). Never read or written by scans or

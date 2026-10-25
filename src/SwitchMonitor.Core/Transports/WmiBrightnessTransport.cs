@@ -17,6 +17,7 @@ internal sealed class WmiBrightnessTransport : IMonitorTransport
 
     public string Id => "wmi";
     public bool SupportsWrites => true;
+    public bool SnapsToLevels => true;
     public string InstanceName => instanceName;
 
     public string? ReadCapabilities() => "(vcp(10))";

@@ -38,6 +38,9 @@ public static class SceneStore
 {
     public const string FileName = "scenes.json";
 
+    /// <summary>The app's own first profile (the person's hand-made settings); a saved profile cannot take this name.</summary>
+    public const string CustomName = "Custom";
+
     public static string DefaultPath => Path.Combine(AppPaths.DataDirectory, FileName);
 
     /// <summary>Scenes created on first run. Controls a monitor lacks are skipped when applied.</summary>
@@ -276,4 +279,100 @@ public static class SceneStore
 
     private static string Simplify(string text) =>
         new(text.Where(char.IsLetterOrDigit).Select(char.ToLowerInvariant).ToArray());
+
+    // ---- Editing (Profiles tab) ----
+
+    private static readonly JsonDocumentOptions ReadOptions = new() { CommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true };
+    private static readonly JsonSerializerOptions WriteOptions = new() { WriteIndented = true };
+
+    private static System.Text.Json.Nodes.JsonArray ScenesArray(System.Text.Json.Nodes.JsonNode root) =>
+        root["scenes"] as System.Text.Json.Nodes.JsonArray ?? throw new FormatException("scenes.json must contain a \"scenes\" array.");
+
+    private static System.Text.Json.Nodes.JsonObject? FindScene(System.Text.Json.Nodes.JsonArray scenes, string name) =>
+        scenes.OfType<System.Text.Json.Nodes.JsonObject>()
+            .FirstOrDefault(s => string.Equals(s["name"]?.GetValue<string>()?.Trim(), name.Trim(), StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// The settings of one scene exactly as written (key and JSON value), in file order. The editor keeps an untouched line
+    /// as it was, so lists such as "picture mode": ["FPS Game 1", "Games"] survive an edit of another line.
+    /// </summary>
+    public static IReadOnlyList<KeyValuePair<string, System.Text.Json.Nodes.JsonNode?>> RawSettings(string json, string name)
+    {
+        var root = System.Text.Json.Nodes.JsonNode.Parse(json, documentOptions: ReadOptions) ?? throw new FormatException("scenes.json is empty.");
+        if (FindScene(ScenesArray(root), name)?["settings"] is not System.Text.Json.Nodes.JsonObject settings) return [];
+        return settings.Select(p => new KeyValuePair<string, System.Text.Json.Nodes.JsonNode?>(p.Key, p.Value?.DeepClone())).ToArray();
+    }
+
+    /// <summary>How a value is written in scenes.json: a rounded percentage, or the value's name (hex when it has none).</summary>
+    public static System.Text.Json.Nodes.JsonNode ValueNode(FeatureDefinition feature, double? percent, uint? value)
+    {
+        if (feature.Kind == FeatureKind.Continuous)
+            return System.Text.Json.Nodes.JsonValue.Create((int)Math.Round(Math.Clamp(percent ?? 0, 0, 100)))!;
+        uint raw = value ?? 0;
+        return System.Text.Json.Nodes.JsonValue.Create(feature.ValueNames.TryGetValue(raw, out string? label) ? label : $"0x{raw:X2}")!;
+    }
+
+    /// <summary>
+    /// Adds a scene, or replaces the one called <paramref name="originalName"/> (renaming it when the name changed).
+    /// Its shortcut and any field the editor does not know are kept. The result is parsed before it is returned,
+    /// so the app never writes a file it could not read back.
+    /// </summary>
+    /// <param name="monitor">Name filter ("LG 29WK600"), or null for every display.</param>
+    public static string Upsert(string json, string? originalName, string name, string? monitor,
+        IReadOnlyList<KeyValuePair<string, System.Text.Json.Nodes.JsonNode>> settings)
+    {
+        name = name.Trim();
+        if (name.Length == 0) throw new FormatException("A profile needs a name.");
+        if (string.Equals(name, CustomName, StringComparison.OrdinalIgnoreCase))
+            throw new FormatException("\"Custom\" stands for your own current settings; choose another name for the profile.");
+        if (settings.Count == 0) throw new FormatException($"Profile \"{name}\" has no settings: include at least one.");
+        var root = System.Text.Json.Nodes.JsonNode.Parse(json, documentOptions: ReadOptions) ?? throw new FormatException("scenes.json is empty.");
+        var scenes = ScenesArray(root);
+        var existing = originalName is null ? null : FindScene(scenes, originalName);
+        if (FindScene(scenes, name) is { } clash && clash != existing)
+            throw new FormatException($"There is already a profile called \"{name}\".");
+
+        var scene = existing ?? new System.Text.Json.Nodes.JsonObject();
+        scene["name"] = name;
+        if (string.IsNullOrWhiteSpace(monitor)) scene.Remove("monitor");
+        else scene["monitor"] = monitor.Trim();
+        var values = new System.Text.Json.Nodes.JsonObject();
+        foreach (var (key, node) in settings) values[key] = node.DeepClone();
+        scene["settings"] = values;
+        if (existing is null) scenes.Add(scene);
+
+        string result = root.ToJsonString(WriteOptions);
+        Parse(result);
+        return result;
+    }
+
+    /// <summary>Removes a scene (and with it its shortcut).</summary>
+    public static string Remove(string json, string name)
+    {
+        var root = System.Text.Json.Nodes.JsonNode.Parse(json, documentOptions: ReadOptions) ?? throw new FormatException("scenes.json is empty.");
+        var scenes = ScenesArray(root);
+        if (FindScene(scenes, name) is { } scene) scenes.Remove(scene);
+        string result = root.ToJsonString(WriteOptions);
+        Parse(result);
+        return result;
+    }
+
+    /// <summary>Reads scenes.json (creating it with the defaults when missing).</summary>
+    public static string ReadText(string? path = null)
+    {
+        path ??= DefaultPath;
+        if (!File.Exists(path)) LoadOrCreate(path);
+        return File.ReadAllText(path);
+    }
+
+    /// <summary>Writes scenes.json atomically after checking it parses.</summary>
+    public static void Write(string json, string? path = null)
+    {
+        path ??= DefaultPath;
+        Parse(json);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        string temporary = path + ".tmp";
+        File.WriteAllText(temporary, json);
+        File.Move(temporary, path, overwrite: true);
+    }
 }
