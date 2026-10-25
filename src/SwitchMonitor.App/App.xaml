@@ -121,6 +121,14 @@
             <EventSetter Event="PreviewMouseLeftButtonDown" Handler="FocusSlider" HandledEventsToo="True" />
         </Style>
 
+        <Style TargetType="TextBox">
+            <Setter Property="Background" Value="{StaticResource RaisedBrush}" />
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+            <Setter Property="CaretBrush" Value="{StaticResource TextBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource LineBrush}" />
+            <Setter Property="SelectionBrush" Value="{StaticResource AccentBrush}" />
+            <Setter Property="Padding" Value="8,5" />
+        </Style>
         <Style TargetType="CheckBox">
             <Setter Property="Foreground" Value="{StaticResource MutedBrush}" />
             <Setter Property="FontSize" Value="11" />

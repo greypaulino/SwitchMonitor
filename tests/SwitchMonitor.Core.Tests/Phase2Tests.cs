@@ -142,7 +142,8 @@ internal static class CapabilitiesOverDdcTests
         const string id = @"MONITOR\GSM7714\{4d36e96e-e325-11ce-bfc1-08002be10318}\0001";
         var fake = new FakeTransport { Capabilities = "(vcp(10 12 60(11 12 0F 10) 62))" };
         using var lg = new MonitorDevice(TestMonitors.Identity(id), fake, QuirkDatabase.LoadEmbedded().Match(id), null, new RecordingDelay());
-        Assert.Sequence(["Brightness", "Contrast", "Volume"], lg.Features.Select(f => f.Name));
+        Assert.Sequence(["Brightness", "Contrast", "Sharpness", "Volume", "Black level red", "Black level green", "Black level blue"],
+            lg.Features.Select(f => f.Name), "verified hidden LG codes are added even with a short capabilities string");
         Assert.Sequence([0x11, 0x12, 0x0F], lg.Inputs, "quirk still filters phantom DisplayPort 2");
     }
 }
@@ -179,7 +180,7 @@ internal static class SceneTests
         Assert.Throws<FormatException>(() => SceneStore.Parse("""{ "scenes": [ { "name": "A", "settings": { "power": "Off (soft)" } } ] }"""));
         Assert.Throws<FormatException>(() => SceneStore.Parse("""{ "scenes": [ { "name": "A", "settings": { "input": "HDMI 1" } } ] }"""));
         Assert.Throws<FormatException>(() => SceneStore.Parse("""{ "scenes": [ { "name": "A", "settings": { "brightness": 140 } } ] }"""));
-        Assert.Throws<FormatException>(() => SceneStore.Parse("""{ "scenes": [ { "name": "A", "settings": { "sharpness": 5 } } ] }"""));
+        Assert.Throws<FormatException>(() => SceneStore.Parse("""{ "scenes": [ { "name": "A", "settings": { "sparkle": 5 } } ] }"""));
         Assert.Throws<FormatException>(() => SceneStore.Parse("""{ "scenes": [ { "name": "A", "settings": { "color preset": "purple" } } ] }"""));
         Assert.Throws<FormatException>(() => SceneStore.Parse("""{ "scenes": [ { "name": "A", "settings": {} } ] }"""));
         Assert.Throws<FormatException>(() => SceneStore.Parse(
@@ -279,11 +280,64 @@ internal static class VendorControlTests
     {
         using var lg = Lg(new FakeTransport { Capabilities = LgCaps });
         var names = lg.Features.Select(f => f.Name).ToArray();
-        Assert.Sequence(["Brightness", "Contrast", "Volume", "Mute", "Color temperature", "Red", "Green", "Blue", "Power",
+        Assert.Sequence(["Brightness", "Contrast", "Sharpness", "Volume", "Mute", "Color temperature", "Red", "Green", "Blue",
+            "Black level red", "Black level green", "Black level blue", "Power",
             "Picture mode", "VCP 0x4D", "VCP 0x4E", "VCP 0x4F", "Vendor 0xEF", "Vendor 0xF5", "Vendor 0xF6", "Response time",
             "FreeSync", "Black stabilizer", "Vendor 0xFD", "Gamma", "Vendor 0xFF"], names);
         Assert.True(!names.Contains("Vendor 0xF4"), "input-switch code hidden");
         Assert.True(lg.Features.All(f => f.Code is not (0x04 or 0x05 or 0x08 or 0xC0 or 0xDF)), "commands and info hidden");
+    }
+
+    [Test]
+    public static void VerifiedHiddenCodesAppearWithAKnownDefault()
+    {
+        var fake = new FakeTransport { Capabilities = LgCaps };
+        fake.Values[0x6C] = new VcpValue(80, 100);
+        using var lg = Lg(fake);
+        Assert.True(lg.Supports(0x6C) && !lg.Capabilities.Supports(0x6C), "black level red is answered but not advertised");
+        Assert.True(!lg.Supports(0x0C), "unproven codes such as 0x0C stay hidden");
+        var red = lg.Features.Single(f => f.Code == 0x6C);
+        Assert.Equal(FeatureRisk.Safe, red.Definition.Risk);
+        Assert.Equal(50u, red.Definition.DefaultValue ?? 0u);
+        Assert.Equal(WriteOutcome.Verified, lg.RestoreDefaultValue(0x6C));
+        Assert.Equal(50u, fake.Values[0x6C].Current);
+
+        string bad = """
+            { "monitors": [ { "id": "x", "name": "X", "pnpIds": ["GSM7714"],
+              "controls": [ { "vcp": "CC", "name": "OSD language", "kind": "continuous", "notAdvertised": true } ] } ] }
+            """;
+        Assert.Throws<FormatException>(() => QuirkDatabase.Parse(bad));
+    }
+
+    [Test]
+    public static void WriteOnlySharpnessIsRememberedAndSentOneStepAtATime()
+    {
+        // LG sharpness: applied by the monitor, but DDC keeps reporting 50.
+        var fake = new FakeTransport { Capabilities = LgCaps };
+        fake.Values[0x87] = new VcpValue(50, 100);
+        fake.Values[0x15] = new VcpValue(0x0B, 255);
+        fake.OnWrite = (t, code, value) => { if (code != 0x87) t.Values[code] = new VcpValue(value, t.Values[code].Maximum); };
+        var memory = new SwitchMonitor.Core.Settings.RememberedValues();
+        using var lg = new MonitorDevice(TestMonitors.Identity(LgId), fake, QuirkDatabase.LoadEmbedded().Match(LgId), null, new RecordingDelay())
+        {
+            Remembered = memory
+        };
+        var sharpness = lg.Features.Single(f => f.Code == 0x87);
+        Assert.True(sharpness.Definition is { WriteOnly: true, Step: 10u, DefaultValue: 50u });
+        Assert.Equal((byte)0x15, sharpness.Definition.EnabledWhen.Single().Code);
+        Assert.Sequence([0x0Bu, 0x0Eu], sharpness.Definition.EnabledWhen.Single().Values, "only the Custom picture modes");
+        Assert.Equal(50u, lg.CurrentValue(0x87).Current, "default before anything was written");
+
+        Assert.Equal(WriteOutcome.Applied, lg.SetPercent(0x87, 23));   // rounded to 20
+        Assert.Sequence([40u, 30u, 20u], fake.Writes.Where(w => w.Code == 0x87).Select(w => w.Value), "one step of 10 per write");
+        Assert.Equal(20u, lg.CurrentValue(0x87).Current, "the panel shows the remembered value");
+        Assert.Equal(50u, lg.Read(0x87).Current, "the monitor itself still reports 50");
+
+        fake.Writes.Clear();
+        Assert.Equal(WriteOutcome.Applied, lg.RestoreDefaultValue(0x87));
+        Assert.Sequence([30u, 40u, 50u], fake.Writes.Select(w => w.Value), "reset walks back to 50");
+        Assert.True(lg.Features.Single(f => f.Code == 0x16).Definition.HideWhenLocked, "red hides outside Custom");
+        Assert.True(!sharpness.Definition.HideWhenLocked, "sharpness only dims outside Custom");
     }
 
     [Test]
@@ -315,7 +369,7 @@ internal static class VendorControlTests
         var merged = QuirkDatabase.LoadEmbedded().Merge(user);
         var quirk = merged.Match(LgId)!;
         Assert.Equal((byte?)0xF4, quirk.InputWriteVcp, "embedded input mapping kept");
-        Assert.Sequence(new byte[] { 0x14, 0x15, 0x16, 0x18, 0x1A, 0xF6, 0xF7, 0xF8, 0xF9, 0xFE }, quirk.Controls.Select(c => c.Code), "embedded controls kept, user F6 added");
+        Assert.Sequence(new byte[] { 0x14, 0x15, 0x16, 0x18, 0x1A, 0x6C, 0x6E, 0x70, 0x87, 0xF6, 0xF7, 0xF8, 0xF9, 0xFE }, quirk.Controls.Select(c => c.Code), "embedded controls kept, user F6 added");
 
         var fake = new FakeTransport { Capabilities = LgCaps };
         fake.Values[0xF6] = new VcpValue(0x00, 0x02);

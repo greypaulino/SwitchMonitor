@@ -67,6 +67,9 @@ public sealed record AppSettings
 
     public bool StartMinimized { get; init; }
 
+    /// <summary>Shows the Advanced tab (red/green/blue, black levels) and the advanced rows of the profile editor.</summary>
+    public bool ShowAdvanced { get; init; }
+
     public IReadOnlyList<HotkeyChord> For(string action) =>
         Hotkeys.TryGetValue(action, out var chords) ? chords : [];
 
@@ -153,7 +156,8 @@ public sealed record AppSettings
                 root.TryGetProperty("inputShortcutsAssigned", out var assigned) && assigned.ValueKind == JsonValueKind.True,
             CycleInputs = cycle,
             BrightnessStep = step,
-            StartMinimized = root.TryGetProperty("startMinimized", out var min) && min.ValueKind == JsonValueKind.True
+            StartMinimized = root.TryGetProperty("startMinimized", out var min) && min.ValueKind == JsonValueKind.True,
+            ShowAdvanced = root.TryGetProperty("showAdvanced", out var adv) && adv.ValueKind == JsonValueKind.True
         };
     }
 
@@ -200,7 +204,8 @@ public sealed record AppSettings
             ["inputShortcutsAssigned"] = InputShortcutsAssigned || InputShortcuts.Count > 0,
             ["cycleInputs"] = cycle,
             ["brightnessStep"] = BrightnessStep,
-            ["startMinimized"] = StartMinimized
+            ["startMinimized"] = StartMinimized,
+            ["showAdvanced"] = ShowAdvanced
         };
         return root.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
     }

@@ -29,8 +29,31 @@ public static class VcpCode
         AudioMute => "Mute",
         DisplayMode => "Display mode",
         PowerMode => "Power mode",
-        _ => $"VCP 0x{code:X2}"
+        _ => MccsNames.TryGetValue(code, out var name) ? name : $"VCP 0x{code:X2}"
     };
+
+    /// <summary>MCCS 2.2a names of other standard codes, used to label scan results.</summary>
+    private static readonly Dictionary<byte, string> MccsNames = new()
+    {
+        [0x02] = "New control value", [0x04] = "Restore factory defaults", [0x05] = "Restore luminance/contrast",
+        [0x06] = "Restore geometry", [0x08] = "Restore color defaults", [0x0B] = "Color temperature increment",
+        [0x0C] = "Color temperature request", [0x0E] = "Clock", [0x1E] = "Auto setup", [0x20] = "Horizontal position",
+        [0x30] = "Vertical position", [0x3E] = "Clock phase", [0x52] = "Active control", [0x59] = "6-axis saturation red",
+        [0x6C] = "Black level red", [0x6E] = "Black level green", [0x70] = "Black level blue", [0x72] = "Gamma",
+        [0x87] = "Sharpness", [0x8A] = "Saturation", [0x90] = "Hue", [0xAA] = "Screen orientation",
+        [0xAC] = "Horizontal frequency", [0xAE] = "Vertical frequency", [0xB2] = "Sub-pixel layout",
+        [0xB6] = "Display technology", [0xC0] = "Usage time", [0xC6] = "Application enable key",
+        [0xC8] = "Display controller", [0xC9] = "Firmware level", [0xCA] = "OSD", [0xCC] = "OSD language",
+        [0xDF] = "VCP version"
+    };
+
+    /// <summary>
+    /// Codes a scan never writes and the app never offers as controls, even when a monitor answers them:
+    /// resets and commands, input and power, OSD visibility and language, controller id.
+    /// </summary>
+    public static bool IsNeverWritten(byte code) =>
+        code is 0x01 or 0x03 or 0x04 or 0x05 or 0x06 or 0x08 or 0x0A or 0x1E or 0x1F or 0xB0
+            or InputSource or PowerMode or 0xCA or 0xCC or 0xC8 or 0xF4;
 }
 
 /// <summary>Standard MCCS values for VCP 0x60 (input source).</summary>

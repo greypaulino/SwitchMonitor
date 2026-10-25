@@ -15,6 +15,16 @@ public partial class MainWindow : Window
         Deactivated += (_, _) => (DataContext as MainViewModel)?.ShortcutEditor?.CancelCapture();
     }
 
+    /// <summary>The ⋯ button opens its menu on a normal click.</summary>
+    private void ShowOptions(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { ContextMenu: { } menu } button) return;
+        menu.DataContext = DataContext;
+        menu.PlacementTarget = button;
+        menu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;
+        menu.IsOpen = true;
+    }
+
     private void Record(KeyEventArgs e)
     {
         if (DataContext is not MainViewModel { IsShortcutsTab: true, ShortcutEditor: { IsCapturing: true } editor }) return;

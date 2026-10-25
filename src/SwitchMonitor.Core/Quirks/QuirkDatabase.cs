@@ -227,6 +227,21 @@ public sealed partial class QuirkDatabase
         if (maximum is not null && kind != FeatureKind.Continuous)
             throw new FormatException($"Quirk {quirkId}: only continuous controls take a maximum.");
         bool readOnly = control.TryGetProperty("readOnly", out var ro) && ro.ValueKind == JsonValueKind.True;
+        bool notAdvertised = control.TryGetProperty("notAdvertised", out var na) && na.ValueKind == JsonValueKind.True;
+        byte? after = control.TryGetProperty("after", out var af) && af.GetString() is { Length: > 0 } afterText
+            ? (byte)Hex(afterText, quirkId) : null;
+        uint? defaultValue = control.TryGetProperty("default", out var dv) && dv.TryGetUInt32(out uint d) ? d : null;
+        bool writeOnly = control.TryGetProperty("writeOnly", out var wo) && wo.ValueKind == JsonValueKind.True;
+        uint? step = control.TryGetProperty("step", out var st) && st.TryGetUInt32(out uint stepValue) && stepValue > 1 ? stepValue : null;
+        string whenLocked = control.TryGetProperty("whenLocked", out var wl) ? wl.GetString() ?? "" : "";
+        if (whenLocked.Length > 0 && whenLocked is not ("hide" or "dim"))
+            throw new FormatException($"Quirk {quirkId}: whenLocked must be \"hide\" or \"dim\".");
+        if ((writeOnly || step is not null) && kind != FeatureKind.Continuous)
+            throw new FormatException($"Quirk {quirkId}: only continuous controls can be write-only or take a step.");
+        if (writeOnly && readOnly)
+            throw new FormatException($"Quirk {quirkId}: a control cannot be both read-only and write-only.");
+        if (VcpCode.IsNeverWritten(code) && !readOnly)
+            throw new FormatException($"Quirk {quirkId}: VCP {code:X2} is never written, so it can only be read-only.");
         return new FeatureDefinition(code, RequiredString(control, "name"), kind, readOnly ? FeatureRisk.ReadOnly : FeatureRisk.Safe, names)
         {
             CapabilityValuesAreDecimal = decimalCaps,
@@ -234,6 +249,12 @@ public sealed partial class QuirkDatabase
             Maximum = maximum,
             DisplayOrder = order.Count > 0 ? order : null,
             EnabledWhen = enabledWhen,
+            NotAdvertised = notAdvertised,
+            PlaceAfter = after,
+            DefaultValue = defaultValue,
+            WriteOnly = writeOnly,
+            Step = step,
+            HideWhenLocked = whenLocked == "hide",
             Aliases = control.TryGetProperty("aliases", out var aliases)
                 ? aliases.EnumerateArray().Select(a => a.GetString() ?? "").Where(a => a.Length > 0).ToArray()
                 : []

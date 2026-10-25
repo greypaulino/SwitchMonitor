@@ -2,6 +2,7 @@ using SwitchMonitor.Core.Capabilities;
 using SwitchMonitor.Core.Diagnostics;
 using SwitchMonitor.Core.Quirks;
 using SwitchMonitor.Core.Reliability;
+using SwitchMonitor.Core.Settings;
 using SwitchMonitor.Core.Transports;
 using SwitchMonitor.Core.Vcp;
 
@@ -17,7 +18,10 @@ public enum WriteOutcome
     Unverified,
 
     /// <summary>The monitor kept answering with a different value.</summary>
-    Mismatch
+    Mismatch,
+
+    /// <summary>Sent to a write-only control (it applies writes but never reports them); nothing to read back.</summary>
+    Applied
 }
 
 /// <summary>MCCS factory-default commands the app may send (never 0x04, which resets everything).</summary>
@@ -108,6 +112,7 @@ public sealed class MonitorDevice : IDisposable
     public bool Supports(byte code)
     {
         if (!IsControllable) return false;
+        if (Quirk?.Controls.Any(c => c.Code == code && c.NotAdvertised) == true) return true;
         if (Capabilities.VcpCodes.Count > 0) return Capabilities.Supports(code) || (code == VcpCode.InputSource && Inputs.Count > 0);
         // No capabilities string (GPU-driver transports): rely on the quirk's validated features.
         return Quirk is not null && code is VcpCode.Brightness or VcpCode.InputSource;
@@ -119,6 +124,18 @@ public sealed class MonitorDevice : IDisposable
         {
             EnsureUsable();
             var value = ReadPolicy.Execute($"{Name}: read {VcpCode.Describe(code)}", () => transport.Read(code), delay, log);
+            if (value.Maximum > 0) maximums[code] = value.Maximum;
+            return value;
+        }
+    }
+
+    /// <summary>One read without retries, for scans of codes the monitor may not support.</summary>
+    public VcpValue ReadOnce(byte code)
+    {
+        lock (gate)
+        {
+            EnsureUsable();
+            var value = transport.Read(code);
             if (value.Maximum > 0) maximums[code] = value.Maximum;
             return value;
         }
@@ -154,6 +171,8 @@ public sealed class MonitorDevice : IDisposable
             uint maximum = Features.FirstOrDefault(f => f.Code == code)?.Definition.Maximum ?? 0;
             if (maximum == 0 && !maximums.TryGetValue(code, out maximum)) maximum = Read(code).Maximum;
             uint raw = VcpValue.FromPercent(percent, maximum);
+            if (Features.FirstOrDefault(f => f.Code == code)?.Definition is { WriteOnly: true } writeOnly)
+                return WriteRemembered(writeOnly, raw);
             Write(code, raw);
             return Verify(code, raw, ReadPolicy);
         }
@@ -185,6 +204,16 @@ public sealed class MonitorDevice : IDisposable
                 var definition = quirkControls.GetValueOrDefault(code)
                     ?? FeatureCatalog.Unmapped(code, Capabilities.ValuesFor(code).Count > 0);
                 result.Add(new MonitorFeature(definition, AllowedValues(definition)));
+                seen.Add(code);
+            }
+            // Verified codes the monitor does not advertise, placed where the quirk says (black levels after blue).
+            foreach (var hidden in quirkControls.Values.Where(c => c.NotAdvertised && !seen.Contains(c.Code)))
+            {
+                var feature = new MonitorFeature(hidden, AllowedValues(hidden));
+                int anchor = hidden.PlaceAfter is byte after ? result.FindLastIndex(f => f.Code == after) : -1;
+                if (anchor >= 0) result.Insert(anchor + 1, feature);
+                else result.Add(feature);
+                seen.Add(hidden.Code);
             }
             return result;
         }
@@ -330,6 +359,61 @@ public sealed class MonitorDevice : IDisposable
         }
     }
 
+    /// <summary>Writes a control's known default (see <see cref="FeatureDefinition.DefaultValue"/>) and confirms it.</summary>
+    public WriteOutcome RestoreDefaultValue(byte code)
+    {
+        lock (gate)
+        {
+            var definition = Features.FirstOrDefault(f => f.Code == code)?.Definition;
+            if (definition?.DefaultValue is not uint value)
+                throw new NotSupportedException($"{Name} has no known default for {VcpCode.Describe(code)}.");
+            if (definition.WriteOnly) return WriteRemembered(definition, value);
+            Write(code, value);
+            return Verify(code, value, ReadPolicy);
+        }
+    }
+
+    /// <summary>
+    /// The value to show for a control: what the monitor reports, or for write-only controls the last value this app
+    /// wrote (or the known default when nothing was written yet).
+    /// </summary>
+    public VcpValue CurrentValue(byte code)
+    {
+        var definition = Features.FirstOrDefault(f => f.Code == code)?.Definition;
+        if (definition is not { WriteOnly: true }) return Read(code);
+        uint top = definition.Maximum ?? 100;
+        return new VcpValue(Remembered.Get(Key, code) ?? definition.DefaultValue ?? top / 2, top);
+    }
+
+    /// <summary>Where write-only values are kept (default: the app's remembered.json).</summary>
+    public RememberedValues Remembered { get; init; } = RememberedValues.Current;
+
+    /// <summary>
+    /// Writes a write-only control one step at a time (the LG takes sharpness in steps of 10) from the last value written,
+    /// then remembers the new value. There is no read-back: the monitor keeps reporting its old value.
+    /// </summary>
+    private WriteOutcome WriteRemembered(FeatureDefinition definition, uint raw)
+    {
+        lock (gate)
+        {
+            byte code = definition.Code;
+            uint top = definition.Maximum ?? 100;
+            uint step = definition.Step ?? 1;
+            uint target = Math.Min(top, (uint)Math.Round(raw / (double)step) * step);
+            uint from = Remembered.Get(Key, code) ?? definition.DefaultValue ?? target;
+            uint value = from;
+            while (value != target)
+            {
+                value = target > value ? Math.Min(target, value + step) : (value - target > step ? value - step : target);
+                Write(code, value);
+                if (value != target) delay.Wait(TimeSpan.FromMilliseconds(120));
+            }
+            if (from == target) Write(code, target);   // same value again: resend, the monitor may have been reset
+            Remembered.Set(Key, code, target);
+            return WriteOutcome.Applied;
+        }
+    }
+
     /// <summary>True when the input must be sent again after the picture returns from another computer (see quirks).</summary>
     public bool ResendsInputOnReturn => Quirk?.ResendInputOnReturn.Contains(transport.Id, StringComparer.OrdinalIgnoreCase) == true;
 
@@ -346,6 +430,9 @@ public sealed class MonitorDevice : IDisposable
             catch (Exception error) when (error is not OutOfMemoryException) { return null; }
         }
     }
+
+    /// <summary>How far the read-back may be from the request on panels with fixed levels (see <see cref="IMonitorTransport.SnapsToLevels"/>).</summary>
+    public const uint LevelTolerance = 10;
 
     /// <summary>Reads back after a write until the monitor reports the expected value or the policy gives up.</summary>
     private WriteOutcome Verify(byte code, uint expected, RetryPolicy policy)
@@ -370,6 +457,12 @@ public sealed class MonitorDevice : IDisposable
         {
             log.Write(LogLevel.Info, $"{Name}: {VcpCode.Describe(code)} write accepted but not confirmed.");
             return WriteOutcome.Unverified;
+        }
+        // Laptop panels over WMI have a few fixed levels: the nearest one is the answer, not a failure.
+        if (transport.SnapsToLevels && Math.Abs((long)last - expected) <= LevelTolerance)
+        {
+            log.Write(LogLevel.Info, $"{Name}: {VcpCode.Describe(code)} set to {last}, the panel's nearest level to {expected}.");
+            return WriteOutcome.Verified;
         }
         log.Write(LogLevel.Warning, $"{Name}: {VcpCode.Describe(code)} reads {last}, expected {expected}.");
         return WriteOutcome.Mismatch;

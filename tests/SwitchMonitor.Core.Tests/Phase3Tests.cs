@@ -1,3 +1,4 @@
+using SwitchMonitor.Core.Diagnostics;
 using SwitchMonitor.Core.Hotkeys;
 using SwitchMonitor.Core.Inputs;
 using SwitchMonitor.Core.Quirks;
@@ -197,7 +198,231 @@ internal static class FactoryDefaultsTests
         var red = lg.Features.Single(f => f.Code == 0x16);
         Assert.Equal("Red", red.Name);
         Assert.Sequence([(byte)0x15], red.Definition.EnabledWhen.Select(r => r.Code));
-        Assert.Sequence([0x0Bu], red.Definition.EnabledWhen[0].Values, "picture mode Custom");
+        Assert.Sequence([0x0Bu, 0x0Eu], red.Definition.EnabledWhen[0].Values, "picture modes Custom and Custom (Game)");
+    }
+}
+
+internal static class DeepScanTests
+{
+    [Test]
+    public static void ReadsCodesTheMonitorDoesNotAdvertiseButNeverCommands()
+    {
+        var fake = new FakeTransport { Capabilities = "(vcp(10 12))" };
+        fake.Values[0x10] = new VcpValue(40, 100);
+        fake.Values[0x12] = new VcpValue(50, 100);
+        fake.Values[0x87] = new VcpValue(50, 100);   // sharpness, not advertised (LG 29WK600)
+        fake.Values[0x04] = new VcpValue(0, 1);      // a reset command: must never be read
+        using var monitor = new MonitorDevice(TestMonitors.Identity(), fake, null, null, new RecordingDelay());
+
+        var normal = VcpScanner.Take(monitor);
+        Assert.True(!normal.Values.ContainsKey(0x87), "normal snapshot: advertised codes only");
+
+        var deep = VcpScanner.Take(monitor, deep: true);
+        Assert.True(deep.Values.ContainsKey(0x87), "deep snapshot finds sharpness");
+        Assert.True(!deep.Values.ContainsKey(0x04), "commands are never read");
+        Assert.True(!deep.IsAdvertised(0x87) && deep.IsAdvertised(0x10));
+        Assert.Equal(0, deep.Errors.Count, "unanswered extra codes are not errors");
+        Assert.Equal(0, fake.Writes.Count, "read-only");
+
+        var back = VcpScanner.FromJson(VcpScanner.ToJson(deep));
+        Assert.True(!back.IsAdvertised(0x87), "advertised list survives the JSON round trip");
+
+        var entries = VcpScanner.DeepScan(monitor);
+        Assert.Sequence([(byte)0x10, (byte)0x12, (byte)0x87], entries.Select(e => e.Code));
+        Assert.True(entries.All(e => e.Stable));
+        Assert.True(VcpCode.IsNeverWritten(0xCC) && VcpCode.IsNeverWritten(0x60) && !VcpCode.IsNeverWritten(0x87));
+        Assert.Equal("Sharpness", VcpCode.Describe(0x87));
+    }
+}
+
+internal static class CandidateCheckTests
+{
+    private static MonitorDevice Lg(FakeTransport fake) =>
+        new(TestMonitors.Identity(), fake, null, null, new RecordingDelay());
+
+    [Test]
+    public static void ACandidatePassesOnlyWithReadBackRestoreAndConfirmation()
+    {
+        var fake = new FakeTransport { Capabilities = "(vcp(10))" };
+        fake.Values[0x87] = new VcpValue(50, 100);
+        using var monitor = Lg(fake);
+        uint? heldOnScreen = null;
+        var result = CandidateTrial.Run(monitor, 0x87, _ => { heldOnScreen = fake.Values[0x87].Current; return true; }, new RecordingDelay());
+
+        Assert.True(result.Passed, result.ToString());
+        Assert.Equal(90u, heldOnScreen ?? 0u, "the test value stays on screen while the person answers");
+        Assert.Equal(50u, fake.Values[0x87].Current, "restored");
+        Assert.Sequence([((byte)0x87, 90u), ((byte)0x87, 50u)], fake.Writes);
+
+        var notSeen = CandidateTrial.Run(monitor, 0x87, _ => false, new RecordingDelay());
+        Assert.True(!notSeen.Passed && notSeen.ReadBackMatched && notSeen.Restored, "not seen = no proof");
+    }
+
+    [Test]
+    public static void ALockedCandidateFailsAndIsStillRestored()
+    {
+        var fake = new FakeTransport { Capabilities = "(vcp(10))" };
+        fake.Values[0x6C] = new VcpValue(50, 100);
+        fake.OnWrite = (_, _, _) => { };   // accepted but ignored, as in a locked picture mode
+        using var monitor = Lg(fake);
+        var result = CandidateTrial.Run(monitor, 0x6C, _ => true, new RecordingDelay());
+        Assert.True(!result.Passed && !result.ReadBackMatched && result.Restored, result.ToString());
+    }
+
+    [Test]
+    public static void AWriteOnlyControlIsProvenByEyeBothWays()
+    {
+        // LG sharpness: the picture changes, but DDC and the menu keep reporting 50.
+        var fake = new FakeTransport { Capabilities = "(vcp(10))" };
+        fake.Values[0x87] = new VcpValue(50, 100);
+        fake.OnWrite = (_, _, _) => { };
+        using var monitor = Lg(fake);
+        var questions = new List<string>();
+        var result = CandidateTrial.Run(monitor, 0x87, q => { questions.Add(q); return true; }, new RecordingDelay(), step: 10, to: 10);
+        Assert.True(result.WriteOnly && !result.Passed, result.ToString());
+        Assert.Equal(2, questions.Count, "asked to see the change and to see it go back");
+        Assert.Sequence([40u, 30u, 20u, 10u], fake.Writes.Take(4).Select(w => w.Value), "one menu step per write");
+        Assert.Equal(50u, fake.Writes[^1].Value, "put back to 50");
+    }
+
+    [Test]
+    public static void CommandsAndOsdCodesAreNeverWritten()
+    {
+        var fake = new FakeTransport { Capabilities = "(vcp(10))" };
+        fake.Values[0xCC] = new VcpValue(0, 255);
+        using var monitor = Lg(fake);
+        var result = CandidateTrial.Run(monitor, 0xCC, _ => true, new RecordingDelay());
+        Assert.True(!result.Passed);
+        Assert.Equal(0, fake.Writes.Count, "OSD language is refused");
+        Assert.Equal(10u, CandidateTrial.TargetFor(5, 10), "stays inside the range");
+        Assert.Equal(60u, CandidateTrial.TargetFor(100, 100), "moves down near the top");
+    }
+
+    [Test]
+    public static void MenuWatchNeedsOneRepeatableValuePerOption()
+    {
+        MenuObservation O(string name, uint? v) => new(name, new Dictionary<byte, uint?> { [0x0C] = v });
+        Assert.True(MenuWatch.Tracks([O("Warm", 20), O("Medium", 35), O("Cool", 50), O("Warm", 20)], 0x0C, out _));
+        Assert.True(!MenuWatch.Tracks([O("Warm", 35), O("Medium", 35), O("Cool", 35), O("Warm", 35)], 0x0C, out _), "never moves");
+        Assert.True(!MenuWatch.Tracks([O("Warm", 20), O("Medium", 35), O("Warm", 22)], 0x0C, out _), "not repeatable");
+        Assert.True(!MenuWatch.Tracks([O("Warm", 20), O("Medium", 35)], 0x0C, out _), "nothing repeated");
+        Assert.True(!MenuWatch.Tracks([O("Warm", null), O("Warm", null)], 0x0C, out _), "no answer");
+    }
+}
+
+internal static class ProfileEditingTests
+{
+    private const string Json = """
+        { "version": 3, "scenes": [
+          { "name": "Work", "hotkey": "Ctrl+Alt+W", "settings": { "brightness": 70, "contrast": 70 } },
+          { "name": "Game", "settings": { "brightness": 100, "picture mode": ["FPS Game 1", "Games"] } } ] }
+        """;
+
+    private static FeatureDefinition Lg(byte code) =>
+        QuirkDatabase.LoadEmbedded().All.SelectMany(q => q.Controls).First(c => c.Code == code);
+
+    [Test]
+    public static void ANewProfileIsAddedWithValuesWrittenByName()
+    {
+        var lines = new List<KeyValuePair<string, System.Text.Json.Nodes.JsonNode>>
+        {
+            new("Brightness", SceneStore.ValueNode(FeatureCatalog.Brightness, 40.4, null)),
+            new("Picture mode", SceneStore.ValueNode(Lg(0x15), null, 0x0B)),
+            new("Black level red", SceneStore.ValueNode(Lg(0x6C), 60, null))
+        };
+        string updated = SceneStore.Upsert(Json, null, " Reading ", "LG 29WK600", lines);
+        var reading = SceneStore.Parse(updated).Single(s => s.Name == "Reading");
+        Assert.Equal("LG 29WK600", reading.MonitorFilter);
+        Assert.Equal(40.0, reading.Settings[0].Percent ?? -1, "rounded percentage");
+        Assert.Equal<uint?>(0x0B, reading.Settings[1].Value, "LG Custom written as its name");
+        Assert.True(updated.Contains("\"Custom\""), "values are saved by name, readable in the file");
+        Assert.Equal(3, SceneStore.Parse(updated).Count);
+    }
+
+    [Test]
+    public static void EditingKeepsTheShortcutAndUntouchedLists()
+    {
+        var game = SceneStore.RawSettings(Json, "game");
+        Assert.Sequence(["brightness", "picture mode"], game.Select(g => g.Key));
+        // Rename Game and change only the brightness: the picture-mode list must survive as written.
+        var lines = new List<KeyValuePair<string, System.Text.Json.Nodes.JsonNode>>
+        {
+            new("brightness", SceneStore.ValueNode(FeatureCatalog.Brightness, 90, null)),
+            new(game[1].Key, game[1].Value!)
+        };
+        string updated = SceneStore.Upsert(Json, "Game", "Games night", null, lines);
+        var scenes = SceneStore.Parse(updated);
+        Assert.Sequence(["Work", "Games night"], scenes.Select(s => s.Name), "renamed in place");
+        Assert.Equal(1, scenes[1].Settings[1].Alternatives.Count, "FPS Game 1 then Games is kept");
+
+        string work = SceneStore.Upsert(Json, "Work", "Work", null,
+            [new("brightness", SceneStore.ValueNode(FeatureCatalog.Brightness, 55, null))]);
+        Assert.Equal("Ctrl+Alt+W", SceneStore.Parse(work)[0].Hotkey?.ToString(), "shortcut kept");
+    }
+
+    [Test]
+    public static void BadEditsAreRefusedAndDeleteRemovesTheProfile()
+    {
+        var one = new List<KeyValuePair<string, System.Text.Json.Nodes.JsonNode>>
+            { new("brightness", SceneStore.ValueNode(FeatureCatalog.Brightness, 50, null)) };
+        Assert.Throws<FormatException>(() => SceneStore.Upsert(Json, null, "work", null, one));   // name taken
+        Assert.Throws<FormatException>(() => SceneStore.Upsert(Json, null, "  ", null, one));     // no name
+        Assert.Throws<FormatException>(() => SceneStore.Upsert(Json, null, "Empty", null, []));   // nothing ticked
+        Assert.Throws<FormatException>(() => SceneStore.Upsert(Json, null, "custom", null, one));  // Custom is the app's own
+        var left = SceneStore.Parse(SceneStore.Remove(Json, "WORK"));
+        Assert.Sequence(["Game"], left.Select(s => s.Name));
+    }
+
+    [Test]
+    public static void LaptopPanelsAcceptTheNearestBrightnessLevel()
+    {
+        // N5050 over WMI: 15 % becomes 18 %, the closest level the panel has.
+        var fake = new FakeTransport { Capabilities = "(vcp(10))", SnapsToLevels = true };
+        fake.Values[0x10] = new VcpValue(50, 100);
+        fake.OnWrite = (t, code, value) => t.Values[code] = new VcpValue(value == 15 ? 18u : value, 100);
+        using var laptop = new MonitorDevice(TestMonitors.Identity(), fake, null, null, new RecordingDelay());
+        Assert.Equal(WriteOutcome.Verified, laptop.SetPercent(0x10, 15), "nearest level counts as done");
+
+        var desktop = new FakeTransport { Capabilities = "(vcp(10))" };
+        desktop.Values[0x10] = new VcpValue(50, 100);
+        desktop.OnWrite = (t, code, value) => t.Values[code] = new VcpValue(value == 15 ? 18u : value, 100);
+        using var monitor = new MonitorDevice(TestMonitors.Identity(), desktop, null, null, new RecordingDelay());
+        Assert.Equal(WriteOutcome.Mismatch, monitor.SetPercent(0x10, 15), "a DDC monitor that keeps another value is still a mismatch");
+    }
+
+    [Test]
+    public static void AdvancedControlsAndTheSwitch()
+    {
+        Assert.True(FeatureCatalog.IsAdvanced(0x16) && FeatureCatalog.IsAdvanced(0x6C) && FeatureCatalog.IsAdvanced(0x70));
+        Assert.True(!FeatureCatalog.IsAdvanced(0x10) && !FeatureCatalog.IsAdvanced(0x87), "brightness and sharpness stay on Displays");
+        var settings = AppSettings.Parse(new AppSettings { ShowAdvanced = true }.ToJson());
+        Assert.True(settings.ShowAdvanced, "the Advanced switch is remembered");
+        Assert.True(!AppSettings.Parse(new AppSettings().ToJson()).ShowAdvanced, "off by default");
+    }
+}
+
+internal static class ProfileSwitchTests
+{
+    [Test]
+    public static void ValuesTheMonitorAlreadyHasAreNotSentAgain()
+    {
+        const string lgId = @"MONITOR\GSM7714\{4d36e96e-e325-11ce-bfc1-08002be10318}\0001";
+        var fake = new FakeTransport { Capabilities = "(vcp(10 15(01 06) 62 8D(01 02)))" };
+        fake.Values[0x10] = new VcpValue(100, 100);
+        fake.Values[0x15] = new VcpValue(0x1C, 255);   // already FPS Game 1
+        fake.Values[0x62] = new VcpValue(40, 100);
+        fake.Values[0x8D] = new VcpValue(0x01, 2);     // already muted
+        using var lg = new MonitorDevice(TestMonitors.Identity(lgId), fake, QuirkDatabase.LoadEmbedded().Match(lgId), null, new RecordingDelay());
+        var game = SceneStore.Parse("""
+            { "scenes": [ { "name": "Game", "settings": { "picture mode": "FPS Game 1", "mute": true, "brightness": 100, "volume": 60 } } ] }
+            """)[0];
+        var delay = new RecordingDelay();
+        var steps = SceneApplier.Apply(game, [lg], delay: delay);
+
+        Assert.Sequence([SceneStepStatus.AlreadySet, SceneStepStatus.AlreadySet, SceneStepStatus.AlreadySet, SceneStepStatus.Applied],
+            steps.Select(s => s.Status));
+        Assert.Sequence([((byte)0x62, 60u)], fake.Writes, "only the volume changed");
+        Assert.True(!delay.Waits.Contains(SceneApplier.ModeSettle), "no mode change, so no wait");
     }
 }
 

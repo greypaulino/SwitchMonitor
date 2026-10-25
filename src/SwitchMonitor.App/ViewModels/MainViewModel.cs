@@ -9,14 +9,32 @@ using SwitchMonitor.Core.Settings;
 
 namespace SwitchMonitor.App.ViewModels;
 
-public sealed class SceneViewModel(SceneProfile scene, MainViewModel main) : ObservableObject
+/// <summary>A button of the profile bar: a saved profile, or Custom (null scene) = the person's own settings.</summary>
+public sealed class SceneViewModel : ObservableObject
 {
-    public SceneProfile Scene { get; } = scene;
-    public string Name => Scene.Name;
-    public string Hotkey => Scene.Hotkey?.ToString() ?? "";
-    public string Summary => string.Join(" · ", Scene.Settings.Select(s => s.ToString()));
-    public ICommand ApplyCommand { get; } = new RelayCommand(() => _ = main.ApplySceneAsync(scene));
+    private bool isActive;
+
+    public SceneViewModel(SceneProfile? scene, MainViewModel main)
+    {
+        Scene = scene;
+        ApplyCommand = new RelayCommand(() => _ = scene is null ? main.RestoreCustomAsync() : main.ApplySceneAsync(scene));
+    }
+
+    public SceneProfile? Scene { get; }
+    public bool IsCustom => Scene is null;
+    public string Name => Scene?.Name ?? MainViewModel.CustomName;
+    public string Hotkey => Scene?.Hotkey?.ToString() ?? "";
+    public string Summary => Scene is null
+        ? "Your own settings. Changing any setting by hand selects Custom; after applying a profile, click Custom to get your settings back."
+        : string.Join(" · ", Scene.Settings.Select(s => s.ToString()));
+
+    /// <summary>The profile the displays are in now (Custom until one is applied).</summary>
+    public bool IsActive { get => isActive; set => Set(ref isActive, value); }
+
+    public ICommand ApplyCommand { get; }
 }
+
+public enum AppTab { Displays, Advanced, Profiles, Shortcuts }
 
 public sealed class MainViewModel : ObservableObject, IInputCoordinator
 {
@@ -32,6 +50,11 @@ public sealed class MainViewModel : ObservableObject, IInputCoordinator
     private string? shortcutWarning;
     private bool polling;
     private DateTime lastHoldStep;
+    private string activeProfile = CustomName;
+    private Dictionary<string, List<SceneSetting>>? customSnapshot;
+
+    /// <summary>Name of the always-present first profile: the person's own (hand-made) settings.</summary>
+    public const string CustomName = SceneStore.CustomName;
 
     public MainViewModel(ICoreLog log, AppSettings settings)
     {
@@ -58,10 +81,11 @@ public sealed class MainViewModel : ObservableObject, IInputCoordinator
     public ICommand RetryShortcutsCommand { get; }
     public ICommand OpenShortcutsCommand { get; }
 
-    // ---- Views: Displays | Shortcuts ----
+    // ---- Views: Displays | Advanced | Profiles | Shortcuts ----
 
-    private bool shortcutsTab;
+    private AppTab tab = AppTab.Displays;
     private ShortcutEditorViewModel? shortcutEditor;
+    private ProfileEditorViewModel? profileEditor;
 
     /// <summary>Tells whether a shortcut is free (set by the app, which owns the hotkey service).</summary>
     public Func<Core.Hotkeys.HotkeyChord, bool> IsShortcutFree { get; set; } = _ => true;
@@ -69,32 +93,70 @@ public sealed class MainViewModel : ObservableObject, IInputCoordinator
     /// <summary>Raised with true when global shortcuts must pause (Shortcuts tab shown) and false when they resume.</summary>
     public event Action<bool>? ShortcutsPaused;
 
-    public bool IsDisplaysTab
+    public AppTab Tab
     {
-        get => !shortcutsTab;
-        set { if (value) IsShortcutsTab = false; }
-    }
-
-    public bool IsShortcutsTab
-    {
-        get => shortcutsTab;
+        get => tab;
         set
         {
-            if (shortcutsTab == value) return;
-            shortcutsTab = value;
-            if (value)
-            {
-                ShortcutsPaused?.Invoke(true);   // before the editor tests which shortcuts are free
-                ResetShortcutEditor();
-            }
-            else
+            if (value == AppTab.Advanced && !ShowAdvanced) value = AppTab.Displays;
+            if (tab == value) return;
+            var previous = tab;
+            tab = value;
+            if (previous == AppTab.Shortcuts)
             {
                 ShortcutEditor?.CancelCapture();
                 ShortcutsPaused?.Invoke(false);
             }
+            if (value == AppTab.Shortcuts)
+            {
+                ShortcutsPaused?.Invoke(true);   // before the editor tests which shortcuts are free
+                ResetShortcutEditor();
+            }
+            if (value == AppTab.Profiles) ResetProfileEditor();
             Raise();
             Raise(nameof(IsDisplaysTab));
+            Raise(nameof(IsAdvancedTab));
+            Raise(nameof(IsProfilesTab));
+            Raise(nameof(IsShortcutsTab));
+            Raise(nameof(ShowsMonitorList));
         }
+    }
+
+    public bool IsDisplaysTab { get => tab == AppTab.Displays; set { if (value) Tab = AppTab.Displays; } }
+    public bool IsAdvancedTab { get => tab == AppTab.Advanced; set { if (value) Tab = AppTab.Advanced; } }
+    public bool IsProfilesTab { get => tab == AppTab.Profiles; set { if (value) Tab = AppTab.Profiles; } }
+    public bool IsShortcutsTab { get => tab == AppTab.Shortcuts; set { if (value) Tab = AppTab.Shortcuts; } }
+
+    /// <summary>The display list on the left serves the Displays and Advanced tabs.</summary>
+    public bool ShowsMonitorList => tab is AppTab.Displays or AppTab.Advanced;
+
+    /// <summary>"Advanced" switch: shows the Advanced tab and the advanced rows of the profile editor (saved in settings.json).</summary>
+    public bool ShowAdvanced
+    {
+        get => Settings.ShowAdvanced;
+        set
+        {
+            if (Settings.ShowAdvanced == value) return;
+            UpdateSettings(Settings with { ShowAdvanced = value }, shortcutsChanged: false);
+            Raise();
+            if (!value && tab == AppTab.Advanced) Tab = AppTab.Displays;
+            Report(value ? "Advanced settings shown: red/green/blue and black levels are on the Advanced tab." : "Advanced settings hidden.", true);
+        }
+    }
+
+    /// <summary>The editor shown on the Profiles tab; rebuilt when the tab opens and after profiles change.</summary>
+    public ProfileEditorViewModel? ProfileEditor { get => profileEditor; private set => Set(ref profileEditor, value); }
+
+    private void ResetProfileEditor(string? select = null)
+    {
+        ProfileEditor = new ProfileEditorViewModel(this, select);
+    }
+
+    /// <summary>Called by the profile editor after scenes.json changed: reload profiles and shortcuts.</summary>
+    public void ProfilesChanged(string? select)
+    {
+        LoadScenes();
+        if (tab == AppTab.Profiles) ResetProfileEditor(select);
     }
 
     /// <summary>The editor shown on the Shortcuts tab; replaced after Save or Cancel.</summary>
@@ -104,7 +166,7 @@ public sealed class MainViewModel : ObservableObject, IInputCoordinator
     {
         var editor = new ShortcutEditorViewModel(Settings, DisplayInputsForEditor(), SceneProfiles, IsShortcutFree);
         editor.Saved += SaveShortcuts;
-        editor.CloseRequested += () => { if (shortcutsTab) ResetShortcutEditor(); };
+        editor.CloseRequested += () => { if (tab == AppTab.Shortcuts) ResetShortcutEditor(); };
         ShortcutEditor = editor;
     }
 
@@ -214,34 +276,102 @@ public sealed class MainViewModel : ObservableObject, IInputCoordinator
     private void LoadScenes()
     {
         Scenes.Clear();
+        Scenes.Add(new SceneViewModel(null, this));
         try
         {
             SceneProfiles = SceneStore.LoadOrCreate();
             foreach (var scene in SceneProfiles) Scenes.Add(new SceneViewModel(scene, this));
+            if (!SceneProfiles.Any(s => s.Name == activeProfile)) activeProfile = CustomName;
         }
         catch (Exception error) when (error is FormatException or System.Text.Json.JsonException or IOException)
         {
             SceneProfiles = [];
             Report($"Profiles (scenes.json): {error.Message}", false);
         }
+        MarkActiveProfile();
         ShortcutsChanged?.Invoke();
+    }
+
+    private void MarkActiveProfile()
+    {
+        foreach (var scene in Scenes) scene.IsActive = string.Equals(scene.Name, activeProfile, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>Changing a setting by hand makes Custom the active profile again (the saved settings before it are dropped).</summary>
+    public void SettingChangedByHand(MonitorViewModel monitor)
+    {
+        if (activeProfile == CustomName) return;
+        activeProfile = CustomName;
+        customSnapshot = null;
+        MarkActiveProfile();
+    }
+
+    /// <summary>What each display shows now, as profile lines (modes and levels), so Custom can bring it back later.</summary>
+    private Dictionary<string, List<SceneSetting>> CaptureCustom()
+    {
+        var snapshot = new Dictionary<string, List<SceneSetting>>();
+        foreach (var monitor in Monitors.Where(m => m.IsControllable && m.IsLoaded))
+        {
+            var lines = new List<SceneSetting>();
+            foreach (var control in monitor.AllControls)
+            {
+                // Values locked by the current mode belong to that mode; restoring them elsewhere would be wrong.
+                if (control is ReadOnlyControlViewModel || (!control.IsEnabled && control is not ToggleControlViewModel)) continue;
+                if (control is SliderControlViewModel slider) lines.Add(new SceneSetting(control.Feature.Definition, slider.Value, null));
+                else if (control.RawValue is uint raw) lines.Add(new SceneSetting(control.Feature.Definition, null, raw));
+            }
+            if (lines.Count > 0) snapshot[monitor.Key] = lines;
+        }
+        return snapshot;
+    }
+
+    /// <summary>Custom button: back to the settings the displays had before the last profile was applied.</summary>
+    public async Task RestoreCustomAsync()
+    {
+        if (activeProfile == CustomName)
+        {
+            Report("Custom is already active: the displays show your own settings.", true);
+            return;
+        }
+        var snapshot = customSnapshot;
+        activeProfile = CustomName;
+        customSnapshot = null;
+        MarkActiveProfile();
+        if (snapshot is null)
+        {
+            Report("Custom selected. Your previous settings were not kept (the app was restarted), so nothing was changed.", true);
+            return;
+        }
+        Report("Restoring your Custom settings…", true);
+        int failed = 0;
+        foreach (var (key, lines) in snapshot)
+        {
+            var monitor = Monitors.FirstOrDefault(m => m.Key == key);
+            if (monitor is null || !monitor.IsControllable) continue;
+            var steps = await Task.Run(() => SceneApplier.Apply(new SceneProfile(CustomName, lines), [monitor.Device], log));
+            failed += steps.Count(s => s.Status is SceneStepStatus.Failed or SceneStepStatus.Mismatch);
+            monitor.ShowApplied(steps);
+        }
+        Report(failed == 0 ? "Custom: your settings are back." : $"Custom: your settings are back, {failed} could not be set.", failed == 0);
     }
 
     public async Task ApplySceneAsync(SceneProfile scene)
     {
+        // Leaving Custom: remember the person's own settings so the Custom button can bring them back.
+        if (activeProfile == CustomName) customSnapshot = CaptureCustom();
+        activeProfile = scene.Name;
+        MarkActiveProfile();
         var devices = Monitors.Where(m => m.IsControllable).Select(m => m.Device).ToArray();
         Report($"Applying profile {scene.Name}…", true);
         var steps = await Task.Run(() => SceneApplier.Apply(scene, devices, log));
         int applied = steps.Count(s => s.Status is SceneStepStatus.Applied or SceneStepStatus.Unconfirmed);
+        int already = steps.Count(s => s.Status == SceneStepStatus.AlreadySet);
         int skipped = steps.Count(s => s.Status == SceneStepStatus.Skipped);
         int failed = steps.Count(s => s.Status is SceneStepStatus.Failed or SceneStepStatus.Mismatch);
-        Report($"{scene.Name}: {applied} applied" + (skipped > 0 ? $", {skipped} not available on this display" : "") +
+        Report($"{scene.Name}: {applied} changed" + (already > 0 ? $", {already} already set" : "") +
+               (skipped > 0 ? $", {skipped} not available on a display" : "") +
                (failed > 0 ? $", {failed} failed" : ""), failed == 0);
-        foreach (var monitor in Monitors)
-        {
-            await monitor.ReloadValuesAsync();
-            monitor.RefreshSoon();   // and once more when late mode values have settled
-        }
+        foreach (var monitor in Monitors) monitor.ShowApplied(steps);
     }
 
     // ---- Brightness shortcuts (1.x behavior) ----
