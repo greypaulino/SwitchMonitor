@@ -97,12 +97,8 @@ public static class MonitorEnumerator
         {
             var info = new NativeMethods.MONITORINFOEX { cbSize = (uint)Marshal.SizeOf<NativeMethods.MONITORINFOEX>() };
             if (!NativeMethods.GetMonitorInfo(hMonitor, ref info)) continue;
-            for (uint i = 0; i < 16; i++)
-            {
-                string? id = MonitorDeviceId(info.szDevice, i);
-                if (id is null) break;
+            foreach (string id in ActiveMonitorDeviceIds(info.szDevice))
                 if (QuirkDatabase.ExtractPnpId(id) is string pnp) result.Add(pnp);
-            }
         }
         return result;
     }
@@ -135,7 +131,12 @@ public static class MonitorEnumerator
             for (int i = 0; i < count; i++)
             {
                 var physical = Marshal.PtrToStructure<NativeMethods.PHYSICAL_MONITOR>(buffer + i * size);
-                string deviceId = MonitorDeviceId(gdiName, (uint)i) ?? MonitorDeviceId(gdiName, 0) ?? gdiName;
+                // The i-th physical monitor is the i-th ACTIVE monitor of this source: with the laptop panel switched off
+                // (25/10, "second screen only"), \\.\DISPLAY1 still lists the panel first, inactive, and the LG second;
+                // taking child 0 gave the LG the laptop's id, so its quirk (picture modes, FreeSync, black levels) was lost.
+                var active = ActiveMonitorDeviceIds(gdiName);
+                string deviceId = (i < active.Count ? active[i] : null) ?? MonitorDeviceId(gdiName, (uint)i)
+                    ?? MonitorDeviceId(gdiName, 0) ?? gdiName;
                 string? pnp = QuirkDatabase.ExtractPnpId(deviceId);
                 string description = string.IsNullOrWhiteSpace(physical.szPhysicalMonitorDescription)
                     ? $"Display {result.Count + 1}" : physical.szPhysicalMonitorDescription.Trim();
@@ -169,7 +170,7 @@ public static class MonitorEnumerator
                 {
                     chosen = id switch
                     {
-                        "intel-cui" when IntelCuiTransport.IsAvailable => new IntelCuiTransport(identity.GdiName),
+                        "intel-cui" when IntelCuiTransport.IsAvailable => new IntelCuiTransport(identity.GdiName, identity.DeviceId),
                         "amd-adl" when AmdAdlTransport.IsAvailable =>
                             new AmdAdlTransport(identity.GdiName, QuirkDatabase.ProductCode(identity.PnpId), options.AllowAmdWrites),
                         _ => null
@@ -190,6 +191,26 @@ public static class MonitorEnumerator
         if (chosen is null)
             log.Write(LogLevel.Warning, $"{identity.FriendlyName}: no DDC/CI handle and no matching transport.");
         return chosen ?? UnavailableTransport.Instance;
+    }
+
+    private const uint DisplayDeviceActive = 0x1;
+
+    /// <summary>
+    /// Device ids of the monitors Windows is showing on this source, in order. Monitors listed but switched off are
+    /// left out; when none is flagged active (some drivers), every listed monitor is returned.
+    /// </summary>
+    internal static IReadOnlyList<string> ActiveMonitorDeviceIds(string gdiName)
+    {
+        var all = new List<(string Id, bool Active)>();
+        if (string.IsNullOrEmpty(gdiName)) return [];
+        for (uint index = 0; index < 16; index++)
+        {
+            var device = NativeMethods.NewDisplayDevice();
+            if (!NativeMethods.EnumDisplayDevices(gdiName, index, ref device, 0)) break;
+            if (!string.IsNullOrEmpty(device.DeviceID)) all.Add((device.DeviceID, (device.StateFlags & DisplayDeviceActive) != 0));
+        }
+        var active = all.Where(m => m.Active).Select(m => m.Id).ToArray();
+        return active.Length > 0 ? active : all.Select(m => m.Id).ToArray();
     }
 
     private static string? MonitorDeviceId(string gdiName, uint index)

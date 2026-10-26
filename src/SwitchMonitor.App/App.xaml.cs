@@ -88,9 +88,32 @@ public partial class App : Application
             else RegisterHotkeys();
         };
 
+        // Windows resets the gamma ramp after sleep and when displays change: put the software color back.
+        Microsoft.Win32.SystemEvents.DisplaySettingsChanged += OnDisplaysChanged;
+        Microsoft.Win32.SystemEvents.PowerModeChanged += OnPowerModeChanged;
+
         if (!settings.StartMinimized) ShowWindow();
         if (settingsProblem is not null) model.Report(settingsProblem, false);
         _ = model.RefreshAsync();
+    }
+
+    private void OnDisplaysChanged(object? sender, EventArgs e) => ReapplyColorSoon();
+
+    private void OnPowerModeChanged(object? sender, Microsoft.Win32.PowerModeChangedEventArgs e)
+    {
+        if (e.Mode == Microsoft.Win32.PowerModes.Resume) ReapplyColorSoon();
+    }
+
+    /// <summary>A moment later, so the driver has finished setting the display up again.</summary>
+    private void ReapplyColorSoon()
+    {
+        var timer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(1.5) };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            model?.ReapplySoftwareColor();
+        };
+        Dispatcher.BeginInvoke(timer.Start);
     }
 
     private void UpdateTray()
@@ -186,6 +209,8 @@ public partial class App : Application
 
     private void ExitApp()
     {
+        Microsoft.Win32.SystemEvents.DisplaySettingsChanged -= OnDisplaysChanged;
+        Microsoft.Win32.SystemEvents.PowerModeChanged -= OnPowerModeChanged;
         exiting = true;
         activateSignal?.Set();
         window?.Close();

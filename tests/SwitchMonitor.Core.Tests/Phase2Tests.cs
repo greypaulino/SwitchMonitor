@@ -153,7 +153,7 @@ internal static class SceneTests
     [Test]
     public static void DefaultScenesParse()
     {
-        var scenes = SceneStore.Parse(SceneStore.DefaultJson);
+        var scenes = SceneStore.Parse(SceneStore.Preview3DefaultJson);
         Assert.Sequence(["Work", "Night", "Game"], scenes.Select(s => s.Name));
         var night = scenes[1];
         Assert.Equal(15.0, night.Settings[0].Percent);
@@ -194,8 +194,8 @@ internal static class SceneTests
         fake.Values[0x10] = new VcpValue(80, 100);
         fake.Values[0x14] = new VcpValue(0x08, 0x0B);
         using var monitor = new MonitorDevice(TestMonitors.Identity(), fake, null, null, new RecordingDelay());
-        var night = SceneStore.Parse(SceneStore.DefaultJson)[1];       // brightness 15, color preset 6500 K
-        var game = SceneStore.Parse(SceneStore.DefaultJson)[2];        // brightness 100, picture mode Games
+        var night = SceneStore.Parse(SceneStore.Preview3DefaultJson)[1];       // brightness 15, color preset 6500 K
+        var game = SceneStore.Parse(SceneStore.Preview3DefaultJson)[2];        // brightness 100, picture mode Games
 
         var steps = SceneApplier.Apply(night, [monitor]);
         Assert.Sequence([SceneStepStatus.Applied, SceneStepStatus.Skipped], steps.Select(s => s.Status), "6500 K not advertised");
@@ -214,7 +214,7 @@ internal static class SceneTests
         var off = new MonitorIdentity("k", "Off panel", "d", "", null, false, true, IsActive: false);
         using var active = new MonitorDevice(TestMonitors.Identity(), fake, null, null, new RecordingDelay());
         using var inactive = new MonitorDevice(off, new FakeTransport { Capabilities = "(vcp(10))" }, null, null, new RecordingDelay());
-        var work = SceneStore.Parse(SceneStore.DefaultJson)[0];
+        var work = SceneStore.Parse(SceneStore.Preview3DefaultJson)[0];
         var preview = SceneApplier.Preview(work, [active, inactive]);
         Assert.Equal(2, preview.Count, "only the active monitor");
         Assert.Equal(0, fake.Writes.Count, "preview wrote nothing");
@@ -227,7 +227,7 @@ internal static class SceneTests
         fake.Values[0x10] = new VcpValue(50, 100);
         fake.Values[0x12] = new VcpValue(50, 100);
         using var monitor = new MonitorDevice(TestMonitors.Identity(), fake, null, null, new RecordingDelay());
-        var steps = SceneApplier.Apply(SceneStore.Parse(SceneStore.DefaultJson)[0], [monitor]);
+        var steps = SceneApplier.Apply(SceneStore.Parse(SceneStore.Preview3DefaultJson)[0], [monitor]);
         Assert.Sequence([SceneStepStatus.Failed, SceneStepStatus.Failed], steps.Select(s => s.Status));
     }
 }

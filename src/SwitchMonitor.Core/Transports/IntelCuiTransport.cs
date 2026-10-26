@@ -13,12 +13,49 @@ namespace SwitchMonitor.Core.Transports;
 internal sealed class IntelCuiTransport : IMonitorTransport
 {
     internal const string ValidatedDriverVersion = "8.15.10.4459";
-    private readonly string gdiName;
+    private string gdiName;
+    private readonly string? monitorDeviceId;
 
-    public IntelCuiTransport(string gdiName)
+    /// <param name="monitorDeviceId">MONITOR\GSM7714\...\0003: used to find the display again when Windows renames it.</param>
+    public IntelCuiTransport(string gdiName, string? monitorDeviceId = null)
     {
         if (!IsAvailable) throw new NotSupportedException("The validated Intel HD Graphics 3000 driver is unavailable.");
         this.gdiName = gdiName;
+        this.monitorDeviceId = monitorDeviceId;
+    }
+
+    /// <summary>
+    /// Runs one command; when the driver no longer finds the display (25/10: after FreeSync was switched the LG
+    /// re-synced and every later command failed with "0 active displays"), the display is looked up again by its
+    /// monitor device id (Windows may have given it another \\.\DISPLAYn) and the command is retried once.
+    /// </summary>
+    private T Run<T>(Func<string, T> command)
+    {
+        try { return Sta.Run(() => command(gdiName)); }
+        catch (DisplayNotFoundException)
+        {
+            Thread.Sleep(1500);   // the link may still be re-training
+            if (CurrentGdiName() is { } found) gdiName = found;
+            return Sta.Run(() => command(gdiName));
+        }
+    }
+
+    /// <summary>The \\.\DISPLAYn that shows this monitor now, or null.</summary>
+    private string? CurrentGdiName()
+    {
+        if (string.IsNullOrEmpty(monitorDeviceId)) return null;
+        for (uint adapter = 0; adapter < 32; adapter++)
+        {
+            var display = Native.NativeMethods.NewDisplayDevice();
+            if (!Native.NativeMethods.EnumDisplayDevices(null, adapter, ref display, 0)) break;
+            for (uint child = 0; child < 8; child++)
+            {
+                var monitor = Native.NativeMethods.NewDisplayDevice();
+                if (!Native.NativeMethods.EnumDisplayDevices(display.DeviceName, child, ref monitor, 0)) break;
+                if (string.Equals(monitor.DeviceID, monitorDeviceId, StringComparison.OrdinalIgnoreCase)) return display.DeviceName;
+            }
+        }
+        return null;
     }
 
     public string Id => "intel-cui";
@@ -39,9 +76,9 @@ internal sealed class IntelCuiTransport : IMonitorTransport
     }
 
     /// <summary>Capabilities over the Intel I2C channel (DDC/CI 0xF3), fragment by fragment. Read-only.</summary>
-    public string? ReadCapabilities() => Sta.Run(() =>
+    public string? ReadCapabilities() => Run(name =>
     {
-        using var session = new Session(gdiName);
+        using var session = new Session(name);
         return DdcPacket.ReadCapabilities(offset =>
         {
             byte[] request = session.BuildRequest(DdcPacket.HostReadSource,
@@ -51,9 +88,9 @@ internal sealed class IntelCuiTransport : IMonitorTransport
         }, Id);
     });
 
-    public VcpValue Read(byte code) => Sta.Run(() =>
+    public VcpValue Read(byte code) => Run(name =>
     {
-        using var session = new Session(gdiName);
+        using var session = new Session(name);
         byte[] request = session.BuildRequest(DdcPacket.HostReadSource, DdcPacket.GetVcpPayload(code), 11);
         session.Exchange(request, write: false);
         if (!DdcPacket.TryParseGetVcpReply(request.AsSpan(52, 11), code, out var value))
@@ -61,9 +98,9 @@ internal sealed class IntelCuiTransport : IMonitorTransport
         return value;
     });
 
-    public void Write(byte code, uint value) => Sta.Run(() =>
+    public void Write(byte code, uint value) => Run(name =>
     {
-        using var session = new Session(gdiName);
+        using var session = new Session(name);
         byte[] request = session.BuildRequest(DdcPacket.WriteSourceFor(code), DdcPacket.SetVcpPayload(code, value), 0);
         session.Exchange(request, write: true);
         return true;
@@ -104,7 +141,7 @@ internal sealed class IntelCuiTransport : IMonitorTransport
                         if (candidate != 0) found.Add(candidate);
                     }
                     if (found.Count != 1)
-                        throw new TransportException("intel-cui", $"Intel returned {found.Count} active displays for {gdiName}.");
+                        throw new DisplayNotFoundException($"Intel returned {found.Count} active displays for {gdiName}.");
                     uid = found[0];
                 }
                 finally { Marshal.FreeBSTR(name); }
@@ -194,3 +231,6 @@ internal static class Sta
         return result!;
     }
 }
+
+/// <summary>The Intel driver did not find the display by its GDI name (renamed or re-syncing).</summary>
+internal sealed class DisplayNotFoundException(string message) : TransportException("intel-cui", message);
