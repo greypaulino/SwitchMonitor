@@ -141,13 +141,16 @@ public sealed class MonitorDevice : IDisposable
         }
     }
 
-    public void Write(byte code, uint value)
+    public void Write(byte code, uint value) => Write(code, value, quiet: false);
+
+    /// <param name="quiet">Not logged: the in-between steps of a gradual change (a fade writes dozens of them).</param>
+    public void Write(byte code, uint value, bool quiet)
     {
         lock (gate)
         {
             EnsureWritable();
             WritePolicy.Execute($"{Name}: write {VcpCode.Describe(code)}={value}", () => transport.Write(code, value), delay, log);
-            log.Write(LogLevel.Info, $"{Name}: {VcpCode.Describe(code)} set to {value} via {transport.Id}.");
+            if (!quiet) log.Write(LogLevel.Info, $"{Name}: {VcpCode.Describe(code)} set to {value} via {transport.Id}.");
         }
     }
 
@@ -170,7 +173,7 @@ public sealed class MonitorDevice : IDisposable
             }
             uint maximum = Features.FirstOrDefault(f => f.Code == code)?.Definition.Maximum ?? 0;
             if (maximum == 0 && !maximums.TryGetValue(code, out maximum)) maximum = Read(code).Maximum;
-            uint raw = VcpValue.FromPercent(percent, maximum);
+            uint raw = Snap(code, VcpValue.FromPercent(percent, maximum));
             if (Features.FirstOrDefault(f => f.Code == code)?.Definition is { WriteOnly: true } writeOnly)
                 return WriteRemembered(writeOnly, raw);
             Write(code, raw);
@@ -357,6 +360,22 @@ public sealed class MonitorDevice : IDisposable
                         }
             return after;
         }
+    }
+
+    /// <summary>Brightness levels of a built-in panel (6, 12, 18 … 100), or null when every value works.</summary>
+    public IReadOnlyList<uint>? BrightnessLevels => transport.BrightnessLevels;
+
+    /// <summary>The value the monitor will really take: the nearest panel level for laptop brightness, else unchanged.</summary>
+    public uint Snap(byte code, uint raw)
+    {
+        if (code != VcpCode.Brightness || BrightnessLevels is not { Count: > 0 } levels) return raw;
+        uint best = levels[0];
+        foreach (uint level in levels)
+        {
+            long diff = Math.Abs((long)level - raw), bestDiff = Math.Abs((long)best - raw);
+            if (diff < bestDiff || (diff == bestDiff && level > best)) best = level;   // ties go up, as the driver does (15 → 18)
+        }
+        return best;
     }
 
     /// <summary>Writes a control's known default (see <see cref="FeatureDefinition.DefaultValue"/>) and confirms it.</summary>

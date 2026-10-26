@@ -35,9 +35,19 @@ public sealed class MonitorViewModel : ObservableObject
     public bool IsActive => Device.IsActive;
     public bool IsControllable => Device.IsControllable;
 
+    private string? panel;
+
+    /// <summary>For built-in screens: the panel from its EDID ("CMO XM5XGN156B6 · 15.6″ · 1366×768").</summary>
+    public string? Panel
+    {
+        get => panel;
+        set { if (Set(ref panel, value)) Raise(nameof(Subtitle)); }
+    }
+
     public string Subtitle => !Device.IsActive ? "Off — Windows is not using this display"
         : !Device.IsControllable ? "No control path on this computer"
-        : $"{(Device.Identity.IsPrimary ? "Main display · " : "")}{Device.TransportId}";
+        : (Device.Identity.IsPrimary ? "Main display · " : "") +
+          (Device.Identity.IsBuiltIn ? "Built-in · " + (Panel is null ? "" : Panel + " · ") : "") + Device.TransportId;
 
     public ObservableCollection<InputViewModel> Inputs { get; } = [];
     public bool HasInputs => Inputs.Count > 0;
@@ -47,6 +57,18 @@ public sealed class MonitorViewModel : ObservableObject
     public ObservableCollection<ControlViewModel> AdvancedControls { get; } = [];
 
     public bool HasAdvanced => AdvancedControls.Count > 0;
+
+    private SoftwareColorViewModel? softwareColor;
+
+    /// <summary>Color made by the graphics card (Advanced tab); null for displays Windows is not using.</summary>
+    public SoftwareColorViewModel? SoftwareColor { get => softwareColor; set { if (Set(ref softwareColor, value)) { Raise(nameof(HasSoftwareColor)); Raise(nameof(NoAdvancedText)); } } }
+    public bool HasSoftwareColor => SoftwareColor is not null;
+    public string NoAdvancedText => HasSoftwareColor
+        ? "This display has no color controls of its own; the software color below works on it."
+        : "This display has no color controls the app can change.";
+
+    /// <summary>A change made by hand outside the monitor's own controls (software color): Custom becomes active.</summary>
+    public void SettingChangedByHand() => inputs.SettingChangedByHand(this);
     public bool HasNoAdvanced => loaded && !isLoading && LoadError is null && AdvancedControls.Count == 0;
 
     private string? advancedHint;
@@ -89,7 +111,12 @@ public sealed class MonitorViewModel : ObservableObject
                     try { control.Load(Device); built.Add(control); }
                     catch (Exception error) when (error is not OutOfMemoryException)
                     {
-                        if (FeatureCatalog.Find(control.Feature.Code) is not null) failed.Add($"{control.Name} ({error.Message})");
+                        if (FeatureCatalog.Find(control.Feature.Code) is null) continue;
+                        // A standard slider (brightness above all) stays on the panel, dimmed, and is read again
+                        // shortly: on the laptop the first read after sign-in can fail and works seconds later.
+                        if (control is SliderControlViewModel) { control.IsUnread = true; built.Add(control); }
+                        else notShown.Add(control.Name);
+                        failed.Add($"{control.Name} ({error.Message})");
                     }
                 }
                 int? current = null;
@@ -113,8 +140,11 @@ public sealed class MonitorViewModel : ObservableObject
             LinkMuteAndVolume();
             if (unreadable.Count > 0)
             {
-                LoadError = "Could not be read, so not shown: " + string.Join("; ", unreadable);
+                bool retrying = controls.Any(c => c.IsUnread);
+                LoadError = (retrying ? "Could not be read yet, trying again: " : "Could not be read, so not shown: ") +
+                            string.Join("; ", unreadable);
                 report($"{Name}: {LoadError}", false);
+                if (retrying) _ = RetryUnreadAsync();
             }
         }
         catch (Exception error) when (error is not OutOfMemoryException)
@@ -134,14 +164,65 @@ public sealed class MonitorViewModel : ObservableObject
     {
         if (!loaded) return;
         var controls = AllControls.ToArray();
-        await RunExclusiveAsync(() =>
+        var readable = await RunExclusiveAsync(() =>
         {
+            var read = new List<ControlViewModel>();
             foreach (var control in controls)
-                try { control.Load(Device); } catch (Exception error) when (error is not OutOfMemoryException) { }
-            return true;
+                try { control.Load(Device); read.Add(control); } catch (Exception error) when (error is not OutOfMemoryException) { }
+            return read;
         });
-        foreach (var control in controls) control.Publish();
+        foreach (var control in controls) if (!control.IsUnread || readable.Contains(control)) control.Publish();
+        foreach (var control in readable) control.IsUnread = false;
+        ClearLoadErrorWhenAllRead();
         UpdateLocks();
+    }
+
+    private bool retrying;
+    /// <summary>Standard controls left out of the panel because they could not be read (not retried).</summary>
+    private readonly List<string> notShown = [];
+
+    /// <summary>
+    /// Reads the controls that could not be read at load time again, a few times with growing pauses
+    /// (2, 4, 8, 16, 30 s). Also run by the retry link and by brightness shortcuts while the value is unknown.
+    /// </summary>
+    public async Task RetryUnreadAsync()
+    {
+        if (retrying) return;
+        retrying = true;
+        try
+        {
+            foreach (int seconds in new[] { 0, 2, 4, 8, 16, 30 })
+            {
+                if (seconds > 0) await Task.Delay(TimeSpan.FromSeconds(seconds));
+                var unread = AllControls.Where(c => c.IsUnread).ToArray();
+                if (unread.Length == 0) break;
+                var read = await RunExclusiveAsync(() =>
+                {
+                    var ok = new List<ControlViewModel>();
+                    foreach (var control in unread)
+                        try { control.Load(Device); ok.Add(control); } catch (Exception error) when (error is not OutOfMemoryException) { }
+                    return ok;
+                });
+                foreach (var control in read)
+                {
+                    control.Publish();
+                    control.IsUnread = false;
+                    report($"{Name}: {control.Name} read after a retry.", true);
+                }
+                if (read.Count > 0) { UpdateLocks(); ClearLoadErrorWhenAllRead(); }
+            }
+            if (AllControls.Any(c => c.IsUnread))
+                LoadError = "Could not be read: " + string.Join(", ", AllControls.Where(c => c.IsUnread).Select(c => c.Name)) +
+                            ". Use Retry next to it.";
+        }
+        finally { retrying = false; }
+    }
+
+    private void ClearLoadErrorWhenAllRead()
+    {
+        if (LoadError is null || !loaded || AllControls.Any(c => c.IsUnread) ||
+            !LoadError.StartsWith("Could not be read", StringComparison.Ordinal)) return;
+        LoadError = notShown.Count > 0 ? "Could not be read, so not shown: " + string.Join(", ", notShown) : null;
     }
 
     private ControlViewModel Create(MonitorFeature feature)
@@ -206,7 +287,7 @@ public sealed class MonitorViewModel : ObservableObject
             control.SetLock(reason, hide: modeRule && control.Feature.Definition.HideWhenLocked);
         }
         AdvancedHint = AdvancedControls.FirstOrDefault(c => !c.IsShown)?.LockReason is { } why
-            ? $"Red, green and blue are hidden. {why}"
+            ? $"Red, green, blue and black levels are hidden. {why}"
             : null;
     }
 
@@ -352,6 +433,7 @@ public sealed class MonitorViewModel : ObservableObject
         var control = AllControls.FirstOrDefault(c => c.Feature.Code == code);
         return control switch
         {
+            SliderControlViewModel { IsUnread: true } => null,
             SliderControlViewModel slider => (slider.Value, null),
             ToggleControlViewModel or ChoiceControlViewModel when control.RawValue is uint raw => (null, raw),
             _ => null

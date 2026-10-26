@@ -391,6 +391,31 @@ internal static class ProfileEditingTests
     }
 
     [Test]
+    public static void LaptopBrightnessUsesThePanelLevels()
+    {
+        // Dell N5050 (CMO N156B6): 16 levels from the display driver.
+        var fake = new FakeTransport { Capabilities = "(vcp(10))", SnapsToLevels = true,
+            BrightnessLevels = [6, 12, 18, 24, 30, 36, 42, 48, 54, 60, 66, 72, 78, 84, 90, 100] };
+        fake.Values[0x10] = new VcpValue(18, 100);
+        using var laptop = new MonitorDevice(TestMonitors.Identity(), fake, null, null, new RecordingDelay());
+        Assert.Equal(18u, laptop.Snap(0x10, 15), "15 % is the 18 % level");
+        Assert.Equal(100u, laptop.Snap(0x10, 97));
+        Assert.Equal(WriteOutcome.Verified, laptop.SetPercent(0x10, 15));
+        Assert.Sequence([((byte)0x10, 18u)], fake.Writes, "the level itself is sent");
+        Assert.Equal(55u, laptop.Snap(0x12, 55), "other controls are not snapped");
+
+        var (r, g, b) = SwitchMonitor.Core.Color.SoftwareColor.WhitePoint(6500);
+        Assert.True(Math.Abs(r - 1) < 1e-9 && Math.Abs(g - 1) < 1e-9 && Math.Abs(b - 1) < 1e-9, "6500 K is neutral");
+        var warm = SwitchMonitor.Core.Color.SoftwareColor.WhitePoint(4000);
+        Assert.True(warm.R == 1 && warm.B < warm.G && warm.G < 1, "warm keeps red, lowers blue most");
+        var cool = SwitchMonitor.Core.Color.SoftwareColor.WhitePoint(9300);
+        Assert.True(cool.B == 1 && cool.R < 1, "cool keeps blue, lowers red");
+        var ramp = SwitchMonitor.Core.Color.SoftwareColor.Ramp(6500);
+        Assert.Equal((ushort)65535, ramp[255]);
+        Assert.Equal((ushort)(128 * 257), ramp[256 + 128], "neutral ramp is the identity");
+    }
+
+    [Test]
     public static void AdvancedControlsAndTheSwitch()
     {
         Assert.True(FeatureCatalog.IsAdvanced(0x16) && FeatureCatalog.IsAdvanced(0x6C) && FeatureCatalog.IsAdvanced(0x70));
@@ -610,7 +635,7 @@ internal static class SceneHotkeyTests
     [Test]
     public static void DefaultScenesLeaveCtrlAltDigitsToInputs()
     {
-        var scenes = SceneStore.Parse(SceneStore.DefaultJson);
+        var scenes = SceneStore.Parse(SceneStore.Preview3DefaultJson);
         Assert.True(scenes.All(s => s.Hotkey is null), "no scene shortcuts by default");
         var settings = new AppSettings().WithDefaultInputShortcuts("lg|0", [0x11, 0x12, 0x0F])!;
         Assert.Equal(0, settings.FindConflicts(scenes.Select(s => (s.Name, s.Hotkey))).Count);
@@ -622,6 +647,100 @@ internal static class SceneHotkeyTests
         Assert.True(SceneStore.IsPreviewDefault(SceneStore.PreviewDefaultJson.Replace("  ", " ")), "whitespace ignored");
         Assert.True(!SceneStore.IsPreviewDefault(SceneStore.PreviewDefaultJson.Replace("70", "65")), "edited file kept");
         Assert.True(!SceneStore.IsPreviewDefault(SceneStore.DefaultJson));
+        Assert.True(SceneStore.IsPreviewDefault(SceneStore.Preview3DefaultJson), "Work/Night/Game created on first run are removed");
+    }
+
+    [Test]
+    public static void OnlyCustomExistsByDefaultAndTemplatesAreOffered()
+    {
+        Assert.Equal(0, SceneStore.Parse(SceneStore.DefaultJson).Count, "no saved profile by default");
+        Assert.Sequence(["Work", "Night", "Game", "Theater"], SceneTemplates.Names);
+
+        var work = SceneTemplates.Find("work")!;
+        Assert.Equal<uint?>(0x0B, work.Settings[0].Value, "LG Custom first");
+        Assert.Equal("Standard", work.Settings[0].Alternatives[0].Feature.DescribeValue(work.Settings[0].Alternatives[0].Value!.Value));
+        Assert.Equal(50.0, work.Settings[1].Percent);
+        Assert.Equal<uint?>(0x05, work.Settings[3].Value, "6500 K");
+        var game = SceneTemplates.Find("Game")!;
+        Assert.Sequence(["Picture mode", "Brightness", "Response time", "FreeSync"], game.Settings.Select(s => s.Feature.Name));
+        Assert.Equal<uint?>(0x02, game.Settings[2].Value, "Fast, the middle overdrive step");
+        Assert.Equal<uint?>(0x30, SceneTemplates.Find("Theater")!.Settings[0].Value, "LG Cinema");
+        Assert.Equal(2, SceneTemplates.RawSettings("Theater")[0].Value!.AsArray().Count, "lists kept as written");
+    }
+
+    /// <summary>Records, at every wait, which codes had been written so far.</summary>
+    private sealed class SnapshotDelay(FakeTransport fake) : SwitchMonitor.Core.Reliability.IDelay
+    {
+        public List<(TimeSpan Wait, byte[] WrittenBefore)> Waits { get; } = [];
+        public void Wait(TimeSpan duration) => Waits.Add((duration, fake.Writes.Select(w => w.Code).ToArray()));
+    }
+
+    [Test]
+    public static void ResponseTimeWaitsForTheNewPictureModeToLoad()
+    {
+        // 25/10: Game wrote response time 0.4 s after FPS Game 1; the mode then loaded its own value (Mismatch).
+        const string lgId = @"MONITOR\GSM7714\{4d36e96e-e325-11ce-bfc1-08002be10318}\0001";
+        var fake = new FakeTransport { Capabilities = "(vcp(10 15(01 06) F7(00 01 02 03) F8(00 01)))" };
+        fake.Values[0x10] = new VcpValue(50, 100);
+        fake.Values[0x15] = new VcpValue(0x0B, 255);
+        fake.Values[0xF7] = new VcpValue(0x01, 3);
+        fake.Values[0xF8] = new VcpValue(0x01, 1);
+        using var lg = new MonitorDevice(TestMonitors.Identity(lgId), fake, QuirkDatabase.LoadEmbedded().Match(lgId), null, new RecordingDelay());
+        var delay = new SnapshotDelay(fake);
+        var steps = SceneApplier.Apply(SceneTemplates.Find("Game")!, [lg], delay: delay);
+        Assert.Equal(0x0Eu, fake.Values[0x15].Current, "Custom (Game): the LG game mode where response time can be set");
+        Assert.Sequence([(byte)0x15, (byte)0xF7, (byte)0x10], fake.Writes.Select(w => w.Code), "mode, then response time, then brightness");
+        var settle = delay.Waits.Where(w => w.Wait == SceneApplier.ModeSettle).ToArray();
+        Assert.Equal(1, settle.Length, "one wait is enough");
+        Assert.Sequence([(byte)0x15], settle[0].WrittenBefore, "the wait comes right after the picture mode");
+        Assert.True(steps.All(s => s.Status is not (SceneStepStatus.Failed or SceneStepStatus.Mismatch)));
+    }
+
+    [Test]
+    public static void LinesLockedByThePictureModeAreSkippedNotSent()
+    {
+        // 25/10: the LG puts response time back in Reader, Cinema, FPS Game 1 and Photo; FreeSync is for game modes.
+        const string lgId = @"MONITOR\GSM7714\{4d36e96e-e325-11ce-bfc1-08002be10318}\0001";
+        var fake = new FakeTransport { Capabilities = "(vcp(10 14(05 08) 15(01 06) F7(00 01 02 03) F8(00 01)))" };
+        fake.Values[0x10] = new VcpValue(50, 100);
+        fake.Values[0x14] = new VcpValue(0x05, 0x0B);
+        fake.Values[0x15] = new VcpValue(0x0B, 255);
+        fake.Values[0xF7] = new VcpValue(0x01, 3);
+        fake.Values[0xF8] = new VcpValue(0x01, 1);
+        using var lg = new MonitorDevice(TestMonitors.Identity(lgId), fake, QuirkDatabase.LoadEmbedded().Match(lgId), null, new RecordingDelay());
+        var night = SceneStore.Parse("""
+            { "scenes": [ { "name": "N", "settings": { "picture mode": "Reader", "Color temperature": "9300 K",
+                                                        "response time": "Normal", "FreeSync": "Off", "brightness": 20 } } ] }
+            """)[0];
+        var steps = SceneApplier.Apply(night, [lg], delay: new RecordingDelay());
+        Assert.Sequence([(byte)0x15, (byte)0x10], fake.Writes.Select(w => w.Code), "only picture mode and brightness are sent");
+        Assert.Sequence(["locked in Reader", "locked in Reader", "locked in Reader"],
+            steps.Where(s => s.Status == SceneStepStatus.Skipped).Select(s => s.Detail!));
+        Assert.True(steps.Where(s => s.Status == SceneStepStatus.Skipped).All(SceneApplier.IsQuietSkip), "not counted as problems");
+
+        // Back in Custom the same lines are allowed again (the mode is read from the monitor when the scene has none).
+        fake.Writes.Clear();
+        var custom = SceneStore.Parse("""{ "scenes": [ { "name": "C", "settings": { "response time": "Normal", "FreeSync": "Off" } } ] }""")[0];
+        fake.Values[0x15] = new VcpValue(0x0B, 255);
+        steps = SceneApplier.Apply(custom, [lg], delay: new RecordingDelay());
+        Assert.Sequence([(byte)0xF7, (byte)0xF8], fake.Writes.Select(w => w.Code));
+        Assert.True(steps.All(s => s.Status == SceneStepStatus.Applied));
+    }
+
+    [Test]
+    public static void NightTemplateNeverWritesAColorTheLgDoesNotHave()
+    {
+        const string lgId = @"MONITOR\GSM7714\{4d36e96e-e325-11ce-bfc1-08002be10318}\0001";
+        var fake = new FakeTransport { Capabilities = "(vcp(10 14(05 08) 15(01 06)))" };
+        fake.Values[0x10] = new VcpValue(50, 100);
+        fake.Values[0x14] = new VcpValue(0x05, 0x0B);
+        fake.Values[0x15] = new VcpValue(0x0B, 255);
+        using var lg = new MonitorDevice(TestMonitors.Identity(lgId), fake, QuirkDatabase.LoadEmbedded().Match(lgId), null, new RecordingDelay());
+        var steps = SceneApplier.Apply(SceneTemplates.Find("Night")!, [lg], delay: new RecordingDelay());
+        Assert.Equal(0x01u, fake.Values[0x15].Current, "Reader");
+        Assert.Equal(20u, fake.Values[0x10].Current);
+        Assert.True(fake.Writes.All(w => w.Code != 0x14), "5000 K does not exist on the LG, so 0x14 is left alone");
+        Assert.True(steps.All(s => s.Status is not SceneStepStatus.Failed), "nothing fails");
     }
 
     [Test]
@@ -642,7 +761,7 @@ internal static class SceneHotkeyTests
     public static void GameSceneUsesTheLgPictureModeOnlyOnTheLg()
     {
         const string lgId = @"MONITOR\GSM7714\{4d36e96e-e325-11ce-bfc1-08002be10318}\0001";
-        var game = SceneStore.Parse(SceneStore.DefaultJson)[2];
+        var game = SceneStore.Parse(SceneStore.Preview3DefaultJson)[2];
         Assert.Equal("Picture mode", game.Settings[1].Feature.Name);
         Assert.Equal<uint?>(0x1C, game.Settings[1].Value, "FPS Game 1");
 

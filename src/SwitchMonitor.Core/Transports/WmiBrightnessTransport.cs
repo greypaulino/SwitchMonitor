@@ -18,6 +18,26 @@ internal sealed class WmiBrightnessTransport : IMonitorTransport
     public string Id => "wmi";
     public bool SupportsWrites => true;
     public bool SnapsToLevels => true;
+
+    private IReadOnlyList<uint>? levels;
+    private bool levelsRead;
+
+    /// <summary>Levels reported by the display driver for the built-in panel (read once).</summary>
+    public IReadOnlyList<uint>? BrightnessLevels
+    {
+        get
+        {
+            if (levelsRead) return levels;
+            levelsRead = true;
+            try
+            {
+                var reported = LcdBrightness.SupportedLevels().Select(l => (uint)Math.Min(l, (byte)100)).Distinct().Order().ToArray();
+                levels = reported.Length >= 2 ? reported : null;
+            }
+            catch (Exception error) when (error is Win32Exception or IOException or UnauthorizedAccessException) { levels = null; }
+            return levels;
+        }
+    }
     public string InstanceName => instanceName;
 
     public string? ReadCapabilities() => "(vcp(10))";
@@ -37,7 +57,9 @@ internal sealed class WmiBrightnessTransport : IMonitorTransport
     public VcpValue Read(byte code)
     {
         RequireBrightness(code);
-        int[] order = readStrategy >= 0 ? [readStrategy] : [0, 1, 2, 3, LcdStrategy];
+        // The LCD device first: it answers at once and does not depend on the WMI service, which on the N5050 fails
+        // right after sign-in (E_FAIL for every WMI way). WMI stays as the fallback for drivers without the LCD device.
+        int[] order = readStrategy >= 0 ? [readStrategy] : [LcdStrategy, 0, 1, 2, 3];
         var failures = new List<string>();
         Exception? last = null;
         foreach (int strategy in order)
@@ -223,6 +245,7 @@ internal sealed class WmiBrightnessTransport : IMonitorTransport
 /// </summary>
 internal static class LcdBrightness
 {
+    private const uint QuerySupportedBrightness = 0x00230494; // 0x125: the levels the panel really has
     private const uint QueryDisplayBrightness = 0x00230498;   // CTL_CODE(FILE_DEVICE_VIDEO, 0x126, METHOD_BUFFERED, FILE_ANY_ACCESS)
     private const uint SetDisplayBrightness = 0x0023049C;     // 0x127
     private const byte PolicyBoth = 3;                        // DISPLAYPOLICY_BOTH: AC and DC
@@ -256,6 +279,26 @@ internal static class LcdBrightness
         return Math.Min(100u, onBattery ? brightness.DcLevel : brightness.AcLevel);
     }
 
+    /// <summary>The brightness levels the panel supports (percentages), as reported by the display driver.</summary>
+    public static IReadOnlyList<byte> SupportedLevels()
+    {
+        using var device = Open();
+        var buffer = new byte[256];
+        if (!DeviceIoControl(device, QuerySupportedBrightness, IntPtr.Zero, 0, buffer, buffer.Length, out int returned, IntPtr.Zero))
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+        return buffer.Take(Math.Min(returned, buffer.Length)).ToArray();
+    }
+
+    /// <summary>Brightness for AC and battery separately (the driver keeps both).</summary>
+    public static (byte Ac, byte Dc) ReadBoth()
+    {
+        using var device = Open();
+        var brightness = new DisplayBrightness();
+        if (!DeviceIoControl(device, QueryDisplayBrightness, IntPtr.Zero, 0, ref brightness, 3, out _, IntPtr.Zero))
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+        return (brightness.AcLevel, brightness.DcLevel);
+    }
+
     public static void Write(byte level)
     {
         using var device = Open();
@@ -283,6 +326,10 @@ internal static class LcdBrightness
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool DeviceIoControl(Microsoft.Win32.SafeHandles.SafeFileHandle device, uint code, ref DisplayBrightness input,
         int inputSize, IntPtr output, int outputSize, out int returned, IntPtr overlapped);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool DeviceIoControl(Microsoft.Win32.SafeHandles.SafeFileHandle device, uint code, IntPtr input,
+        int inputSize, byte[] output, int outputSize, out int returned, IntPtr overlapped);
 
     [DllImport("kernel32.dll")]
     private static extern bool GetSystemPowerStatus(out PowerStatus status);

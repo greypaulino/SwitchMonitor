@@ -31,6 +31,12 @@ public sealed record SceneProfile(string Name, IReadOnlyList<SceneSetting> Setti
     /// <summary>True when the scene applies to a monitor (no filter, or the name contains the filter).</summary>
     public bool AppliesTo(MonitorDevice monitor) =>
         string.IsNullOrWhiteSpace(MonitorFilter) || monitor.Name.Contains(MonitorFilter, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Programs that turn this profile on while they are in front ("eldenring.exe"), lower case.</summary>
+    public IReadOnlyList<string> Apps { get; init; } = [];
+
+    /// <summary>True when <paramref name="exe"/> (a file name such as "Game.exe") is linked to this profile.</summary>
+    public bool IsLinkedTo(string exe) => Apps.Contains(SceneStore.AppName(exe), StringComparer.OrdinalIgnoreCase);
 }
 
 /// <summary>Reads and writes scenes.json in the v2 data directory.</summary>
@@ -43,13 +49,19 @@ public static class SceneStore
 
     public static string DefaultPath => Path.Combine(AppPaths.DataDirectory, FileName);
 
-    /// <summary>Scenes created on first run. Controls a monitor lacks are skipped when applied.</summary>
     /// <summary>
-    /// Scenes (shown as "Profiles") created on first run. Controls a monitor lacks are skipped when applied; a list of values
-    /// is tried in order, so one "picture mode" line serves the LG (FPS Game 1) and standard monitors (Games).
-    /// No shortcuts by default: Ctrl+Alt+1..9 belong to inputs, as in 1.x.
+    /// scenes.json created on first run: no profiles. Custom (the person's own settings) is the only default; Work, Night,
+    /// Game and Theater are templates added on request (<see cref="SceneTemplates"/>).
     /// </summary>
     public const string DefaultJson = """
+        {
+          "version": 4,
+          "scenes": []
+        }
+        """;
+
+    /// <summary>The 25/10 default, which created Work, Night and Game on first run; replaced on load when unedited.</summary>
+    internal const string Preview3DefaultJson = """
         {
           "version": 3,
           "scenes": [
@@ -136,7 +148,8 @@ public static class SceneStore
     internal static bool IsPreviewDefault(string json)
     {
         string compact = Compact(json);
-        return compact == Compact(PreviewDefaultJson) || compact == Compact(Preview2DefaultJson);
+        return compact == Compact(PreviewDefaultJson) || compact == Compact(Preview2DefaultJson) ||
+               compact == Compact(Preview3DefaultJson);
     }
 
     private static string Compact(string json) => string.Concat(json.Where(c => !char.IsWhiteSpace(c)));
@@ -203,7 +216,19 @@ public static class SceneStore
                     : throw new FormatException($"Scene \"{name}\": \"{hotkeyText}\" is not a valid shortcut (example: Ctrl+Alt+1).");
             if (hotkey is not null && result.Any(s => s.Hotkey == hotkey))
                 throw new FormatException($"Scene \"{name}\": shortcut {hotkey} is already used by another scene.");
-            result.Add(new SceneProfile(name, parsed, filter, hotkey));
+            var apps = new List<string>();
+            if (scene.TryGetProperty("apps", out var appList))
+            {
+                if (appList.ValueKind != JsonValueKind.Array)
+                    throw new FormatException($"Scene \"{name}\": \"apps\" must be a list of program names.");
+                foreach (var app in appList.EnumerateArray())
+                    if (app.GetString() is { Length: > 0 } exe && !apps.Contains(AppName(exe), StringComparer.OrdinalIgnoreCase))
+                        apps.Add(AppName(exe));
+            }
+            foreach (string app in apps)
+                if (result.FirstOrDefault(s => s.IsLinkedTo(app)) is { } other)
+                    throw new FormatException($"Scene \"{name}\": {app} is already linked to \"{other.Name}\".");
+            result.Add(new SceneProfile(name, parsed, filter, hotkey) { Apps = apps });
         }
         return result;
     }
@@ -318,8 +343,9 @@ public static class SceneStore
     /// so the app never writes a file it could not read back.
     /// </summary>
     /// <param name="monitor">Name filter ("LG 29WK600"), or null for every display.</param>
+    /// <param name="apps">Linked programs; null keeps what the file has.</param>
     public static string Upsert(string json, string? originalName, string name, string? monitor,
-        IReadOnlyList<KeyValuePair<string, System.Text.Json.Nodes.JsonNode>> settings)
+        IReadOnlyList<KeyValuePair<string, System.Text.Json.Nodes.JsonNode>> settings, IReadOnlyList<string>? apps = null)
     {
         name = name.Trim();
         if (name.Length == 0) throw new FormatException("A profile needs a name.");
@@ -339,11 +365,23 @@ public static class SceneStore
         var values = new System.Text.Json.Nodes.JsonObject();
         foreach (var (key, node) in settings) values[key] = node.DeepClone();
         scene["settings"] = values;
+        if (apps is not null)
+        {
+            if (apps.Count == 0) scene.Remove("apps");
+            else scene["apps"] = new System.Text.Json.Nodes.JsonArray(apps.Select(a => (System.Text.Json.Nodes.JsonNode?)AppName(a)).ToArray());
+        }
         if (existing is null) scenes.Add(scene);
 
         string result = root.ToJsonString(WriteOptions);
         Parse(result);
         return result;
+    }
+
+    /// <summary>"C:\\Games\\EldenRing.exe" or "EldenRing.EXE" → "eldenring.exe": how linked programs are compared.</summary>
+    public static string AppName(string pathOrName)
+    {
+        string name = Path.GetFileName(pathOrName.Trim());
+        return name.ToLowerInvariant();
     }
 
     /// <summary>Removes a scene (and with it its shortcut).</summary>

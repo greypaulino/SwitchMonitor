@@ -4,7 +4,9 @@ using System.Windows.Threading;
 using SwitchMonitor.Core;
 using SwitchMonitor.Core.Diagnostics;
 using SwitchMonitor.Core.Inputs;
+using SwitchMonitor.App.Automation;
 using SwitchMonitor.Core.Scenes;
+using SwitchMonitor.Core.Schedule;
 using SwitchMonitor.Core.Settings;
 
 namespace SwitchMonitor.App.ViewModels;
@@ -50,6 +52,7 @@ public sealed class MainViewModel : ObservableObject, IInputCoordinator
     private string? shortcutWarning;
     private bool polling;
     private DateTime lastHoldStep;
+    private readonly Core.Color.ColorStore colorStore = Core.Color.ColorStore.Load();
     private string activeProfile = CustomName;
     private Dictionary<string, List<SceneSetting>>? customSnapshot;
 
@@ -69,7 +72,31 @@ public sealed class MainViewModel : ObservableObject, IInputCoordinator
         OpenShortcutsCommand = new RelayCommand(() => IsShortcutsTab = true);
         returnTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
         returnTimer.Tick += async (_, _) => await PollReturnWatchesAsync();
+        Automation = AutomationStore.Load();
+        Apps = new AppLinker(this, Automation, log);
     }
+
+    /// <summary>Linked-programs switch (automation.json).</summary>
+    public AutomationStore Automation { get; }
+
+    /// <summary>Profiles turned on by the program in front.</summary>
+    public AppLinker Apps { get; }
+
+    /// <summary>⋯ menu switch: linked programs change profiles (saved in automation.json).</summary>
+    public bool LinkedAppsEnabled
+    {
+        get => Apps.Enabled;
+        set
+        {
+            if (Apps.Enabled == value) return;
+            Apps.Enabled = value;
+            Raise();
+            Report(value ? "Linked apps switch profiles again." : "Linked apps paused: profiles change only by hand.", true);
+        }
+    }
+
+    /// <summary>The profile the displays are in now ("Custom" for the person's own settings).</summary>
+    public string ActiveProfile => activeProfile;
 
     public AppSettings Settings { get; private set; }
     public ObservableCollection<MonitorViewModel> Monitors { get; } = [];
@@ -237,6 +264,26 @@ public sealed class MainViewModel : ObservableObject, IInputCoordinator
             var devices = await Task.Run(() => MonitorEnumerator.Enumerate(CoreOptions.FromDataDirectory(), log: log));
             foreach (var device in devices.OrderByDescending(d => d.IsControllable).ThenByDescending(d => d.Identity.IsPrimary))
                 Monitors.Add(new MonitorViewModel(device, Report, this));
+            // Panel names from the EDID for built-in screens (Windows display configuration, quick and read-only).
+            var summaries = await Task.Run(() => BuiltInProbe.Displays());
+            foreach (var monitor in Monitors.Where(m => m.Device.Identity.IsBuiltIn))
+                monitor.Panel = summaries.FirstOrDefault(s => string.Equals(s.GdiName, monitor.Device.Identity.GdiName, StringComparison.OrdinalIgnoreCase))?.Panel;
+            // Software color only for built-in panels: they have no color controls of their own. External monitors use
+            // their own presets (a gamma tint on top of them would cost brightness and contrast).
+            foreach (var monitor in Monitors.Where(m => m.IsActive && !string.IsNullOrEmpty(m.Device.Identity.GdiName)))
+            {
+                if (monitor.Device.Identity.IsBuiltIn)
+                {
+                    monitor.SoftwareColor = new SoftwareColorViewModel(monitor, colorStore, Report);
+                    monitor.SoftwareColor.Reapply();
+                }
+                else if (!colorStore.Get(monitor.Key).IsNeutral)
+                {
+                    // A tint saved by an earlier version: undo it once and forget it.
+                    Core.Color.SoftwareColor.Reset(monitor.Device.Identity.GdiName);
+                    colorStore.Set(monitor.Key, new Core.Color.SoftwareColorSetting());
+                }
+            }
 
             Selected = Monitors.FirstOrDefault(m => m.Device.Key == keep) ?? Monitors.FirstOrDefault(m => m.IsControllable);
             Report(Monitors.Count == 0 ? "No displays found." : $"{Monitors.Count(m => m.IsControllable)} of {Monitors.Count} display(s) can be controlled.", Monitors.Count > 0);
@@ -312,21 +359,29 @@ public sealed class MainViewModel : ObservableObject, IInputCoordinator
         var snapshot = new Dictionary<string, List<SceneSetting>>();
         foreach (var monitor in Monitors.Where(m => m.IsControllable && m.IsLoaded))
         {
-            var lines = new List<SceneSetting>();
-            foreach (var control in monitor.AllControls)
-            {
-                // Values locked by the current mode belong to that mode; restoring them elsewhere would be wrong.
-                if (control is ReadOnlyControlViewModel || (!control.IsEnabled && control is not ToggleControlViewModel)) continue;
-                if (control is SliderControlViewModel slider) lines.Add(new SceneSetting(control.Feature.Definition, slider.Value, null));
-                else if (control.RawValue is uint raw) lines.Add(new SceneSetting(control.Feature.Definition, null, raw));
-            }
+            var lines = CaptureDisplay(monitor);
             if (lines.Count > 0) snapshot[monitor.Key] = lines;
         }
         return snapshot;
     }
 
+    /// <summary>What one display shows now, as profile lines.</summary>
+    public List<SceneSetting> CaptureDisplay(MonitorViewModel monitor)
+    {
+        var lines = new List<SceneSetting>();
+        foreach (var control in monitor.AllControls)
+        {
+            // Values locked by the current mode belong to that mode; restoring them elsewhere would be wrong.
+            if (control is ReadOnlyControlViewModel || control.IsUnread || (!control.IsEnabled && control is not ToggleControlViewModel)) continue;
+            if (control is SliderControlViewModel slider) lines.Add(new SceneSetting(control.Feature.Definition, slider.Value, null));
+            else if (control.RawValue is uint raw) lines.Add(new SceneSetting(control.Feature.Definition, null, raw));
+        }
+        return lines;
+    }
+
     /// <summary>Custom button: back to the settings the displays had before the last profile was applied.</summary>
-    public async Task RestoreCustomAsync()
+    /// <param name="fade">Gradual return (linked programs); zero = at once.</param>
+    public async Task RestoreCustomAsync(TimeSpan fade = default)
     {
         if (activeProfile == CustomName)
         {
@@ -343,35 +398,76 @@ public sealed class MainViewModel : ObservableObject, IInputCoordinator
             return;
         }
         Report("Restoring your Custom settings…", true);
-        int failed = 0;
-        foreach (var (key, lines) in snapshot)
-        {
-            var monitor = Monitors.FirstOrDefault(m => m.Key == key);
-            if (monitor is null || !monitor.IsControllable) continue;
-            var steps = await Task.Run(() => SceneApplier.Apply(new SceneProfile(CustomName, lines), [monitor.Device], log));
-            failed += steps.Count(s => s.Status is SceneStepStatus.Failed or SceneStepStatus.Mismatch);
-            monitor.ShowApplied(steps);
-        }
+        // Every display at the same time, each with its own saved settings.
+        var work = snapshot
+            .Select(entry => (Monitor: Monitors.FirstOrDefault(m => m.Key == entry.Key), Lines: entry.Value))
+            .Where(entry => entry.Monitor is { IsControllable: true })
+            .Select(async entry =>
+            {
+                var steps = await Task.Run(() => SceneApplier.Apply(new SceneProfile(CustomName, entry.Lines), [entry.Monitor!.Device], log, fade: fade));
+                entry.Monitor!.ShowApplied(steps);
+                return steps.Count(s => s.Status is SceneStepStatus.Failed or SceneStepStatus.Mismatch);
+            });
+        int failed = (await Task.WhenAll(work)).Sum();
         Report(failed == 0 ? "Custom: your settings are back." : $"Custom: your settings are back, {failed} could not be set.", failed == 0);
     }
 
-    public async Task ApplySceneAsync(SceneProfile scene)
+    /// <summary>
+    /// Custom edited on the Profiles tab: the values become the person's own settings on that display (Custom stays the
+    /// active profile; nothing is saved to scenes.json).
+    /// </summary>
+    public async Task ApplyAsCustomAsync(SceneProfile settings, MonitorViewModel monitor)
+    {
+        activeProfile = CustomName;
+        customSnapshot = null;
+        MarkActiveProfile();
+        Report($"Applying your Custom settings to {monitor.Name}…", true);
+        var steps = await Task.Run(() => SceneApplier.Apply(settings, [monitor.Device], log));
+        int failed = steps.Count(s => s.Status is SceneStepStatus.Failed or SceneStepStatus.Mismatch);
+        Report("Custom: " + Summary(steps), failed == 0);
+        monitor.ShowApplied(steps);
+    }
+
+    /// <param name="fade">Gradual change of the levels (linked programs); zero = at once.</param>
+    /// <param name="automatic">Set by a linked program (not chosen by hand).</param>
+    public async Task ApplySceneAsync(SceneProfile scene, TimeSpan fade = default, bool automatic = false)
     {
         // Leaving Custom: remember the person's own settings so the Custom button can bring them back.
         if (activeProfile == CustomName) customSnapshot = CaptureCustom();
         activeProfile = scene.Name;
         MarkActiveProfile();
-        var devices = Monitors.Where(m => m.IsControllable).Select(m => m.Device).ToArray();
+        var targets = Monitors.Where(m => m.IsControllable && scene.AppliesTo(m.Device)).ToArray();
+        var devices = targets.Select(m => m.Device).ToArray();
         Report($"Applying profile {scene.Name}…", true);
-        var steps = await Task.Run(() => SceneApplier.Apply(scene, devices, log));
-        int applied = steps.Count(s => s.Status is SceneStepStatus.Applied or SceneStepStatus.Unconfirmed);
-        int already = steps.Count(s => s.Status == SceneStepStatus.AlreadySet);
-        int skipped = steps.Count(s => s.Status == SceneStepStatus.Skipped);
+        var steps = await Task.Run(() => SceneApplier.Apply(scene, devices, log, fade: fade));
         int failed = steps.Count(s => s.Status is SceneStepStatus.Failed or SceneStepStatus.Mismatch);
-        Report($"{scene.Name}: {applied} changed" + (already > 0 ? $", {already} already set" : "") +
-               (skipped > 0 ? $", {skipped} not available on a display" : "") +
-               (failed > 0 ? $", {failed} failed" : ""), failed == 0);
+        Report($"{scene.Name}: " + Summary(steps), failed == 0);
         foreach (var monitor in Monitors) monitor.ShowApplied(steps);
+    }
+
+    /// <summary>
+    /// "LG 29WK600: 2 changed, 7 already set, 1 failed · N5050 Laptop Screen: 1 changed". Lines a display has no control
+    /// for (picture mode on a laptop) are not counted: the profile simply does not concern it.
+    /// </summary>
+    internal static string Summary(IReadOnlyList<SceneStep> steps)
+    {
+        var parts = new List<string>();
+        foreach (var display in steps.GroupBy(s => s.Monitor))
+        {
+            int changed = display.Count(s => s.Status is SceneStepStatus.Applied or SceneStepStatus.Unconfirmed);
+            int already = display.Count(s => s.Status == SceneStepStatus.AlreadySet);
+            int notOffered = display.Count(s => s.Status == SceneStepStatus.Skipped && !SceneApplier.IsQuietSkip(s));
+            var failed = display.Where(s => s.Status is SceneStepStatus.Failed or SceneStepStatus.Mismatch)
+                .Select(s => s.Setting.Feature.Name).ToArray();
+            var counts = new List<string>();
+            if (changed > 0) counts.Add($"{changed} changed");
+            if (already > 0) counts.Add($"{already} already set");
+            if (notOffered > 0) counts.Add($"{notOffered} value{(notOffered == 1 ? "" : "s")} not offered");
+            if (failed.Length > 0) counts.Add($"{failed.Length} failed ({string.Join(", ", failed)})");
+            if (counts.Count == 0) continue;
+            parts.Add($"{display.Key}: {string.Join(", ", counts)}");
+        }
+        return parts.Count == 0 ? "nothing to change" : string.Join(" · ", parts);
     }
 
     // ---- Brightness shortcuts (1.x behavior) ----
@@ -574,8 +670,16 @@ public sealed class MainViewModel : ObservableObject, IInputCoordinator
         return monitor is null ? $"input {shortcut.InputCode:X2}" : $"{monitor.Name} {monitor.Device.DescribeInput(shortcut.InputCode)}";
     }
 
+    /// <summary>Windows resets the gamma ramp after sleep and when a display is reconnected: set saved tints again.</summary>
+    public void ReapplySoftwareColor()
+    {
+        foreach (var monitor in Monitors) monitor.SoftwareColor?.Reapply();
+    }
+
     public void Shutdown()
     {
+        Apps.Stop();
+        foreach (var monitor in Monitors) monitor.SoftwareColor?.Release();
         returnTimer.Stop();
         foreach (var monitor in Monitors) monitor.Dispose();
         Monitors.Clear();

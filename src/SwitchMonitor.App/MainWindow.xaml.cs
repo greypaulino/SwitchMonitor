@@ -15,14 +15,21 @@ public partial class MainWindow : Window
         Deactivated += (_, _) => (DataContext as MainViewModel)?.ShortcutEditor?.CancelCapture();
     }
 
-    /// <summary>The ⋯ button opens its menu on a normal click.</summary>
+    /// <summary>The ⋯ and "Add profile" buttons open their menu on a normal click.</summary>
     private void ShowOptions(object sender, RoutedEventArgs e)
     {
         if (sender is not FrameworkElement { ContextMenu: { } menu } button) return;
-        menu.DataContext = DataContext;
+        menu.DataContext = button.DataContext ?? DataContext;
         menu.PlacementTarget = button;
         menu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;
         menu.IsOpen = true;
+    }
+
+    /// <summary>"Add open app": lists the programs with a window at that moment, then opens the menu.</summary>
+    private void ShowRunningApps(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { DataContext: ProfileEditorViewModel editor }) editor.RefreshRunningApps();
+        ShowOptions(sender, e);
     }
 
     private void Record(KeyEventArgs e)

@@ -17,6 +17,7 @@ internal sealed class FakeTransport : IMonitorTransport
     public bool Disposed { get; private set; }
     public string Id { get; set; } = "fake";
     public bool SnapsToLevels { get; set; }
+    public IReadOnlyList<uint>? BrightnessLevels { get; set; }
 
     public string? ReadCapabilities() => Capabilities;
 

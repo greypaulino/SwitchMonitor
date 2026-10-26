@@ -35,15 +35,24 @@
                         ToolTip="Mute / unmute" Visibility="Collapsed" />
                 <Slider x:Name="Bar" Grid.Column="1" Value="{Binding Value, Mode=TwoWay}" IsEnabled="{Binding IsEnabled}"
                         SmallChange="{Binding SmallStep}" LargeChange="{Binding LargeStep}"
-                        TickFrequency="{Binding SmallStep}" IsSnapToTickEnabled="{Binding SnapsToSteps}" />
+                        TickFrequency="{Binding TickStep}" Ticks="{Binding TickValues}" IsSnapToTickEnabled="{Binding SnapsToSteps}" />
                 <TextBlock x:Name="Percent" Grid.Column="2" Text="{Binding ValueText}" HorizontalAlignment="Right"
                            VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}" />
-                <Button Grid.Column="3" Style="{StaticResource IconButton}" Content="&#xE72C;" FontSize="12"
+                <Button x:Name="Reset" Grid.Column="3" Style="{StaticResource IconButton}" Content="&#xE72C;" FontSize="12"
                         HorizontalAlignment="Right" Command="{Binding ResetCommand}"
                         ToolTip="Factory value for the current mode"
                         Visibility="{Binding CanReset, Converter={StaticResource BoolToVisibility}}" />
+                <!-- Value not read yet (laptop brightness right after sign-in): read it again now -->
+                <Button x:Name="Retry" Grid.Column="3" Style="{StaticResource IconButton}" Content="&#xE72C;" FontSize="12"
+                        HorizontalAlignment="Right" Command="{Binding RetryCommand}"
+                        ToolTip="Could not be read yet. Read it again" Visibility="Collapsed" />
             </Grid>
             <DataTemplate.Triggers>
+                <DataTrigger Binding="{Binding IsUnread}" Value="True">
+                    <Setter TargetName="Reset" Property="Visibility" Value="Collapsed" />
+                    <Setter TargetName="Retry" Property="Visibility" Value="Visible" />
+                    <Setter TargetName="Speaker" Property="IsEnabled" Value="False" />
+                </DataTrigger>
                 <DataTrigger Binding="{Binding HasMute}" Value="True">
                     <Setter TargetName="SliderName" Property="Visibility" Value="Collapsed" />
                     <Setter TargetName="Speaker" Property="Visibility" Value="Visible" />
@@ -56,7 +65,18 @@
             </DataTemplate.Triggers>
         </DataTemplate>
         <DataTemplate DataType="{x:Type vm:ToggleControlViewModel}">
-            <Grid Margin="0,0,0,12">
+            <!-- Locked by the current picture mode: dimmed, with the reason as tooltip -->
+            <Grid Margin="0,0,0,12" IsEnabled="{Binding IsEnabled}" ToolTip="{Binding ToolTipText}" ToolTipService.ShowOnDisabled="True"
+                  Background="Transparent">
+                <Grid.Style>
+                    <Style TargetType="Grid">
+                        <Style.Triggers>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.4" />
+                            </Trigger>
+                        </Style.Triggers>
+                    </Style>
+                </Grid.Style>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="150" />
                     <ColumnDefinition Width="*" />
@@ -70,7 +90,18 @@
             </Grid>
         </DataTemplate>
         <DataTemplate DataType="{x:Type vm:ChoiceControlViewModel}">
-            <Grid Margin="0,0,0,12">
+            <!-- Locked by the current picture mode: dimmed, with the reason as tooltip -->
+            <Grid Margin="0,0,0,12" IsEnabled="{Binding IsEnabled}" ToolTip="{Binding ToolTipText}" ToolTipService.ShowOnDisabled="True"
+                  Background="Transparent">
+                <Grid.Style>
+                    <Style TargetType="Grid">
+                        <Style.Triggers>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.4" />
+                            </Trigger>
+                        </Style.Triggers>
+                    </Style>
+                </Grid.Style>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="150" />
                     <ColumnDefinition Width="*" />
@@ -113,6 +144,8 @@
                         <ContextMenu>
                             <MenuItem Header="Advanced settings (red, green, blue and black levels)" IsCheckable="True"
                                       IsChecked="{Binding ShowAdvanced, Mode=TwoWay}" />
+                            <MenuItem Header="Linked apps switch profiles" IsCheckable="True"
+                                      IsChecked="{Binding LinkedAppsEnabled, Mode=TwoWay}" />
                         </ContextMenu>
                     </Button.ContextMenu>
                 </Button>
@@ -296,15 +329,76 @@
                         <TextBlock Text="{Binding Name}" FontSize="20" FontWeight="SemiBold" />
                     </DockPanel>
                     <TextBlock Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="0,0,0,16"
-                               Text="Fine color tuning for the Custom picture modes. To keep a combination, create a profile on the Profiles tab." />
+                               Text="Fine color tuning. The monitor's own red, green and blue work only in its Custom picture modes; a laptop screen gets a software color instead. To keep a combination, create a profile on the Profiles tab." />
                     <TextBlock Text="Reading the monitor's settings…" Foreground="{StaticResource MutedBrush}"
                                Visibility="{Binding IsLoading, Converter={StaticResource BoolToVisibility}}" Margin="0,0,0,12" />
                     <TextBlock Text="{Binding AdvancedHint}" Foreground="{StaticResource WarningTextBrush}" TextWrapping="Wrap" Margin="0,0,0,12" />
                     <TextBlock Text="COLOR" Foreground="{StaticResource MutedBrush}" FontSize="11" FontWeight="SemiBold" Margin="0,0,0,8"
                                Visibility="{Binding HasAdvanced, Converter={StaticResource BoolToVisibility}}" />
                     <ItemsControl ItemsSource="{Binding AdvancedControls}" ItemContainerStyle="{StaticResource ControlRow}" />
-                    <TextBlock Text="This display offers no advanced color controls." Foreground="{StaticResource MutedBrush}"
+                    <TextBlock Text="{Binding NoAdvancedText}"
+                               Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap"
                                Visibility="{Binding HasNoAdvanced, Converter={StaticResource BoolToVisibility}}" />
+
+                    <!-- Software color: made by the graphics card, only for built-in panels (they have no color controls) -->
+                    <StackPanel DataContext="{Binding SoftwareColor}" Margin="0,18,0,0"
+                                Visibility="{Binding DataContext.HasSoftwareColor, RelativeSource={RelativeSource AncestorType=StackPanel}, Converter={StaticResource BoolToVisibility}}">
+                        <DockPanel Margin="0,0,0,8">
+                            <Button DockPanel.Dock="Right" Content="Neutral" Command="{Binding ResetCommand}" Padding="10,4"
+                                    ToolTip="Back to 6500 K and full red, green and blue" />
+                            <TextBlock Text="SOFTWARE COLOR" Foreground="{StaticResource MutedBrush}" FontSize="11" FontWeight="SemiBold"
+                                       VerticalAlignment="Center" />
+                        </DockPanel>
+                        <TextBlock Foreground="{StaticResource MutedBrush}" FontSize="11" TextWrapping="Wrap" Margin="0,0,0,12"
+                                   Text="Made by the graphics card, because this screen has no color controls of its own. Turn Windows Night light off while using it." />
+                        <Grid Margin="0,0,0,12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="150" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="110" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="Temperature" VerticalAlignment="Center" />
+                            <Slider Grid.Column="1" Minimum="{Binding MinKelvin}" Maximum="{Binding MaxKelvin}" SmallChange="100" LargeChange="500"
+                                    Value="{Binding Kelvin, Mode=TwoWay}" />
+                            <TextBlock Grid.Column="2" Text="{Binding KelvinText}" HorizontalAlignment="Right" VerticalAlignment="Center"
+                                       Foreground="{StaticResource MutedBrush}" />
+                        </Grid>
+                        <StackPanel Orientation="Horizontal" Margin="150,0,0,12">
+                            <Button Content="Warm 5000 K" Command="{Binding PresetCommand}" CommandParameter="5000" Margin="0,0,8,0" Padding="10,4" />
+                            <Button Content="Medium 7500 K" Command="{Binding PresetCommand}" CommandParameter="7500" Margin="0,0,8,0" Padding="10,4" />
+                            <Button Content="Cool 9300 K" Command="{Binding PresetCommand}" CommandParameter="9300" Padding="10,4" />
+                        </StackPanel>
+                        <Grid Margin="0,0,0,10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="150" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="52" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="Red" VerticalAlignment="Center" />
+                            <Slider Grid.Column="1" Value="{Binding Red, Mode=TwoWay}" />
+                            <TextBlock Grid.Column="2" Text="{Binding RedText}" HorizontalAlignment="Right" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}" />
+                        </Grid>
+                        <Grid Margin="0,0,0,10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="150" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="52" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="Green" VerticalAlignment="Center" />
+                            <Slider Grid.Column="1" Value="{Binding Green, Mode=TwoWay}" />
+                            <TextBlock Grid.Column="2" Text="{Binding GreenText}" HorizontalAlignment="Right" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}" />
+                        </Grid>
+                        <Grid Margin="0,0,0,10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="150" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="52" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="Blue" VerticalAlignment="Center" />
+                            <Slider Grid.Column="1" Value="{Binding Blue, Mode=TwoWay}" />
+                            <TextBlock Grid.Column="2" Text="{Binding BlueText}" HorizontalAlignment="Right" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}" />
+                        </Grid>
+                    </StackPanel>
                 </StackPanel>
             </ScrollViewer>
 
@@ -314,11 +408,63 @@
         <Grid Grid.Row="2" DataContext="{Binding ProfileEditor}"
               Visibility="{Binding DataContext.IsProfilesTab, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolToVisibility}}">
             <Grid.Resources>
-                <CollectionViewSource x:Key="GroupedSettings" Source="{Binding Rows}">
-                    <CollectionViewSource.GroupDescriptions>
-                        <PropertyGroupDescription PropertyName="Group" />
-                    </CollectionViewSource.GroupDescriptions>
-                </CollectionViewSource>
+                <Style x:Key="SectionTitle" TargetType="TextBlock">
+                    <Setter Property="Foreground" Value="{StaticResource MutedBrush}" />
+                    <Setter Property="FontSize" Value="11" />
+                    <Setter Property="FontWeight" Value="SemiBold" />
+                    <Setter Property="Margin" Value="0,16,0,6" />
+                </Style>
+                <!-- One setting of the profile (normal, advanced or not on this display) -->
+                <DataTemplate x:Key="SettingRowTemplate" DataType="{x:Type vm:ProfileSettingRowViewModel}">
+                    <Grid x:Name="SettingRow" Margin="0,0,0,8"
+                          Visibility="{Binding IsVisible, Converter={StaticResource BoolToVisibility}}">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="0" />
+                                        <ColumnDefinition Width="150" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="52" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock x:Name="SettingName" Grid.Column="1" Text="{Binding Name}" VerticalAlignment="Center"
+                                               TextTrimming="CharacterEllipsis" />
+                                    <!-- Volume: the speaker icon replaces the name and mutes / unmutes, as on the Displays tab -->
+                                    <Button x:Name="SettingSpeaker" Grid.Column="1" Style="{StaticResource IconButton}" HorizontalAlignment="Left"
+                                            Content="{Binding SpeakerGlyph}" Command="{Binding ToggleMuteCommand}"
+                                            ToolTip="{Binding SpeakerToolTip}" Visibility="Collapsed" />
+                                    <Slider x:Name="SettingSlider" Grid.Column="2" Value="{Binding Percent, Mode=TwoWay}" Visibility="Collapsed" />
+                                    <TextBlock x:Name="SettingPercent" Grid.Column="3" Text="{Binding PercentText}" HorizontalAlignment="Right"
+                                               VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}" Visibility="Collapsed" />
+                                    <ComboBox x:Name="SettingChoice" Grid.Column="2" HorizontalAlignment="Left" ItemsSource="{Binding Options}"
+                                              SelectedItem="{Binding Selected, Mode=TwoWay}" Visibility="Collapsed" />
+                                    <TextBlock x:Name="SettingFixed" Grid.Column="2" Text="{Binding FixedText}"
+                                               Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" Visibility="Collapsed"
+                                               ToolTip="This display does not have this control; the line is kept as saved" />
+                                    <Button x:Name="SettingRemove" Grid.Column="3" Content="✕" Style="{StaticResource ChipRemove}"
+                                            HorizontalAlignment="Right" Command="{Binding RemoveCommand}" Visibility="Collapsed"
+                                            ToolTip="Remove this line from the profile" />
+                                </Grid>
+                                <DataTemplate.Triggers>
+                                    <DataTrigger Binding="{Binding IsContinuous}" Value="True">
+                                        <Setter TargetName="SettingSlider" Property="Visibility" Value="Visible" />
+                                        <Setter TargetName="SettingPercent" Property="Visibility" Value="Visible" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding HasMute}" Value="True">
+                                        <Setter TargetName="SettingName" Property="Visibility" Value="Collapsed" />
+                                        <Setter TargetName="SettingSpeaker" Property="Visibility" Value="Visible" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding IsMuted}" Value="True">
+                                        <Setter TargetName="SettingSlider" Property="IsEnabled" Value="False" />
+                                        <Setter TargetName="SettingSlider" Property="Opacity" Value="0.4" />
+                                        <Setter TargetName="SettingPercent" Property="Opacity" Value="0.4" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding IsChoice}" Value="True">
+                                        <Setter TargetName="SettingChoice" Property="Visibility" Value="Visible" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding IsAvailable}" Value="False">
+                                        <Setter TargetName="SettingFixed" Property="Visibility" Value="Visible" />
+                                        <Setter TargetName="SettingRemove" Property="Visibility" Value="Visible" />
+                                    </DataTrigger>
+                                </DataTemplate.Triggers>
+                </DataTemplate>
             </Grid.Resources>
             <Grid.RowDefinitions>
                 <RowDefinition Height="*" />
@@ -331,8 +477,30 @@
 
             <!-- Profile list -->
             <DockPanel Background="{StaticResource PanelBrush}">
-                <Button DockPanel.Dock="Top" Content="+ New profile" Command="{Binding NewCommand}" Margin="10,10,10,6"
-                        ToolTip="Start from the current values of the display" />
+                <Button DockPanel.Dock="Top" Margin="10,10,10,6" Click="ShowOptions" HorizontalContentAlignment="Stretch"
+                        ToolTip="Add a profile from a template, or a new one from the current values">
+                    <DockPanel>
+                        <TextBlock DockPanel.Dock="Right" Text="&#xE70D;" FontFamily="Segoe MDL2 Assets" FontSize="9"
+                                   VerticalAlignment="Center" Margin="8,0,0,0" />
+                        <TextBlock Text="Add Profile" />
+                    </DockPanel>
+                    <Button.ContextMenu>
+                        <ContextMenu>
+                            <MenuItem Header="Templates" IsEnabled="False" />
+                            <MenuItem Header="Work" Command="{Binding AddTemplateCommand}" CommandParameter="Work"
+                                      ToolTip="Neutral 6500 K, about 120 cd/m², Custom or Standard mode" />
+                            <MenuItem Header="Night" Command="{Binding AddTemplateCommand}" CommandParameter="Night"
+                                      ToolTip="Dim and warm: Reader mode on the LG, 5000 K on other monitors" />
+                            <MenuItem Header="Game" Command="{Binding AddTemplateCommand}" CommandParameter="Game"
+                                      ToolTip="Custom (Game) mode on the LG, bright, middle response time, FreeSync on" />
+                            <MenuItem Header="Theater" Command="{Binding AddTemplateCommand}" CommandParameter="Theater"
+                                      ToolTip="Cinema mode, about 100 cd/m² for a dark room, 6500 K" />
+                            <Separator />
+                            <MenuItem Header="+ New Profile" Command="{Binding NewProfileCommand}"
+                                      ToolTip="Start from the current values of the display" />
+                        </ContextMenu>
+                    </Button.ContextMenu>
+                </Button>
                 <ListBox ItemsSource="{Binding Profiles}" SelectedItem="{Binding SelectedProfile}" Background="Transparent"
                          Foreground="{StaticResource TextBrush}"
                          BorderThickness="0" Padding="6" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
@@ -390,7 +558,19 @@
                         </Grid.RowDefinitions>
                         <TextBlock Text="Name" VerticalAlignment="Center" />
                         <TextBox Grid.Column="1" Text="{Binding Name, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" MaxWidth="320"
-                                 HorizontalAlignment="Left" MinWidth="240" />
+                                 HorizontalAlignment="Left" MinWidth="240" IsReadOnly="{Binding IsCustom}">
+                            <TextBox.Style>
+                                <Style TargetType="TextBox" BasedOn="{StaticResource {x:Type TextBox}}">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsCustom}" Value="True">
+                                            <Setter Property="Opacity" Value="0.6" />
+                                            <Setter Property="Focusable" Value="False" />
+                                            <Setter Property="ToolTip" Value="Custom is your own settings; its name cannot change. Use Add Profile to keep a set under a name." />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBox.Style>
+                        </TextBox>
                         <TextBlock Grid.Row="1" Text="Values from" VerticalAlignment="Center" Margin="0,10,0,0" />
                         <ComboBox Grid.Row="1" Grid.Column="1" ItemsSource="{Binding Sources}" SelectedItem="{Binding Source}"
                                   DisplayMemberPath="Name" HorizontalAlignment="Left" Margin="0,10,0,0"
@@ -401,60 +581,81 @@
                     </Grid>
                     <TextBlock Text="{Binding HotkeyText}" Foreground="{StaticResource MutedBrush}" FontSize="12" Margin="0,0,0,6" />
 
-                    <ItemsControl ItemsSource="{Binding Source={StaticResource GroupedSettings}}">
-                        <ItemsControl.GroupStyle>
-                            <GroupStyle>
-                                <GroupStyle.HeaderTemplate>
-                                    <DataTemplate>
-                                        <TextBlock Text="{Binding Name}" Foreground="{StaticResource MutedBrush}" FontSize="11"
-                                                   FontWeight="SemiBold" Margin="0,16,0,6" />
-                                    </DataTemplate>
-                                </GroupStyle.HeaderTemplate>
-                            </GroupStyle>
-                        </ItemsControl.GroupStyle>
-                        <ItemsControl.ItemTemplate>
-                            <DataTemplate DataType="{x:Type vm:ProfileSettingRowViewModel}">
-                                <Grid x:Name="SettingRow" Margin="0,0,0,8">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="0" />
-                                        <ColumnDefinition Width="150" />
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="52" />
-                                    </Grid.ColumnDefinitions>
-                                    <TextBlock x:Name="SettingName" Grid.Column="1" Text="{Binding Name}" VerticalAlignment="Center"
-                                               TextTrimming="CharacterEllipsis" />
-                                    <Slider x:Name="SettingSlider" Grid.Column="2" Value="{Binding Percent, Mode=TwoWay}" Visibility="Collapsed" />
-                                    <TextBlock x:Name="SettingPercent" Grid.Column="3" Text="{Binding PercentText}" HorizontalAlignment="Right"
-                                               VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}" Visibility="Collapsed" />
-                                    <ComboBox x:Name="SettingChoice" Grid.Column="2" HorizontalAlignment="Left" ItemsSource="{Binding Options}"
-                                              SelectedItem="{Binding Selected, Mode=TwoWay}" Visibility="Collapsed" />
-                                    <TextBlock x:Name="SettingFixed" Grid.Column="2" Text="{Binding FixedText}"
-                                               Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" Visibility="Collapsed"
-                                               ToolTip="This display does not have this control; the line is kept as saved" />
-                                    <Button x:Name="SettingRemove" Grid.Column="3" Content="✕" Style="{StaticResource ChipRemove}"
-                                            HorizontalAlignment="Right" Command="{Binding RemoveCommand}" Visibility="Collapsed"
-                                            ToolTip="Remove this line from the profile" />
-                                </Grid>
-                                <DataTemplate.Triggers>
-                                    <DataTrigger Binding="{Binding IsContinuous}" Value="True">
-                                        <Setter TargetName="SettingSlider" Property="Visibility" Value="Visible" />
-                                        <Setter TargetName="SettingPercent" Property="Visibility" Value="Visible" />
-                                    </DataTrigger>
-                                    <DataTrigger Binding="{Binding IsChoice}" Value="True">
-                                        <Setter TargetName="SettingChoice" Property="Visibility" Value="Visible" />
-                                    </DataTrigger>
-                                    <DataTrigger Binding="{Binding IsAvailable}" Value="False">
-                                        <Setter TargetName="SettingFixed" Property="Visibility" Value="Visible" />
-                                        <Setter TargetName="SettingRemove" Property="Visibility" Value="Visible" />
-                                    </DataTrigger>
-                                </DataTemplate.Triggers>
-                            </DataTemplate>
-                        </ItemsControl.ItemTemplate>
-                    </ItemsControl>
-                    <Button Content="{Binding AdvancedButtonText}" Command="{Binding ToggleAdvancedCommand}" HorizontalAlignment="Left"
-                            Margin="0,14,0,0" Padding="12,6" Background="Transparent" BorderBrush="{StaticResource LineBrush}" BorderThickness="1"
-                            Visibility="{Binding HasAdvancedRows, Converter={StaticResource BoolToVisibility}}"
-                            ToolTip="Shown: these settings are part of the profile. Hidden: the profile leaves them as they are." />
+                    <TextBlock Text="SETTINGS" Style="{StaticResource SectionTitle}" />
+                    <ItemsControl ItemsSource="{Binding Rows}" ItemTemplate="{StaticResource SettingRowTemplate}" />
+
+                    <!-- Advanced: a heading like SETTINGS with an expand chevron; open = part of the profile -->
+                    <Button Command="{Binding ToggleAdvancedCommand}" HorizontalAlignment="Left" Cursor="Hand"
+                            ToolTip="{Binding AdvancedToolTip}"
+                            Visibility="{Binding HasAdvancedRows, Converter={StaticResource BoolToVisibility}}">
+                        <Button.Template>
+                            <ControlTemplate TargetType="Button">
+                                <StackPanel x:Name="Heading" Orientation="Horizontal" Background="Transparent" Margin="0,16,0,6">
+                                    <TextBlock Text="ADVANCED" Foreground="{StaticResource MutedBrush}" FontSize="11" FontWeight="SemiBold"
+                                               VerticalAlignment="Center" />
+                                    <TextBlock Text="{Binding AdvancedGlyph}" FontFamily="Segoe MDL2 Assets" FontSize="9"
+                                               Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" Margin="6,1,0,0" />
+                                </StackPanel>
+                                <ControlTemplate.Triggers>
+                                    <Trigger Property="IsMouseOver" Value="True">
+                                        <Setter TargetName="Heading" Property="Opacity" Value="0.75" />
+                                    </Trigger>
+                                </ControlTemplate.Triggers>
+                            </ControlTemplate>
+                        </Button.Template>
+                    </Button>
+                    <ItemsControl ItemsSource="{Binding AdvancedRows}" ItemTemplate="{StaticResource SettingRowTemplate}" />
+
+                    <TextBlock Text="NOT ON THIS DISPLAY" Style="{StaticResource SectionTitle}"
+                               Visibility="{Binding HasMissingRows, Converter={StaticResource BoolToVisibility}}" />
+                    <ItemsControl ItemsSource="{Binding MissingRows}" ItemTemplate="{StaticResource SettingRowTemplate}" />
+
+                    <!-- Linked programs: the profile turns on (gradually) while one of them is in front -->
+                    <StackPanel Visibility="{Binding CanAutomate, Converter={StaticResource BoolToVisibility}}">
+                        <TextBlock Text="LINKED APPS" Style="{StaticResource SectionTitle}" Margin="0,22,0,6" />
+                        <TextBlock Text="{Binding LinkedAppsHint}" Foreground="{StaticResource MutedBrush}" FontSize="12" TextWrapping="Wrap"
+                                   Margin="0,0,0,8" />
+                        <ItemsControl ItemsSource="{Binding LinkedApps}" Margin="0,0,0,8"
+                                      Visibility="{Binding HasLinkedApps, Converter={StaticResource BoolToVisibility}}">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <WrapPanel />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Background="{StaticResource RaisedBrush}" CornerRadius="12" Padding="10,3,4,3" Margin="0,0,6,6">
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="{Binding Exe}" VerticalAlignment="Center" FontSize="12" />
+                                            <Button Content="✕" Style="{StaticResource ChipRemove}" Command="{Binding RemoveCommand}"
+                                                    Margin="6,0,0,0" ToolTip="Unlink this program" />
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                        <StackPanel Orientation="Horizontal">
+                            <Button Click="ShowRunningApps" Padding="12,5" Margin="0,0,8,0"
+                                    ToolTip="Pick one of the programs open now">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="Add open app" />
+                                    <TextBlock Text="&#xE70D;" FontFamily="Segoe MDL2 Assets" FontSize="9" VerticalAlignment="Center" Margin="8,0,0,0" />
+                                </StackPanel>
+                                <Button.ContextMenu>
+                                    <ContextMenu ItemsSource="{Binding RunningApps}">
+                                        <ContextMenu.ItemContainerStyle>
+                                            <Style TargetType="MenuItem">
+                                                <Setter Property="Header" Value="{Binding Label}" />
+                                                <Setter Property="Command" Value="{Binding AddCommand}" />
+                                            </Style>
+                                        </ContextMenu.ItemContainerStyle>
+                                    </ContextMenu>
+                                </Button.ContextMenu>
+                            </Button>
+                            <Button Content="Browse…" Command="{Binding BrowseAppCommand}" Padding="12,5"
+                                    ToolTip="Choose a program file (.exe), also one that is not open now" />
+                        </StackPanel>
+                    </StackPanel>
                 </StackPanel>
             </ScrollViewer>
 
@@ -466,8 +667,19 @@
                         <Button Content="Revert" Command="{Binding RevertCommand}" Margin="0,0,8,0" ToolTip="Discard the changes not saved yet" />
                         <Button Content="Capture current" Command="{Binding CaptureCommand}" Margin="0,0,8,0"
                                 ToolTip="Copy what the display shows now into every line" />
-                        <Button Content="Try" Command="{Binding TryCommand}" Margin="0,0,8,0" ToolTip="Apply the profile as it is here, without saving" />
-                        <Button Content="Save" Command="{Binding SaveCommand}" Background="{StaticResource AccentBrush}" MinWidth="80" />
+                        <Button Content="Try" Command="{Binding TryCommand}" Margin="0,0,8,0" ToolTip="Apply the profile as it is here, without saving">
+                            <Button.Style>
+                                <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsCustom}" Value="True">
+                                            <Setter Property="Visibility" Value="Collapsed" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Button.Style>
+                        </Button>
+                        <Button Content="{Binding SaveLabel}" Command="{Binding SaveCommand}" Background="{StaticResource AccentBrush}" MinWidth="80"
+                                ToolTip="{Binding SaveToolTip}" />
                     </StackPanel>
                     <TextBlock Text="{Binding Message}" TextWrapping="Wrap" VerticalAlignment="Center" Margin="0,0,16,0">
                         <TextBlock.Style>

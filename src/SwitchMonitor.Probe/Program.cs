@@ -21,6 +21,9 @@ using SwitchMonitor.Core.Vcp;
 //   --capture-presets Custom,Warm,Medium,Cool [--yes]  For each Color Temp the person picks in the monitor's menu:
 //                    read 0x14 and red/green/blue over DDC, and ask for the values the menu shows. With --yes, then try
 //                    to rebuild each preset in Custom with those values (always put back afterwards).
+//   --builtin        Read-only: connection type, EDID, brightness levels, power plan, sensors, modes, HDR,
+//                    gamma ramp and driver for every active display (built-in panels flagged).
+//   --gamma-test     WRITES (always reset): software color through the gamma ramp on built-in displays, checked by eye.
 //   --report FILE    Also append the results of --verify / --watch to FILE.
 //   --log            Append the diagnostic log.
 
@@ -98,6 +101,15 @@ try
         uint? to = ArgValue(args, "--to") is string toText ? uint.Parse(toText) : null;
         string[] under = (ArgValue(args, "--under") ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries);
         exitCode = Verify(monitors, ParseCodes(verifyList), ArgValue(args, "--report"), step, under, to);
+    }
+    else if (args.Contains("--gamma-test"))
+    {
+        exitCode = GammaTest(ArgValue(args, "--report"));
+    }
+    else if (args.Contains("--builtin"))
+    {
+        // Read-only: what Windows and the driver offer per display, built-in panels flagged.
+        foreach (string line in BuiltInProbe.Run()) Console.WriteLine(line);
     }
     else if (ArgValue(args, "--capture-presets") is string presetList)
     {
@@ -449,6 +461,62 @@ static int CapturePresets(IReadOnlyList<MonitorDevice> monitors, string[] preset
     }
     finally { Console.CancelKeyPress -= onCancel; }
     Console.WriteLine("Rojo/verde/azul de Custom restaurados. Deja Temp. color = Custom en el menu.");
+    return failures == 0 ? 0 : 1;
+}
+
+static int GammaTest(string? report)
+{
+    // Built-in panels only: external monitors keep their own color presets (the app no longer tints them).
+    var displays = BuiltInProbe.Displays().Where(d => d.IsBuiltIn).ToList();
+    if (displays.Count == 0) { Report(report, "SKIP  no built-in display found"); return 1; }
+    string? current = null;
+    ConsoleCancelEventHandler onCancel = (_, _) => { if (current is not null) SwitchMonitor.Core.Color.SoftwareColor.Reset(current); };
+    Console.CancelKeyPress += onCancel;
+    int failures = 0;
+    // Warm steps (the strongest ones may be refused by Windows), then cool; 7500 K is roughly the LG's Medium.
+    (int Kelvin, string Look)[] steps = [(5000, "un poco mas CALIDA (amarillenta)"), (4000, "claramente CALIDA (anaranjada)"),
+        (3400, "muy CALIDA"), (7500, "un poco mas FRIA (azulada)"), (9300, "claramente FRIA (azul)")];
+    try
+    {
+        foreach (var display in displays)
+        {
+            Console.WriteLine();
+            Console.WriteLine($"=== {display.Name} ({display.GdiName}){(display.IsBuiltIn ? " - pantalla del portatil" : "")} ===");
+            Console.WriteLine("Mira ESA pantalla en cada paso.");
+            foreach (var (kelvin, look) in steps)
+            {
+                current = display.GdiName;
+                // Countdown first, so the eyes are already on the screen when the color changes.
+                Console.Write($"  {kelvin} K en ");
+                for (int second = 5; second >= 1; second--)
+                {
+                    Console.Write($"{second}... ");
+                    Thread.Sleep(1000);
+                }
+                Console.WriteLine("¡ahora!");
+                bool accepted = SwitchMonitor.Core.Color.SoftwareColor.Apply(display.GdiName, kelvin);
+                if (!accepted)
+                {
+                    Report(report, $"  REFUSED  {display.Name}: {kelvin} K - Windows or the driver rejected the ramp");
+                    continue;
+                }
+                bool? seen = AskYesNo($"  {kelvin} K: ¿la pantalla se ve {look}?");
+                SwitchMonitor.Core.Color.SoftwareColor.Reset(display.GdiName);
+                Report(report, $"  {(seen == true ? "PASS" : "FAIL")}  {display.Name}: {kelvin} K accepted, " +
+                    (seen switch { true => "seen", false => "NOT seen", null => "not checked" }));
+                if (seen != true) failures++;
+            }
+            bool? back = AskYesNo("  ¿La pantalla volvio a verse normal?");
+            Report(report, $"  {(back == true ? "PASS" : "FAIL")}  {display.Name}: back to neutral {(back == true ? "seen" : "NOT confirmed")}");
+            if (back != true) failures++;
+            current = null;
+        }
+    }
+    finally
+    {
+        foreach (var display in displays) SwitchMonitor.Core.Color.SoftwareColor.Reset(display.GdiName);
+        Console.CancelKeyPress -= onCancel;
+    }
     return failures == 0 ? 0 : 1;
 }
 

@@ -26,10 +26,13 @@ public interface IMonitorTransport : IDisposable
     /// requested value is the closest level, not a failure.
     /// </summary>
     bool SnapsToLevels => false;
+
+    /// <summary>The brightness levels the panel really has (laptop: 6, 12, 18 … 100), or null when any value works.</summary>
+    IReadOnlyList<uint>? BrightnessLevels => null;
 }
 
 /// <summary>Thrown when a transport cannot perform the requested operation on this display.</summary>
-public sealed class TransportException : Exception
+public class TransportException : Exception
 {
     public string TransportId { get; }
 
