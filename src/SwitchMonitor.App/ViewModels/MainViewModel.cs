@@ -45,6 +45,23 @@ public sealed class MainViewModel : ObservableObject, IInputCoordinator
     private readonly Dictionary<string, InputReturnWatch> returnWatches = [];
     private readonly DispatcherTimer returnTimer;
     private readonly BrightnessSteps brightnessSteps;
+    private readonly DispatcherTimer statusTimer;
+    private readonly DispatcherTimer resetTimer;
+    private bool confirmingReset;
+
+    /// <summary>Reset to factory was clicked once; the next click within a few seconds sends it.</summary>
+    public bool ConfirmingReset
+    {
+        get => confirmingReset;
+        private set
+        {
+            if (!Set(ref confirmingReset, value)) return;
+            if (!value) resetTimer.Stop();
+            Raise(nameof(ResetLabel));
+        }
+    }
+
+    public string ResetLabel => ConfirmingReset ? "Click again to reset" : "Reset to factory";
     private MonitorViewModel? selected;
     private string status = "Looking for displays…";
     private bool statusIsError;
@@ -67,14 +84,28 @@ public sealed class MainViewModel : ObservableObject, IInputCoordinator
         brightnessSteps = new BrightnessSteps(settings.BrightnessStep);
         RefreshCommand = new RelayCommand(_ => _ = RefreshAsync(), _ => !IsBusy);
         ReloadValuesCommand = new RelayCommand(() => _ = Selected?.ReloadValuesAsync() ?? Task.CompletedTask);
-        ResetAllCommand = new RelayCommand(() => _ = Selected?.ResetAsync(null) ?? Task.CompletedTask);
+        // Writes factory values to the monitor: the first click only arms it, as Delete does on the Profiles tab.
+        resetTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(4) };
+        resetTimer.Tick += (_, _) => ConfirmingReset = false;
+        ResetAllCommand = new RelayCommand(() =>
+        {
+            if (!ConfirmingReset) { ConfirmingReset = true; resetTimer.Start(); return; }
+            ConfirmingReset = false;
+            _ = Selected?.ResetAsync(null) ?? Task.CompletedTask;
+        });
         RetryShortcutsCommand = new RelayCommand(() => ShortcutsChanged?.Invoke());
         OpenShortcutsCommand = new RelayCommand(() => IsShortcutsTab = true);
+        UndoProfileCommand = new RelayCommand(() => _ = RestoreCustomAsync());
+        statusTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(8) };
+        statusTimer.Tick += (_, _) => { statusTimer.Stop(); Status = ""; };
         returnTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
         returnTimer.Tick += async (_, _) => await PollReturnWatchesAsync();
         Automation = AutomationStore.Load();
         Apps = new AppLinker(this, Automation, log);
     }
+
+    /// <summary>Where displays come from: Windows by default, in-memory ones in demo mode (--demo).</summary>
+    public Func<IReadOnlyList<MonitorDevice>>? DeviceSource { get; init; }
 
     /// <summary>Linked-programs switch (automation.json).</summary>
     public AutomationStore Automation { get; }
@@ -157,7 +188,10 @@ public sealed class MainViewModel : ObservableObject, IInputCoordinator
     /// <summary>The display list on the left serves the Displays and Advanced tabs.</summary>
     public bool ShowsMonitorList => tab is AppTab.Displays or AppTab.Advanced;
 
-    /// <summary>"Advanced" switch: shows the Advanced tab and the advanced rows of the profile editor (saved in settings.json).</summary>
+    /// <summary>
+    /// Color fine-tuning (red/green/blue and black levels) open on the Displays tab, and the advanced rows of the profile
+    /// editor (saved in settings.json).
+    /// </summary>
     public bool ShowAdvanced
     {
         get => Settings.ShowAdvanced;
@@ -167,9 +201,13 @@ public sealed class MainViewModel : ObservableObject, IInputCoordinator
             UpdateSettings(Settings with { ShowAdvanced = value }, shortcutsChanged: false);
             Raise();
             if (!value && tab == AppTab.Advanced) Tab = AppTab.Displays;
-            Report(value ? "Advanced settings shown: red/green/blue and black levels are on the Advanced tab." : "Advanced settings hidden.", true);
         }
     }
+
+    /// <summary>A profile was applied by hand or by a linked app, and the settings before it can come back.</summary>
+    public bool CanUndoProfile => activeProfile != CustomName && customSnapshot is not null;
+
+    public ICommand UndoProfileCommand { get; }
 
     /// <summary>The editor shown on the Profiles tab; rebuilt when the tab opens and after profiles change.</summary>
     public ProfileEditorViewModel? ProfileEditor { get => profileEditor; private set => Set(ref profileEditor, value); }
@@ -230,6 +268,9 @@ public sealed class MainViewModel : ObservableObject, IInputCoordinator
     {
         Status = message;
         StatusIsError = !ok;
+        // A confirmation fades out after a while; work in progress ("…") and problems stay until the next message.
+        statusTimer.Stop();
+        if (ok && !message.EndsWith('…')) statusTimer.Start();
         log.Write(ok ? LogLevel.Info : LogLevel.Warning, message);
     }
 
@@ -261,7 +302,7 @@ public sealed class MainViewModel : ObservableObject, IInputCoordinator
             Selected = null;
             returnWatches.Clear();
 
-            var devices = await Task.Run(() => MonitorEnumerator.Enumerate(CoreOptions.FromDataDirectory(), log: log));
+            var devices = await Task.Run(() => DeviceSource?.Invoke() ?? MonitorEnumerator.Enumerate(CoreOptions.FromDataDirectory(), log: log));
             foreach (var device in devices.OrderByDescending(d => d.IsControllable).ThenByDescending(d => d.Identity.IsPrimary))
                 Monitors.Add(new MonitorViewModel(device, Report, this));
             // Panel names from the EDID for built-in screens (Windows display configuration, quick and read-only).
@@ -295,7 +336,11 @@ public sealed class MainViewModel : ObservableObject, IInputCoordinator
         {
             Report($"Could not list displays — {error.Message}", false);
         }
-        finally { IsBusy = false; }
+        finally
+        {
+            IsBusy = false;
+            CommandManager.InvalidateRequerySuggested();   // Refresh displays is enabled again now, not at the next mouse move
+        }
     }
 
     /// <summary>What the shortcut editor needs to list per-input rows.</summary>
@@ -342,6 +387,7 @@ public sealed class MainViewModel : ObservableObject, IInputCoordinator
     private void MarkActiveProfile()
     {
         foreach (var scene in Scenes) scene.IsActive = string.Equals(scene.Name, activeProfile, StringComparison.OrdinalIgnoreCase);
+        Raise(nameof(CanUndoProfile));
     }
 
     /// <summary>Changing a setting by hand makes Custom the active profile again (the saved settings before it are dropped).</summary>

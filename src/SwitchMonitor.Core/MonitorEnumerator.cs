@@ -21,9 +21,13 @@ public sealed record CoreOptions
 
 public static class AppPaths
 {
-    /// <summary>%LOCALAPPDATA%\SwitchMonitor-v2. Kept apart from the 1.x (AutoHotkey) and WPF preview profiles.</summary>
-    public static string DataDirectory { get; } = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SwitchMonitor-v2");
+    /// <summary>
+    /// %LOCALAPPDATA%\SwitchMonitor-v2. Kept apart from the 1.x (AutoHotkey) and WPF preview profiles.
+    /// SWITCHMONITOR_DATA_DIR moves it (demo mode uses a throwaway folder so it never touches the real settings).
+    /// </summary>
+    public static string DataDirectory { get; } =
+        Environment.GetEnvironmentVariable("SWITCHMONITOR_DATA_DIR") is { Length: > 0 } custom ? custom : Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SwitchMonitor-v2");
 
     public static string LogDirectory => Path.Combine(DataDirectory, "logs");
 }

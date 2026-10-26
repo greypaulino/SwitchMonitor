@@ -46,8 +46,15 @@ public sealed class MonitorViewModel : ObservableObject
 
     public string Subtitle => !Device.IsActive ? "Off — Windows is not using this display"
         : !Device.IsControllable ? "No control path on this computer"
-        : (Device.Identity.IsPrimary ? "Main display · " : "") +
-          (Device.Identity.IsBuiltIn ? "Built-in · " + (Panel is null ? "" : Panel + " · ") : "") + Device.TransportId;
+        : string.Join(" · ", new[]
+          {
+              Device.Identity.IsPrimary ? "Main display" : null,
+              Device.Identity.IsBuiltIn ? "Built-in" : Device.Identity.IsPrimary ? null : "External",
+              Device.Identity.IsBuiltIn ? Panel : null
+          }.Where(p => !string.IsNullOrEmpty(p)));
+
+    /// <summary>Tooltip of the display: full name and how the app talks to it (ddc-ci, intel-cui, amd-adl, wmi).</summary>
+    public string Details => Device.IsControllable ? $"{Name}\nControlled through {Device.TransportId}" : Name;
 
     public ObservableCollection<InputViewModel> Inputs { get; } = [];
     public bool HasInputs => Inputs.Count > 0;
@@ -61,8 +68,11 @@ public sealed class MonitorViewModel : ObservableObject
     private SoftwareColorViewModel? softwareColor;
 
     /// <summary>Color made by the graphics card (Advanced tab); null for displays Windows is not using.</summary>
-    public SoftwareColorViewModel? SoftwareColor { get => softwareColor; set { if (Set(ref softwareColor, value)) { Raise(nameof(HasSoftwareColor)); Raise(nameof(NoAdvancedText)); } } }
+    public SoftwareColorViewModel? SoftwareColor { get => softwareColor; set { if (Set(ref softwareColor, value)) { Raise(nameof(HasSoftwareColor)); Raise(nameof(HasColorTuning)); Raise(nameof(NoAdvancedText)); } } }
     public bool HasSoftwareColor => SoftwareColor is not null;
+
+    /// <summary>The "Color fine-tuning" section on the Displays tab has something to show.</summary>
+    public bool HasColorTuning => HasAdvanced || HasSoftwareColor;
     public string NoAdvancedText => HasSoftwareColor
         ? "This display has no color controls of its own; the software color below works on it."
         : "This display has no color controls the app can change.";
@@ -137,6 +147,7 @@ public sealed class MonitorViewModel : ObservableObject
             }
             Raise(nameof(HasInputs));
             Raise(nameof(HasAdvanced));
+            Raise(nameof(HasColorTuning));
             LinkMuteAndVolume();
             if (unreadable.Count > 0)
             {
