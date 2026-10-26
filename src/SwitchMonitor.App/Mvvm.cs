@@ -34,3 +34,13 @@ public sealed class RelayCommand(Action<object?> execute, Func<object?, bool>? c
     public bool CanExecute(object? parameter) => canExecute?.Invoke(parameter) ?? true;
     public void Execute(object? parameter) => execute(parameter);
 }
+
+/// <summary>False shows the element, true collapses it (the opposite of BooleanToVisibilityConverter).</summary>
+public sealed class InverseBoolToVisibilityConverter : System.Windows.Data.IValueConverter
+{
+    public object Convert(object value, Type targetType, object parameter, System.Globalization.CultureInfo culture) =>
+        value is true ? System.Windows.Visibility.Collapsed : System.Windows.Visibility.Visible;
+
+    public object ConvertBack(object value, Type targetType, object parameter, System.Globalization.CultureInfo culture) =>
+        throw new NotSupportedException();
+}

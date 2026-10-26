@@ -22,14 +22,29 @@ public partial class App : Application
     private HotkeyService? hotkeys;
     private bool shortcutsPaused;
     private bool exiting;
+    private string? demoScenario;
 
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
 
+        // Demo mode (--demo [demo|worst|empty]): in-memory displays and a throwaway data folder, for looking at the
+        // interface without touching a monitor or the real settings. It runs beside the normal instance.
+        int demoAt = Array.FindIndex(e.Args, a => a.Equals("--demo", StringComparison.OrdinalIgnoreCase));
+        if (demoAt >= 0)
+        {
+            demoScenario = e.Args.ElementAtOrDefault(demoAt + 1) is { } s && DemoMonitors.Scenarios.Contains(s) ? s : "demo";
+            string data = Path.Combine(Path.GetTempPath(), "SwitchMonitor-v2-demo", demoScenario);
+            if (Directory.Exists(data)) Directory.Delete(data, recursive: true);
+            Directory.CreateDirectory(data);
+            File.WriteAllText(Path.Combine(data, Core.Scenes.SceneStore.FileName), DemoMonitors.ScenesJson(demoScenario));
+            Environment.SetEnvironmentVariable("SWITCHMONITOR_DATA_DIR", data);
+        }
+
         // One instance: a second launch just brings the first window forward.
-        instance = new Mutex(true, InstanceName, out bool first);
-        activateSignal = new EventWaitHandle(false, EventResetMode.AutoReset, InstanceName + ".Activate");
+        string instanceName = demoScenario is null ? InstanceName : InstanceName + ".Demo";
+        instance = new Mutex(true, instanceName, out bool first);
+        activateSignal = new EventWaitHandle(false, EventResetMode.AutoReset, instanceName + ".Activate");
         if (!first)
         {
             activateSignal.Set();
@@ -61,15 +76,29 @@ public partial class App : Application
             settingsProblem = $"settings.json could not be read ({error.Message}); defaults are in use until it is fixed.";
         }
 
-        model = new MainViewModel(log, settings);
+        model = new MainViewModel(log, settings)
+        {
+            DeviceSource = demoScenario is { } scenario ? () => DemoMonitors.Create(scenario, log) : null
+        };
         window = new MainWindow { DataContext = model };
+        if (demoScenario is not null) window.Title += $" — demo data ({demoScenario})";
         window.Closing += (_, args) =>
         {
             if (exiting) return;
+            if (demoScenario is not null) { ExitApp(); return; }   // demo: no tray icon, closing ends it
             args.Cancel = true;   // closing the window keeps the app in the tray
             model.IsDisplaysTab = true;   // leaving the Shortcuts tab resumes global shortcuts
             window.Hide();
         };
+
+        if (demoScenario is not null)
+        {
+            // No tray icon and no global shortcuts: the normal instance owns them.
+            model.IsShortcutFree = _ => true;
+            ShowWindow();
+            _ = model.RefreshAsync();
+            return;
+        }
 
         tray = new TrayIcon(new TrayActions(
             Open: ShowWindow,

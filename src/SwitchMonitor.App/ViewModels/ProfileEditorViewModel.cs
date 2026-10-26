@@ -298,9 +298,9 @@ public sealed class ProfileEditorViewModel : ObservableObject
     public bool IsNew => originalName is null;
     /// <summary>Custom is the person's own settings: always called Custom, applied rather than saved.</summary>
     public bool IsCustom => isCustom;
-    public string Title => isCustom ? "CUSTOM · YOUR CURRENT SETTINGS"
-        : IsNew ? (template is null ? "NEW PROFILE" : $"NEW PROFILE · {template.ToUpperInvariant()} TEMPLATE")
-        : "EDIT PROFILE";
+    public string Title => isCustom ? "Custom · your current settings"
+        : IsNew ? (template is null ? "New profile" : $"New profile · {template} template")
+        : "Edit profile";
     public string SaveLabel => isCustom ? "Apply" : "Save";
     public string SaveToolTip => isCustom
         ? "Set these values on the display as your own settings (Custom)"

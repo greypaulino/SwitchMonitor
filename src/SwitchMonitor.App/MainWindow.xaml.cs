@@ -13,6 +13,18 @@ public partial class MainWindow : Window
         InitializeComponent();
         PreviewKeyDown += (_, e) => Record(e);
         Deactivated += (_, _) => (DataContext as MainViewModel)?.ShortcutEditor?.CancelCapture();
+        SourceInitialized += (_, _) => UseDarkTitleBar();
+    }
+
+    [System.Runtime.InteropServices.DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(IntPtr window, int attribute, ref int value, int size);
+
+    /// <summary>Dark caption to match the window (attribute 20; 19 on Windows 10 builds before 20H1). Ignored where unsupported.</summary>
+    private void UseDarkTitleBar()
+    {
+        var handle = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+        int on = 1;
+        if (DwmSetWindowAttribute(handle, 20, ref on, sizeof(int)) != 0) DwmSetWindowAttribute(handle, 19, ref on, sizeof(int));
     }
 
     /// <summary>The ⋯ and "Add profile" buttons open their menu on a normal click.</summary>
