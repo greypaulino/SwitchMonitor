@@ -54,6 +54,9 @@ public sealed class MonitorViewModel : ObservableObject
           }.Where(p => !string.IsNullOrEmpty(p)));
 
     /// <summary>Tooltip of the display: full name and how the app talks to it (ddc-ci, intel-cui, amd-adl, wmi).</summary>
+    /// <summary>Laptop screen, external monitor, or one Windows is not using.</summary>
+    public string DisplayGlyph => Device.Identity.IsBuiltIn ? Icons.BuiltIn : Device.IsActive ? Icons.External : Icons.ExternalOff;
+
     public string Details => Device.IsControllable ? $"{Name}\nControlled through {Device.TransportId}" : Name;
 
     public ObservableCollection<InputViewModel> Inputs { get; } = [];
@@ -140,7 +143,8 @@ public sealed class MonitorViewModel : ObservableObject
             foreach (var (code, label) in inputs)
                 Inputs.Add(new InputViewModel(this, code, label, this.inputs) { IsCurrent = code == currentInput });
             this.inputs.InputsLoaded(this);
-            foreach (var control in controls)
+            // Picture mode first (it decides what the others can do), then brightness, then the rest.
+            foreach (var control in controls.OrderBy(c => SettingOrder.Rank(c.Feature.Definition)))
             {
                 control.Publish();
                 (FeatureCatalog.IsAdvanced(control.Feature.Code) ? AdvancedControls : Controls).Add(control);

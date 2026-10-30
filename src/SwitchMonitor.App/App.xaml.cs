@@ -76,6 +76,7 @@ public partial class App : Application
             settingsProblem = $"settings.json could not be read ({error.Message}); defaults are in use until it is fixed.";
         }
 
+        Theme.Apply(Core.Settings.InterfaceSettings.Load());   // the saved look, before the window appears
         model = new MainViewModel(log, settings)
         {
             DeviceSource = demoScenario is { } scenario ? () => DemoMonitors.Create(scenario, log) : null
@@ -181,6 +182,8 @@ public partial class App : Application
             Add("next input", chord, () => _ = model.NextInputAsync());
         foreach (var chord in settings.For(HotkeyAction.OpenWindow))
             Add("open window", chord, ShowWindow);
+        foreach (var chord in settings.For(HotkeyAction.CustomProfile))
+            Add("profile Custom", chord, () => _ = model.RestoreCustomAsync());
         foreach (var input in settings.InputShortcuts)
             Add(model.DescribeInputShortcut(input), input.Chord, () => _ = model.SwitchInputByKeyAsync(input.MonitorKey, input.InputCode));
         foreach (var scene in model.SceneProfiles)
@@ -223,6 +226,9 @@ public partial class App : Application
     }
 
     /// <summary>Clicking a slider's track gives it keyboard focus, so the arrow keys move it afterwards.</summary>
+    /// <summary>Icons take the chosen icon style when they load (App.xaml text block styles).</summary>
+    private void RestyleIcon(object sender, RoutedEventArgs e) => IconRestyler.OnLoaded(sender);
+
     private void FocusSlider(object sender, MouseButtonEventArgs e)
     {
         if (sender is Slider slider && !slider.IsKeyboardFocusWithin) slider.Focus();

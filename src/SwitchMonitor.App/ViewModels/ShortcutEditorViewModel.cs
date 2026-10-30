@@ -27,6 +27,8 @@ public sealed class ChordChipViewModel : ObservableObject
     public ShortcutRowViewModel Row { get; }
     public HotkeyChord Chord { get; }
     public string Text => Chord.ToString().Replace("+", " + ");
+    /// <summary>One keycap per key: Ctrl · Alt · 1.</summary>
+    public IReadOnlyList<string> Keys => Chord.ToString().Split('+');
     public ICommand RemoveCommand { get; }
 
     public string? Problem
@@ -66,6 +68,49 @@ public sealed class ShortcutRowViewModel : ObservableObject
     public string? SceneName { get; init; }
 
     public ObservableCollection<ChordChipViewModel> Chords { get; } = [];
+
+    /// <summary>Keys held so far while recording, one keycap each (Ctrl, Alt…), before the final key arrives.</summary>
+    public ObservableCollection<string> PendingKeys { get; } = [];
+
+    /// <summary>Icon of the row's category: general actions, profiles, or the display whose input it selects.</summary>
+    public string GroupGlyph => Group == "Profiles" ? Icons.Profiles : Kind switch
+    {
+        ShortcutKind.Scene => Icons.Profiles,
+        ShortcutKind.Input => Icons.Input,
+        _ => Icons.Settings
+    };
+
+    /// <summary>Icon of the row itself: what the action does, the profile's own icon; inputs draw their connector.</summary>
+    public string RowGlyph => Kind switch
+    {
+        ShortcutKind.Scene => Icons.ForProfile(Name, Icon),
+        ShortcutKind.Input => "",
+        _ => Action switch
+        {
+            HotkeyAction.BrightnessUp => "\uE706",     // Brightness
+            HotkeyAction.BrightnessDown => "\uE708",   // QuietHours: the moon, dimmer
+            HotkeyAction.NextMonitor => Icons.External,
+            HotkeyAction.NextInput => Icons.NextInput,
+            HotkeyAction.OpenWindow => "\uE8A7",       // OpenInNewWindow
+            HotkeyAction.CustomProfile => Icons.ForProfile(SceneStore.CustomName),
+            _ => Icons.Settings
+        }
+    };
+
+    public bool HasShape => Kind == ShortcutKind.Input;
+    public System.Windows.Media.Geometry? Shape => Kind == ShortcutKind.Input ? Icons.ConnectorShape(Name) : null;
+
+    /// <summary>The icon a profile chose ("glyph:…" / "image:…"), or null.</summary>
+    public string? Icon { get; init; }
+    public System.Windows.Media.ImageSource? IconImage => Icons.ProfileImage(Icon);
+    /// <summary>Profile rows: the profile's icon as drawn.</summary>
+    public Icons.Mark Mark => Icons.ProfileMark(Action == HotkeyAction.CustomProfile ? SceneStore.CustomName : Name, Icon);
+
+    /// <summary>"#RRGGBB" of a profile row (its circle), null for the others.</summary>
+    public string? Color { get; init; }
+    public bool HasColor => Color is not null;
+    public System.Windows.Media.Brush? ColorBrush => Color is null ? null : Icons.Brush(Color);
+
     public ICommand AddCommand { get; }
 
     public bool IsCapturing
@@ -92,38 +137,55 @@ public sealed class ShortcutEditorViewModel : ObservableObject
     private bool messageIsError;
     private bool hasBlockingProblems;
 
+    private readonly IReadOnlyDictionary<HotkeyChord, string> reserved;
+    private readonly HashSet<string> shownKeys = [];
+
+    /// <param name="displays">The display whose input shortcuts are edited (the one selected on the Displays view).</param>
+    /// <param name="scenes">The profiles that apply to that display.</param>
+    /// <param name="reserved">Shortcuts of other displays and profiles: not shown, kept, and still taken.</param>
+    /// <param name="displayName">Name of the display the view is about, for its heading.</param>
     public ShortcutEditorViewModel(AppSettings settings, IReadOnlyList<DisplayInputs> displays, IReadOnlyList<SceneProfile> scenes,
-        Func<HotkeyChord, bool> isFree)
+        Func<HotkeyChord, bool> isFree, IReadOnlyDictionary<HotkeyChord, string>? reserved = null, string? displayName = null)
     {
         original = settings;
+        this.reserved = reserved ?? new Dictionary<HotkeyChord, string>();
+        DisplayName = displayName;
         this.displays = displays;
         this.isFree = isFree;
         SaveCommand = new RelayCommand(_ => Save(), _ => !HasBlockingProblems);
         CancelCommand = new RelayCommand(() => CloseRequested?.Invoke());
         RestoreDefaultsCommand = new RelayCommand(RestoreDefaults);
 
-        foreach (string action in HotkeyAction.All)
+        foreach (string action in HotkeyAction.All.Where(a => a != HotkeyAction.CustomProfile))
         {
             var row = new ShortcutRowViewModel(this, "General", HotkeyAction.Describe(action), ShortcutKind.Action, true) { Action = action };
             foreach (var chord in settings.For(action)) row.Chords.Add(new ChordChipViewModel(row, chord, this));
             Rows.Add(row);
         }
 
-        var knownKeys = new HashSet<string>();
+        // Only the selected display's inputs; other displays keep their shortcuts untouched (saved as they are).
         foreach (var display in displays.Where(d => d.Inputs.Count > 0))
         {
-            knownKeys.Add(display.Key);
+            shownKeys.Add(display.Key);
             foreach (var (code, label) in display.Inputs)
                 Rows.Add(InputRow($"Inputs · {display.Name}", label, display.Key, code, settings));
         }
-        // Shortcuts for displays that are not connected now are kept and can still be removed.
-        foreach (var group in settings.InputShortcuts.Where(s => !knownKeys.Contains(s.MonitorKey)).GroupBy(s => s.MonitorKey))
-            foreach (int code in group.Select(s => s.InputCode).Distinct())
-                Rows.Add(InputRow("Inputs · display not connected now", $"Input 0x{code:X2}", group.Key, code, settings));
+
+        // Custom first: the person's own settings, kept with the app's shortcuts (it is not in scenes.json).
+        var custom = new ShortcutRowViewModel(this, "Profiles", HotkeyAction.Describe(HotkeyAction.CustomProfile), ShortcutKind.Action, false)
+        {
+            Action = HotkeyAction.CustomProfile,
+            Color = Icons.ColorForProfile(SceneStore.CustomName, null)
+        };
+        foreach (var chord in settings.For(HotkeyAction.CustomProfile).Take(1)) custom.Chords.Add(new ChordChipViewModel(custom, chord, this));
+        Rows.Add(custom);
 
         foreach (var scene in scenes)
         {
-            var row = new ShortcutRowViewModel(this, "Profiles", scene.Name, ShortcutKind.Scene, false) { SceneName = scene.Name };
+            var row = new ShortcutRowViewModel(this, "Profiles", scene.Name, ShortcutKind.Scene, false)
+            {
+                SceneName = scene.Name, Color = Icons.ColorForProfile(scene.Name, scene.Color), Icon = scene.Icon
+            };
             if (scene.Hotkey is { } chord) row.Chords.Add(new ChordChipViewModel(row, chord, this));
             Rows.Add(row);
         }
@@ -139,6 +201,11 @@ public sealed class ShortcutEditorViewModel : ObservableObject
     }
 
     public ObservableCollection<ShortcutRowViewModel> Rows { get; } = [];
+
+    /// <summary>The display these shortcuts are shown for, or null.</summary>
+    public string? DisplayName { get; }
+    public string Heading => DisplayName is null ? "Shortcuts" : $"Shortcuts for {DisplayName}";
+    public bool HasDisplayName => DisplayName is not null;
     public ICommand SaveCommand { get; }
     public ICommand CancelCommand { get; }
     public ICommand RestoreDefaultsCommand { get; }
@@ -164,6 +231,7 @@ public sealed class ShortcutEditorViewModel : ObservableObject
     public void CancelCapture()
     {
         if (captureRow is null) return;
+        captureRow.PendingKeys.Clear();
         captureRow.IsCapturing = false;
         captureRow = null;
         Raise(nameof(IsCapturing));
@@ -174,6 +242,10 @@ public sealed class ShortcutEditorViewModel : ObservableObject
     public void ShowPending(HotkeyModifiers modifiers)
     {
         if (captureRow is null) return;
+        captureRow.PendingKeys.Clear();
+        foreach (var (flag, label) in new[] { (HotkeyModifiers.Ctrl, "Ctrl"), (HotkeyModifiers.Alt, "Alt"),
+                     (HotkeyModifiers.Shift, "Shift"), (HotkeyModifiers.Win, "Win") })
+            if (modifiers.HasFlag(flag)) captureRow.PendingKeys.Add(label);
         string held = modifiers == HotkeyModifiers.None ? "" : modifiers.ToString().Replace(", ", " + ") + " + …";
         Inform($"\"{captureRow.Name}\": {held}");
     }
@@ -191,6 +263,7 @@ public sealed class ShortcutEditorViewModel : ObservableObject
             CancelCapture();
             return;
         }
+        row.PendingKeys.Clear();
         if (!row.AllowMultiple) row.Chords.Clear();
         row.Chords.Add(new ChordChipViewModel(row, chord, this));
         row.IsCapturing = false;
@@ -231,7 +304,8 @@ public sealed class ShortcutEditorViewModel : ObservableObject
         var chips = Rows.SelectMany(r => r.Chords).ToList();
         foreach (var chip in chips)
         {
-            var others = chips.Where(c => c != chip && c.Chord == chip.Chord).Select(c => c.Row.Name).Distinct().ToArray();
+            var others = chips.Where(c => c != chip && c.Chord == chip.Chord).Select(c => c.Row.Name)
+                .Concat(reserved.TryGetValue(chip.Chord, out string? owner) ? [owner] : []).Distinct().ToArray();
             if (others.Length > 0)
             {
                 chip.Problem = $"Also used by {string.Join(", ", others)}";
@@ -269,7 +343,9 @@ public sealed class ShortcutEditorViewModel : ObservableObject
         var hotkeys = Rows.Where(r => r.Kind == ShortcutKind.Action && r.Action is not null)
             .ToDictionary(r => r.Action!, r => (IReadOnlyList<HotkeyChord>)r.Chords.Select(c => c.Chord).ToArray());
         var inputs = Rows.Where(r => r.Kind == ShortcutKind.Input)
-            .SelectMany(r => r.Chords.Select(c => new InputShortcut(r.MonitorKey!, r.InputCode, c.Chord))).ToArray();
+            .SelectMany(r => r.Chords.Select(c => new InputShortcut(r.MonitorKey!, r.InputCode, c.Chord)))
+            .Concat(original.InputShortcuts.Where(s => !shownKeys.Contains(s.MonitorKey)))   // other displays: kept
+            .ToArray();
         var scenes = Rows.Where(r => r.Kind == ShortcutKind.Scene && r.SceneName is not null)
             .ToDictionary(r => r.SceneName!, r => r.Chords.Select(c => (HotkeyChord?)c.Chord).FirstOrDefault());
         Saved?.Invoke(original with { Hotkeys = hotkeys, InputShortcuts = inputs, InputShortcutsAssigned = true }, scenes);

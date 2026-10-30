@@ -30,6 +30,9 @@ public static class AppPaths
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SwitchMonitor-v2");
 
     public static string LogDirectory => Path.Combine(DataDirectory, "logs");
+
+    /// <summary>Pictures imported as profile icons ("image:name.png" in scenes.json).</summary>
+    public static string IconsDirectory => Path.Combine(DataDirectory, "icons");
 }
 
 /// <summary>Discovers displays and picks the best transport for each one.</summary>

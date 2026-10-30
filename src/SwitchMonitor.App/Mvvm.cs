@@ -44,3 +44,27 @@ public sealed class InverseBoolToVisibilityConverter : System.Windows.Data.IValu
     public object ConvertBack(object value, Type targetType, object parameter, System.Globalization.CultureInfo culture) =>
         throw new NotSupportedException();
 }
+
+/// <summary>Visible when every value is "off": false, 0 or null (no displays and not busy → the empty state).</summary>
+public sealed class AllFalseToVisibility : System.Windows.Data.IMultiValueConverter
+{
+    public static AllFalseToVisibility Instance { get; } = new();
+
+    public object Convert(object[] values, Type targetType, object parameter, System.Globalization.CultureInfo culture) =>
+        values.All(v => v is null or false or 0) ? System.Windows.Visibility.Visible : System.Windows.Visibility.Collapsed;
+
+    public object[] ConvertBack(object value, Type[] targetTypes, object parameter, System.Globalization.CultureInfo culture) =>
+        throw new NotSupportedException();
+}
+
+/// <summary>Visible when every value is "on": true or a number above 0 (a controllable display with controls).</summary>
+public sealed class AllTrueToVisibility : System.Windows.Data.IMultiValueConverter
+{
+    public static AllTrueToVisibility Instance { get; } = new();
+
+    public object Convert(object[] values, Type targetType, object parameter, System.Globalization.CultureInfo culture) =>
+        values.All(v => v is true || v is int n && n > 0) ? System.Windows.Visibility.Visible : System.Windows.Visibility.Collapsed;
+
+    public object[] ConvertBack(object value, Type[] targetTypes, object parameter, System.Globalization.CultureInfo culture) =>
+        throw new NotSupportedException();
+}

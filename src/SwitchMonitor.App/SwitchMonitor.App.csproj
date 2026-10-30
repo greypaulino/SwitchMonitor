@@ -28,4 +28,10 @@
     <Content Include="..\..\monitor-switch.ico" Link="monitor-switch.ico" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
+  <!-- Phosphor icons (MIT, see Fonts\PHOSPHOR-LICENSE.txt): the Fill and Duotone icon styles -->
+  <ItemGroup>
+    <Resource Include="Fonts\Phosphor-Fill.ttf" />
+    <Resource Include="Fonts\Phosphor-Duotone.ttf" />
+    <None Include="Fonts\PHOSPHOR-LICENSE.txt" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

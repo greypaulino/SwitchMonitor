@@ -32,6 +32,15 @@ public sealed record SceneProfile(string Name, IReadOnlyList<SceneSetting> Setti
     public bool AppliesTo(MonitorDevice monitor) =>
         string.IsNullOrWhiteSpace(MonitorFilter) || monitor.Name.Contains(MonitorFilter, StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>Color that identifies the profile in the app ("#4C8DFF"), or null for the default of its name.</summary>
+    public string? Color { get; init; }
+
+    /// <summary>
+    /// Icon chosen for the profile: "icon:fluent:game" (a library icon in one of the styles), "image:night.png" (a picture
+    /// kept in the app's icons folder), "glyph:E7FC" (earlier versions), or null for the usual icon of its name.
+    /// </summary>
+    public string? Icon { get; init; }
+
     /// <summary>Programs that turn this profile on while they are in front ("eldenring.exe"), lower case.</summary>
     public IReadOnlyList<string> Apps { get; init; } = [];
 
@@ -228,7 +237,11 @@ public static class SceneStore
             foreach (string app in apps)
                 if (result.FirstOrDefault(s => s.IsLinkedTo(app)) is { } other)
                     throw new FormatException($"Scene \"{name}\": {app} is already linked to \"{other.Name}\".");
-            result.Add(new SceneProfile(name, parsed, filter, hotkey) { Apps = apps });
+            string? color = scene.TryGetProperty("color", out var c) && c.GetString() is { } colorText && IsColor(colorText)
+                ? colorText.ToUpperInvariant() : null;
+            string? icon = scene.TryGetProperty("icon", out var i) && i.ValueKind == JsonValueKind.String && i.GetString() is { } iconText
+                && NormalizeIcon(iconText) is { } validIcon ? validIcon : null;
+            result.Add(new SceneProfile(name, parsed, filter, hotkey) { Apps = apps, Color = color, Icon = icon });
         }
         return result;
     }
@@ -344,8 +357,11 @@ public static class SceneStore
     /// </summary>
     /// <param name="monitor">Name filter ("LG 29WK600"), or null for every display.</param>
     /// <param name="apps">Linked programs; null keeps what the file has.</param>
+    /// <param name="color">"#RRGGBB" identifying the profile; null keeps what the file has, "" removes it.</param>
+    /// <param name="icon">"glyph:E7FC" or "image:name.png"; null keeps what the file has, "" removes it.</param>
     public static string Upsert(string json, string? originalName, string name, string? monitor,
-        IReadOnlyList<KeyValuePair<string, System.Text.Json.Nodes.JsonNode>> settings, IReadOnlyList<string>? apps = null)
+        IReadOnlyList<KeyValuePair<string, System.Text.Json.Nodes.JsonNode>> settings, IReadOnlyList<string>? apps = null,
+        string? color = null, string? icon = null)
     {
         name = name.Trim();
         if (name.Length == 0) throw new FormatException("A profile needs a name.");
@@ -370,12 +386,56 @@ public static class SceneStore
             if (apps.Count == 0) scene.Remove("apps");
             else scene["apps"] = new System.Text.Json.Nodes.JsonArray(apps.Select(a => (System.Text.Json.Nodes.JsonNode?)AppName(a)).ToArray());
         }
+        if (color is not null)
+        {
+            if (IsColor(color)) scene["color"] = color.ToUpperInvariant();
+            else scene.Remove("color");
+        }
+        if (icon is not null)
+        {
+            if (NormalizeIcon(icon) is { } valid) scene["icon"] = valid;
+            else scene.Remove("icon");
+        }
         if (existing is null) scenes.Add(scene);
 
         string result = root.ToJsonString(WriteOptions);
         Parse(result);
         return result;
     }
+
+    /// <summary>
+    /// "icon:fill:game" (a library icon in a style) and "image:Night.png" (a plain .png file name, no folders) stay;
+    /// "glyph:e7fc" → "glyph:E7FC"; anything else → null.
+    /// </summary>
+    public static string? NormalizeIcon(string text)
+    {
+        text = text.Trim();
+        if (text.StartsWith("icon:", StringComparison.OrdinalIgnoreCase))
+        {
+            string[] parts = text.ToLowerInvariant().Split(':');
+            if (parts.Length == 3 && parts[1] is "fluent" or "bold") parts[1] = "line";   // styles of an earlier preview
+            return parts.Length == 3 && parts[1] is "line" or "fill" or "duotone" or "classic" &&
+                   parts[2].Length is > 0 and <= 24 && parts[2].All(c => c is >= 'a' and <= 'z' or >= '0' and <= '9' or '-')
+                ? string.Join(':', parts) : null;
+        }
+        if (text.StartsWith("glyph:", StringComparison.OrdinalIgnoreCase))
+        {
+            string code = text[6..];
+            return code.Length == 4 && code.All(Uri.IsHexDigit) ? "glyph:" + code.ToUpperInvariant() : null;
+        }
+        if (text.StartsWith("image:", StringComparison.OrdinalIgnoreCase))
+        {
+            string file = text[6..];
+            return file.Length is > 4 and <= 80 && file.EndsWith(".png", StringComparison.OrdinalIgnoreCase)
+                && file.IndexOfAny(['/', '\\', ':']) < 0 && !file.StartsWith('.') && file == Path.GetFileName(file)
+                ? "image:" + file : null;
+        }
+        return null;
+    }
+
+    /// <summary>"#RRGGBB".</summary>
+    public static bool IsColor(string text) =>
+        text.Length == 7 && text[0] == '#' && text.Skip(1).All(Uri.IsHexDigit);
 
     /// <summary>"C:\\Games\\EldenRing.exe" or "EldenRing.EXE" → "eldenring.exe": how linked programs are compared.</summary>
     public static string AppName(string pathOrName)
