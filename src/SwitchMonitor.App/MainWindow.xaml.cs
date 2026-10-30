@@ -103,7 +103,7 @@ public partial class MainWindow : Window
         NavTabs.SizeChanged += (_, _) => PlaceNavIndicator(animate: navPlaced);
         NavTabs.Loaded += (_, _) => PlaceNavIndicator(animate: false);
 
-        foreach (var view in new FrameworkElement[] { DisplaysView, ProfilesView, ShortcutsView, SettingsView })
+        foreach (var view in new FrameworkElement[] { DisplaysView, ProfilesView, ShortcutsView, SettingsView, LearnView })
         {
             var shift = new System.Windows.Media.TranslateTransform();
             view.RenderTransform = shift;

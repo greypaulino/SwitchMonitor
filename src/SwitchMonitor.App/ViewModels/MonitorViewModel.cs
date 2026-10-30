@@ -458,7 +458,8 @@ public sealed class MonitorViewModel : ObservableObject
     public SliderControlViewModel? Brightness =>
         Controls.OfType<SliderControlViewModel>().FirstOrDefault(c => c.Feature.Code == VcpCode.Brightness);
 
-    private async Task<T> RunExclusiveAsync<T>(Func<T> work)
+    /// <summary>Runs monitor work off the UI thread, after any other command for this display (Learn settings uses it too).</summary>
+    public async Task<T> RunExclusiveAsync<T>(Func<T> work)
     {
         await gate.WaitAsync();
         try { return await Task.Run(work); }

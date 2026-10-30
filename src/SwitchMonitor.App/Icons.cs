@@ -64,6 +64,14 @@ public static class Icons
         0xF7 when Named(feature, "response") => "\uEC4A",   // SpeedHigh: a speedometer
         0xF8 when Named(feature, "freesync") => "",   // Sync
         _ when Named(feature, "black level") => "",
+        // Learned settings carry the usual names, so they get the usual icons on any code.
+        _ when Named(feature, "brightness") => "\uE706",
+        _ when Named(feature, "sharpness") => "\uE8A3",
+        _ when Named(feature, "volume") => "\uE767",
+        _ when Named(feature, "response time") => "\uEC4A",
+        _ when Named(feature, "freesync") => "\uE895",
+        _ when Named(feature, "picture mode") => "\uE8B9",
+        _ when Named(feature, "color temperature") => "\uE793",
         _ when Named(feature, "gamma") => "",
         _ => ""
     };

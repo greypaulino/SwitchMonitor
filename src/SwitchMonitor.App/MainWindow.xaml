@@ -478,6 +478,15 @@
                     </app:ColumnsPanel.Style>
                     <!-- Display heading -->
                     <DockPanel Margin="4,6,0,26" app:ColumnsPanel.FullWidth="True">
+                        <Button DockPanel.Dock="Right" Style="{StaticResource QuietButton}" VerticalAlignment="Center" Margin="8,0,0,0"
+                                Command="{Binding DataContext.LearnCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                ToolTip="Find settings of this display the app does not know yet, try them and give them a name"
+                                Visibility="{Binding IsControllable, Converter={StaticResource BoolToVisibility}}">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="&#xE82F;" Style="{StaticResource Glyph}" FontSize="13" Margin="0,1,8,0" />
+                                <TextBlock Text="Learn settings" />
+                            </StackPanel>
+                        </Button>
                         <Button DockPanel.Dock="Right" Style="{StaticResource IconButton}" Content="&#xE72C;" VerticalAlignment="Center"
                                 Command="{Binding DataContext.ReloadValuesCommand, RelativeSource={RelativeSource AncestorType=Window}}"
                                 ToolTip="Read every value again (after changing something on the monitor's own menu)"
@@ -1597,6 +1606,405 @@
                         <Button Content="Save" Command="{Binding SaveCommand}" Style="{StaticResource PrimaryButton}" />
                     </StackPanel>
                     <TextBlock Text="{Binding SaveHint}" Style="{StaticResource Hint}" VerticalAlignment="Center" Margin="4,0,16,0" />
+                </DockPanel>
+            </Border>
+        </Grid>
+
+        <!-- Learn settings: a guided search for settings the app does not know yet, on the selected display -->
+        <Grid x:Name="LearnView" Grid.Row="3" DataContext="{Binding Learn}"
+              Visibility="{Binding DataContext.IsLearnTab, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolToVisibility}}">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+            <Grid.Resources>
+                <!-- A found code: its number, what it is (and where that comes from), its value -->
+                <DataTemplate x:Key="LearnFoundRow" DataType="{x:Type vm:LearnCandidateViewModel}">
+                    <Border Background="{StaticResource RaisedBrush}" CornerRadius="12" Padding="14,10" Margin="0,6,0,0" ToolTip="{Binding Source}">
+                        <StackPanel>
+                            <DockPanel>
+                                <TextBlock DockPanel.Dock="Right" Text="{Binding Facts}" Style="{StaticResource Hint}" VerticalAlignment="Center" />
+                                <TextBlock Text="{Binding Title}" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,16,0" />
+                            </DockPanel>
+                            <TextBlock Text="{Binding Description}" Style="{StaticResource Hint}" TextWrapping="Wrap" Margin="0,4,0,0" />
+                        </StackPanel>
+                    </Border>
+                </DataTemplate>
+                <Style x:Key="LearnProgress" TargetType="ProgressBar">
+                    <Setter Property="Height" Value="6" />
+                    <Setter Property="Template">
+                        <Setter.Value>
+                            <ControlTemplate TargetType="ProgressBar">
+                                <Grid>
+                                    <Border x:Name="PART_Track" CornerRadius="3" Background="{StaticResource RaisedBrush}" />
+                                    <Border x:Name="PART_Indicator" CornerRadius="3" Background="{StaticResource AccentSolidBrush}" HorizontalAlignment="Left" />
+                                </Grid>
+                            </ControlTemplate>
+                        </Setter.Value>
+                    </Setter>
+                </Style>
+            </Grid.Resources>
+
+            <!-- Stepper: where the wizard is, which steps are done -->
+            <DockPanel Margin="22,0,22,14">
+                <TextBlock DockPanel.Dock="Right" Text="{Binding Position}" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" />
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="4,0,24,0">
+                    <TextBlock Text="Learn settings" FontSize="20" FontWeight="SemiBold" VerticalAlignment="Center" />
+                    <TextBlock Text="{Binding DisplayName, StringFormat=' · {0}'}" FontSize="15" Foreground="{StaticResource MutedBrush}"
+                               VerticalAlignment="Center" TextTrimming="CharacterEllipsis" MaxWidth="320" Margin="4,2,0,0" />
+                </StackPanel>
+                <ItemsControl ItemsSource="{Binding Steps}" HorizontalAlignment="Center" VerticalAlignment="Center" AutomationProperties.Name="Steps">
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate><StackPanel Orientation="Horizontal" /></ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate DataType="{x:Type vm:LearnStepItem}">
+                            <StackPanel Orientation="Horizontal">
+                                <Border x:Name="Link" Width="34" Height="2" Margin="8,0" Background="{StaticResource ControlLineBrush}" VerticalAlignment="Center" />
+                                <Border x:Name="Dot" Width="28" Height="28" CornerRadius="14" BorderThickness="1"
+                                        BorderBrush="{StaticResource ControlLineBrush}" Background="Transparent">
+                                    <Grid>
+                                        <TextBlock x:Name="Number" Text="{Binding Number}" FontSize="12.5" FontWeight="SemiBold"
+                                                   HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}" />
+                                        <TextBlock x:Name="Check" Text="&#xE73E;" Style="{StaticResource Glyph}" FontSize="12" Visibility="Collapsed"
+                                                   HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                    </Grid>
+                                </Border>
+                                <TextBlock x:Name="Title" Text="{Binding Title}" Margin="9,0,0,0" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}" />
+                            </StackPanel>
+                            <DataTemplate.Triggers>
+                                <DataTrigger Binding="{Binding IsFirst}" Value="True">
+                                    <Setter TargetName="Link" Property="Visibility" Value="Collapsed" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding IsDone}" Value="True">
+                                    <Setter TargetName="Dot" Property="Background" Value="{StaticResource AccentSoftBrush}" />
+                                    <Setter TargetName="Dot" Property="BorderBrush" Value="Transparent" />
+                                    <Setter TargetName="Number" Property="Visibility" Value="Collapsed" />
+                                    <Setter TargetName="Check" Property="Visibility" Value="Visible" />
+                                    <Setter TargetName="Link" Property="Background" Value="{StaticResource AccentSolidBrush}" />
+                                    <Setter TargetName="Title" Property="Foreground" Value="{StaticResource TextBrush}" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding IsCurrent}" Value="True">
+                                    <Setter TargetName="Dot" Property="Background" Value="{StaticResource PillOnBrush}" />
+                                    <Setter TargetName="Dot" Property="BorderBrush" Value="Transparent" />
+                                    <Setter TargetName="Number" Property="Foreground" Value="{StaticResource PillOnTextBrush}" />
+                                    <Setter TargetName="Link" Property="Background" Value="{StaticResource AccentSolidBrush}" />
+                                    <Setter TargetName="Title" Property="Foreground" Value="{StaticResource TextBrush}" />
+                                    <Setter TargetName="Title" Property="FontWeight" Value="SemiBold" />
+                                </DataTrigger>
+                            </DataTemplate.Triggers>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </DockPanel>
+
+            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Padding="22,0,22,8">
+                <StackPanel MaxWidth="900" HorizontalAlignment="Stretch">
+                    <!-- The monitor stopped answering -->
+                    <Border Style="{StaticResource Card}" Margin="0,0,0,14" BorderBrush="{StaticResource ErrorBrush}"
+                            Visibility="{Binding HasFault, Converter={StaticResource BoolToVisibility}}">
+                        <DockPanel>
+                            <TextBlock Text="&#xE7BA;" Style="{StaticResource Glyph}" FontSize="18" Foreground="{StaticResource ErrorBrush}" Margin="0,0,14,0" />
+                            <TextBlock Text="{Binding Fault}" TextWrapping="Wrap" Foreground="{StaticResource ErrorBrush}" />
+                        </DockPanel>
+                    </Border>
+
+                    <!-- 1 Find -->
+                    <Border Style="{StaticResource Card}" Visibility="{Binding IsFind, Converter={StaticResource BoolToVisibility}}">
+                        <StackPanel>
+                            <Border Style="{StaticResource CardHeader}">
+                                <DockPanel>
+                                    <Border Style="{StaticResource IconTile}">
+                                        <TextBlock Text="&#xE721;" Style="{StaticResource Glyph}" HorizontalAlignment="Center" />
+                                    </Border>
+                                    <TextBlock Text="Find settings the app does not know" Style="{StaticResource CardTitle}" />
+                                </DockPanel>
+                            </Border>
+                            <TextBlock Style="{StaticResource Hint}" FontSize="13" Margin="0,0,0,14"
+                                       Text="Every code from 0x01 to 0xFF is read, twice. Reading changes nothing on the screen. Codes that reset the monitor, switch its input or power, or lock its menu are never touched." />
+                            <ProgressBar Style="{StaticResource LearnProgress}" Maximum="255" Value="{Binding Progress, Mode=OneWay}" Margin="0,0,0,12"
+                                         Visibility="{Binding ScanDone, Converter={StaticResource InverseBoolToVisibility}}" />
+                            <TextBlock Text="{Binding Activity}" TextWrapping="Wrap" Margin="0,0,0,10" />
+                            <ItemsControl ItemsSource="{Binding Candidates}" ItemTemplate="{StaticResource LearnFoundRow}" />
+                            <!-- Information the monitor reports: shown with what it is, never tried -->
+                            <StackPanel Visibility="{Binding HasReadOnly, Converter={StaticResource BoolToVisibility}}" Margin="0,18,0,0">
+                                <TextBlock Text="Read-only information" FontWeight="SemiBold" FontSize="14" />
+                                <TextBlock Style="{StaticResource Hint}" Margin="0,3,0,4" TextWrapping="Wrap"
+                                           Text="The monitor answers these, but they are lists, ids or adjustments for VGA only. They are shown so you know what they are; the wizard never writes them." />
+                                <ItemsControl ItemsSource="{Binding ReadOnlyFound}" ItemTemplate="{StaticResource LearnFoundRow}" Opacity="0.75" />
+                            </StackPanel>
+                            <!-- Codes that can reboot, reset or rewrite the monitor: left out entirely -->
+                            <DockPanel Margin="0,16,0,0" Visibility="{Binding HasHidden, Converter={StaticResource BoolToVisibility}}">
+                                <TextBlock Text="&#xE72E;" Style="{StaticResource Glyph}" FontSize="13" Foreground="{StaticResource WarningTextBrush}" Margin="0,2,10,0" VerticalAlignment="Top" />
+                                <TextBlock Text="{Binding HiddenText}" Style="{StaticResource Hint}" TextWrapping="Wrap" />
+                            </DockPanel>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- 2 Try: the setting moves for a few seconds and comes back by itself -->
+                    <Border Style="{StaticResource Card}" DataContext="{Binding Current}"
+                            Visibility="{Binding Wizard.IsTry, Converter={StaticResource BoolToVisibility}, FallbackValue=Collapsed}">
+                        <StackPanel>
+                            <Border Style="{StaticResource CardHeader}">
+                                <DockPanel>
+                                    <TextBlock DockPanel.Dock="Right" Text="{Binding Facts}" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" />
+                                    <Border Style="{StaticResource IconTile}">
+                                        <TextBlock Text="&#xE768;" Style="{StaticResource Glyph}" HorizontalAlignment="Center" />
+                                    </Border>
+                                    <TextBlock Text="{Binding Title, StringFormat='Try {0}'}" Style="{StaticResource CardTitle}" />
+                                </DockPanel>
+                            </Border>
+                            <TextBlock Text="{Binding Description}" TextWrapping="Wrap" Margin="0,0,0,8" FontWeight="SemiBold" ToolTip="{Binding Source}" />
+                            <TextBlock Style="{StaticResource Hint}" FontSize="13" Margin="0,0,0,14" TextWrapping="Wrap"
+                                       Text="Watch the screen while the setting moves. Each test goes back to the old value by itself after a few seconds; going on puts back anything set by hand." />
+                            <DockPanel Margin="0,0,0,14">
+                                <TextBlock Text="It works like" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}" Margin="0,0,10,0" />
+                                <StackPanel Orientation="Horizontal">
+                                    <RadioButton Style="{StaticResource TabButton}" GroupName="LearnKindTry" Content="A level" Tag="&#xE9E9;" IsChecked="{Binding IsLevel, Mode=TwoWay}" />
+                                    <RadioButton Style="{StaticResource TabButton}" GroupName="LearnKindTry" Content="A list of options" Tag="&#xE8FD;" IsChecked="{Binding IsOptions, Mode=TwoWay}" />
+                                </StackPanel>
+                            </DockPanel>
+                            <!-- Level: one test step, or by hand -->
+                            <StackPanel Visibility="{Binding IsLevel, Converter={StaticResource BoolToVisibility}}">
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
+                                    <Button Command="{Binding Wizard.TryCommand}" Style="{StaticResource PrimaryButton}" MinWidth="120">
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="&#xE768;" Style="{StaticResource Glyph}" FontSize="12" Foreground="{StaticResource AccentOnBrush}" Margin="0,1,8,0" />
+                                            <TextBlock Text="Try" />
+                                        </StackPanel>
+                                    </Button>
+                                    <TextBlock Text="{Binding Wizard.CountdownText}" VerticalAlignment="Center" Margin="16,0,0,0" Foreground="{StaticResource WarningTextBrush}" />
+                                </StackPanel>
+                                <Grid Margin="0,0,0,8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="90" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="56" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="By hand" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}" />
+                                    <Slider Grid.Column="1" Minimum="0" Maximum="{Binding Maximum}" Value="{Binding HandValue, Mode=TwoWay}"
+                                            IsEnabled="{Binding Wizard.CanTry}" VerticalAlignment="Center" AutomationProperties.Name="Value by hand" />
+                                    <TextBlock Grid.Column="2" Text="{Binding HandText}" Style="{StaticResource Figure}" />
+                                    <Button Grid.Column="3" Content="Put back" Command="{Binding Wizard.PutBackCommand}" Style="{StaticResource QuietButton}" />
+                                </Grid>
+                            </StackPanel>
+                            <!-- Options: each value on its own -->
+                            <ItemsControl ItemsSource="{Binding Values}" Visibility="{Binding IsOptions, Converter={StaticResource BoolToVisibility}}">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate><WrapPanel /></ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate DataType="{x:Type vm:LearnValueRow}">
+                                        <Button Command="{Binding TryCommand}" Margin="0,0,8,8" MinWidth="110" ToolTip="Show this value for a few seconds">
+                                            <StackPanel Orientation="Horizontal">
+                                                <TextBlock x:Name="Tried" Text="&#xE73E;" Style="{StaticResource Glyph}" FontSize="11" Margin="0,1,8,0" Visibility="Collapsed" />
+                                                <TextBlock Text="{Binding Label}" />
+                                            </StackPanel>
+                                        </Button>
+                                        <DataTemplate.Triggers>
+                                            <DataTrigger Binding="{Binding IsTried}" Value="True">
+                                                <Setter TargetName="Tried" Property="Visibility" Value="Visible" />
+                                            </DataTrigger>
+                                        </DataTemplate.Triggers>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                            <TextBlock Text="{Binding Wizard.CountdownText}" Foreground="{StaticResource WarningTextBrush}" Margin="0,4,0,0"
+                                       Visibility="{Binding IsOptions, Converter={StaticResource BoolToVisibility}}" />
+                            <TextBlock Text="{Binding LastTry}" TextWrapping="Wrap" Margin="0,10,0,0" />
+                        </StackPanel>
+                    </Border>
+
+                    <!-- 3 Describe: what changed, from a list; Other… for a name of one's own -->
+                    <Border Style="{StaticResource Card}" DataContext="{Binding Current}"
+                            Visibility="{Binding Wizard.IsDescribe, Converter={StaticResource BoolToVisibility}, FallbackValue=Collapsed}">
+                        <StackPanel>
+                            <Border Style="{StaticResource CardHeader}">
+                                <DockPanel>
+                                    <TextBlock DockPanel.Dock="Right" Text="{Binding Title}" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" />
+                                    <Border Style="{StaticResource IconTile}">
+                                        <TextBlock Text="&#xE70F;" Style="{StaticResource Glyph}" HorizontalAlignment="Center" />
+                                    </Border>
+                                    <TextBlock Text="What changed on the screen?" Style="{StaticResource CardTitle}" />
+                                </DockPanel>
+                            </Border>
+                            <Grid Margin="0,0,0,12">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="130" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <TextBlock Text="Setting" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}" />
+                                <ComboBox Grid.Column="1" HorizontalAlignment="Left" MinWidth="260" ItemsSource="{Binding Functions}"
+                                          SelectedItem="{Binding Function, Mode=TwoWay}" AutomationProperties.Name="What changed" />
+                                <TextBlock Grid.Row="1" Text="Name" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}" Margin="0,10,0,0"
+                                           Visibility="{Binding IsOther, Converter={StaticResource BoolToVisibility}}" />
+                                <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding CustomName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" MinWidth="260"
+                                         MaxWidth="320" HorizontalAlignment="Left" MaxLength="40" Margin="0,10,0,0" AutomationProperties.Name="Setting name"
+                                         Visibility="{Binding IsOther, Converter={StaticResource BoolToVisibility}}" />
+                                <TextBlock Grid.Row="2" Text="It works like" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}" Margin="0,10,0,0"
+                                           Visibility="{Binding Discards, Converter={StaticResource InverseBoolToVisibility}}" />
+                                <StackPanel Grid.Row="2" Grid.Column="1" Orientation="Horizontal" Margin="-2,10,0,0"
+                                            Visibility="{Binding Discards, Converter={StaticResource InverseBoolToVisibility}}">
+                                    <RadioButton Style="{StaticResource TabButton}" GroupName="LearnKindDescribe" Content="A level" Tag="&#xE9E9;" IsChecked="{Binding IsLevel, Mode=TwoWay}" />
+                                    <RadioButton Style="{StaticResource TabButton}" GroupName="LearnKindDescribe" Content="A list of options" Tag="&#xE8FD;" IsChecked="{Binding IsOptions, Mode=TwoWay}" />
+                                </StackPanel>
+                            </Grid>
+                            <TextBlock Style="{StaticResource Hint}" Margin="0,0,0,8" TextWrapping="Wrap"
+                                       Visibility="{Binding Discards, Converter={StaticResource BoolToVisibility}}"
+                                       Text="It will be left out: nothing about it is kept." />
+                            <TextBlock Style="{StaticResource Hint}" Margin="0,0,0,8" TextWrapping="Wrap"
+                                       Visibility="{Binding IsLevel, Converter={StaticResource BoolToVisibility}}"
+                                       Text="A level gets a slider from 0 to its maximum; only its name is needed." />
+                            <!-- Options: one row per value, named from a list or with Other… -->
+                            <StackPanel Visibility="{Binding IsOptions, Converter={StaticResource BoolToVisibility}}">
+                                <TextBlock Style="{StaticResource Hint}" Margin="0,0,0,8" TextWrapping="Wrap"
+                                           Text="Name the values you saw. Values left on — are not offered." />
+                                <ItemsControl ItemsSource="{Binding Values}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate DataType="{x:Type vm:LearnValueRow}">
+                                            <Grid Margin="0,0,0,8">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="130" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                    <ColumnDefinition Width="*" />
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock Text="{Binding Label}" VerticalAlignment="Center" />
+                                                <ComboBox Grid.Column="1" MinWidth="170" ItemsSource="{Binding NameOptions}" SelectedItem="{Binding SelectedName, Mode=TwoWay}"
+                                                          AutomationProperties.Name="{Binding Label}" />
+                                                <TextBox Grid.Column="2" Text="{Binding CustomName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" MinWidth="170"
+                                                         MaxLength="30" Margin="8,0,0,0" AutomationProperties.Name="Value name"
+                                                         Visibility="{Binding IsOther, Converter={StaticResource BoolToVisibility}}" />
+                                                <Button Grid.Column="3" HorizontalAlignment="Left" Command="{Binding TryCommand}" Style="{StaticResource QuietButton}"
+                                                        Margin="8,0,0,0" ToolTip="Show this value again for a few seconds">
+                                                    <StackPanel Orientation="Horizontal">
+                                                        <TextBlock Text="&#xE768;" Style="{StaticResource Glyph}" FontSize="11" Margin="0,1,8,0" />
+                                                        <TextBlock Text="Try" />
+                                                    </StackPanel>
+                                                </Button>
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                                <TextBlock Text="{Binding Wizard.CountdownText}" Foreground="{StaticResource WarningTextBrush}" />
+                            </StackPanel>
+                            <TextBlock Text="{Binding Missing}" Foreground="{StaticResource WarningTextBrush}" Margin="0,8,0,0" />
+                        </StackPanel>
+                    </Border>
+
+                    <!-- 4 Modes: switched automatically; the original mode comes back -->
+                    <Border Style="{StaticResource Card}" DataContext="{Binding Current}"
+                            Visibility="{Binding Wizard.IsModes, Converter={StaticResource BoolToVisibility}, FallbackValue=Collapsed}">
+                        <StackPanel>
+                            <Border Style="{StaticResource CardHeader}">
+                                <DockPanel>
+                                    <Button DockPanel.Dock="Right" Content="Check again" Command="{Binding Wizard.CheckModesCommand}" Style="{StaticResource QuietButton}" />
+                                    <Border Style="{StaticResource IconTile}">
+                                        <TextBlock Text="&#xEB9F;" Style="{StaticResource Glyph}" HorizontalAlignment="Center" />
+                                    </Border>
+                                    <TextBlock Text="{Binding FinalName, StringFormat='Where {0} works'}" Style="{StaticResource CardTitle}" />
+                                </DockPanel>
+                            </Border>
+                            <TextBlock Text="{Binding Wizard.Activity}" TextWrapping="Wrap" Margin="0,0,0,12" />
+                            <ItemsControl ItemsSource="{Binding Modes}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate DataType="{x:Type vm:LearnModeRow}">
+                                        <DockPanel Margin="0,0,0,8">
+                                            <!-- Fixed glyphs switched by visibility (the icon style redraws a glyph once, when it loads) -->
+                                            <Grid Width="22" Margin="0,1,10,0">
+                                                <TextBlock x:Name="Waiting" Text="&#xE916;" Style="{StaticResource Glyph}" FontSize="12" Foreground="{StaticResource FaintBrush}" />
+                                                <TextBlock x:Name="Kept" Text="&#xE73E;" Style="{StaticResource Glyph}" FontSize="12" Foreground="#4CD97B" Visibility="Collapsed" />
+                                                <TextBlock x:Name="Ignored" Text="&#xE711;" Style="{StaticResource Glyph}" FontSize="12" Foreground="{StaticResource ErrorBrush}" Visibility="Collapsed" />
+                                            </Grid>
+                                            <TextBlock Text="{Binding Name}" Width="170" FontWeight="SemiBold" />
+                                            <TextBlock Text="{Binding Status}" Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" />
+                                        </DockPanel>
+                                        <DataTemplate.Triggers>
+                                            <DataTrigger Binding="{Binding Works}" Value="True">
+                                                <Setter TargetName="Waiting" Property="Visibility" Value="Collapsed" />
+                                                <Setter TargetName="Kept" Property="Visibility" Value="Visible" />
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding Works}" Value="False">
+                                                <Setter TargetName="Waiting" Property="Visibility" Value="Collapsed" />
+                                                <Setter TargetName="Ignored" Property="Visibility" Value="Visible" />
+                                            </DataTrigger>
+                                        </DataTemplate.Triggers>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                            <TextBlock Text="{Binding ModesSummary}" FontWeight="SemiBold" TextWrapping="Wrap" Margin="0,6,0,0" />
+                        </StackPanel>
+                    </Border>
+
+                    <!-- 5 Save: what will be kept, for this monitor model -->
+                    <Border Style="{StaticResource Card}" Visibility="{Binding IsSave, Converter={StaticResource BoolToVisibility}}">
+                        <StackPanel>
+                            <Border Style="{StaticResource CardHeader}">
+                                <DockPanel>
+                                    <Border Style="{StaticResource IconTile}">
+                                        <TextBlock Text="&#xE74E;" Style="{StaticResource Glyph}" HorizontalAlignment="Center" />
+                                    </Border>
+                                    <TextBlock Text="Keep what was learned" Style="{StaticResource CardTitle}" />
+                                </DockPanel>
+                            </Border>
+                            <TextBlock Text="{Binding Activity}" TextWrapping="Wrap" Margin="0,0,0,12" />
+                            <ItemsControl ItemsSource="{Binding Learned}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate DataType="{x:Type vm:LearnCandidateViewModel}">
+                                        <Border Background="{StaticResource RaisedBrush}" CornerRadius="12" Padding="14,10" Margin="0,0,0,8">
+                                            <StackPanel>
+                                                <DockPanel>
+                                                    <TextBlock DockPanel.Dock="Right" Text="{Binding Candidate.Label}" Style="{StaticResource Hint}" VerticalAlignment="Center" />
+                                                    <TextBlock Text="{Binding FinalName}" FontWeight="SemiBold" FontSize="14" />
+                                                </DockPanel>
+                                                <TextBlock Text="{Binding Summary}" Style="{StaticResource Hint}" Margin="0,4,0,0" TextWrapping="Wrap" />
+                                                <TextBlock Text="{Binding ModesSummary}" Style="{StaticResource Hint}" Margin="0,2,0,0" TextWrapping="Wrap" />
+                                            </StackPanel>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                            <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                <Button Command="{Binding SaveCommand}" Style="{StaticResource PrimaryButton}" Margin="0,0,8,0">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="&#xE74E;" Style="{StaticResource Glyph}" FontSize="12" Foreground="{StaticResource AccentOnBrush}" Margin="0,1,8,0" />
+                                        <TextBlock Text="Save for this model" />
+                                    </StackPanel>
+                                </Button>
+                                <Button IsEnabled="False" Style="{StaticResource QuietButton}" ToolTip="Sharing learned settings with other people comes in a later version"
+                                        ToolTipService.ShowOnDisabled="True">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="&#xE72D;" Style="{StaticResource Glyph}" FontSize="12" Margin="0,1,8,0" />
+                                        <TextBlock Text="Share (later)" />
+                                    </StackPanel>
+                                </Button>
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </ScrollViewer>
+
+            <!-- Wizard bar: the same place as Save in the other views -->
+            <Border Grid.Row="2" Style="{StaticResource Card}" Margin="22,0,22,16" Padding="18,12">
+                <DockPanel>
+                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                        <Button Content="Close" Command="{Binding CloseCommand}" Style="{StaticResource QuietButton}" Margin="0,0,6,0"
+                                ToolTip="Leave the wizard; anything still changed goes back to its old value" />
+                        <Button Content="Back" Command="{Binding BackCommand}" Margin="0,0,6,0"
+                                Visibility="{Binding InCandidate, Converter={StaticResource BoolToVisibility}}" />
+                        <Button Content="{Binding SkipLabel}" Command="{Binding SkipCommand}" Margin="0,0,6,0"
+                                Visibility="{Binding InCandidate, Converter={StaticResource BoolToVisibility}}" />
+                        <Button Content="{Binding NextLabel}" Command="{Binding NextCommand}" Style="{StaticResource PrimaryButton}" MinWidth="96" />
+                    </StackPanel>
+                    <TextBlock Style="{StaticResource Hint}" VerticalAlignment="Center" Margin="4,0,16,0" TextWrapping="Wrap"
+                               Text="Every test goes back by itself. Closing the wizard, or the app, puts back anything still changed." />
                 </DockPanel>
             </Border>
         </Grid>

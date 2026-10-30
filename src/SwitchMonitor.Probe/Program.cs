@@ -24,6 +24,9 @@ using SwitchMonitor.Core.Vcp;
 //   --builtin        Read-only: connection type, EDID, brightness levels, power plan, sensors, modes, HDR,
 //                    gamma ramp and driver for every active display (built-in panels flagged).
 //   --gamma-test     WRITES (always reset): software color through the gamma ramp on built-in displays, checked by eye.
+//   --learn-values --yes [--out FILE] [--codes E9,EA]  WRITES (always put back): guided study of settings the app
+//                    does not know: values taken, value per picture mode, linked codes, then naming with the person.
+//   --merge-learned FILE  Install a learned-settings file into this computer's quirks.user.json.
 //   --report FILE    Also append the results of --verify / --watch to FILE.
 //   --log            Append the diagnostic log.
 
@@ -155,6 +158,18 @@ try
                 if (!result.Passed) exitCode = 1;
             }
         }
+    }
+    else if (args.Contains("--learn-values"))
+    {
+        if (!args.Contains("--yes")) { Console.WriteLine("--learn-values writes to monitors (always put back); add --yes to confirm."); return 2; }
+        string outPath = ArgValue(args, "--out") ?? Path.Combine(Environment.CurrentDirectory, "learned.json");
+        exitCode = LearnValues.Run(monitors, ArgValue(args, "--report"), outPath,
+            ArgValue(args, "--codes") is string learnCodes ? ParseCodes(learnCodes) : null);
+    }
+    else if (ArgValue(args, "--merge-learned") is string mergeSource)
+    {
+        int merged = SwitchMonitor.Core.Learning.LearnedSettingsMerge.MergeInto(File.ReadAllText(mergeSource), SwitchMonitor.Core.Quirks.QuirkDatabase.UserFilePath);
+        Console.WriteLine($"{merged} ajuste(s) instalados en {SwitchMonitor.Core.Quirks.QuirkDatabase.UserFilePath}");
     }
     else if (args.Contains("--roundtrip"))
     {

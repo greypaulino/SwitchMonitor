@@ -53,7 +53,7 @@ public sealed class SceneViewModel : ObservableObject
     public System.Windows.Media.Brush EdgeBrush => Icons.Brush(Color, 0.55);
 }
 
-public enum AppTab { Displays, Advanced, Profiles, Shortcuts, Settings }
+public enum AppTab { Displays, Advanced, Profiles, Shortcuts, Settings, Learn }
 
 public sealed class MainViewModel : ObservableObject, IInputCoordinator
 {
@@ -101,6 +101,7 @@ public sealed class MainViewModel : ObservableObject, IInputCoordinator
         brightnessSteps = new BrightnessSteps(settings.BrightnessStep);
         RefreshCommand = new RelayCommand(_ => _ = RefreshAsync(), _ => !IsBusy);
         ReloadValuesCommand = new RelayCommand(() => _ = Selected?.ReloadValuesAsync() ?? Task.CompletedTask);
+        LearnCommand = new RelayCommand(_ => OpenLearn(), _ => Selected is { IsControllable: true } && !IsBusy);
         // Writes factory values to the monitor: the first click only arms it, as Delete does on the Profiles tab.
         resetTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(4) };
         resetTimer.Tick += (_, _) => ConfirmingReset = false;
@@ -188,6 +189,11 @@ public sealed class MainViewModel : ObservableObject, IInputCoordinator
                 ResetShortcutEditor();
             }
             if (value == AppTab.Profiles) ResetProfileEditor();
+            if (previous == AppTab.Learn && learn is { } wizard)
+            {
+                Learn = null;
+                _ = wizard.CloseAsync();   // puts back whatever the wizard left changed
+            }
             if (previous == AppTab.Settings && Interface.IsDirty)
             {
                 Interface.Discard();   // a preview that was not saved does not stay
@@ -199,6 +205,7 @@ public sealed class MainViewModel : ObservableObject, IInputCoordinator
             Raise(nameof(IsProfilesTab));
             Raise(nameof(IsShortcutsTab));
             Raise(nameof(IsSettingsTab));
+            Raise(nameof(IsLearnTab));
             Raise(nameof(ShowsMonitorList));
         }
     }
@@ -216,6 +223,21 @@ public sealed class MainViewModel : ObservableObject, IInputCoordinator
     }
 
     private InterfaceViewModel? interfaceSettings;
+    private LearnWizardViewModel? learn;
+
+    /// <summary>Learn settings (button in the display heading): a guided search for settings the app does not know yet.</summary>
+    public ICommand LearnCommand { get; }
+
+    public LearnWizardViewModel? Learn { get => learn; private set => Set(ref learn, value); }
+
+    public bool IsLearnTab => tab == AppTab.Learn;
+
+    private void OpenLearn()
+    {
+        if (Selected is not { IsControllable: true } monitor || tab == AppTab.Learn) return;
+        Learn = new LearnWizardViewModel(this, monitor);
+        Tab = AppTab.Learn;
+    }
 
     /// <summary>Profiles that keep their usual icon follow the panel's icon style: redraw them.</summary>
     public void RefreshProfileMarks()
@@ -788,6 +810,7 @@ public sealed class MainViewModel : ObservableObject, IInputCoordinator
 
     public void Shutdown()
     {
+        learn?.CloseNow();
         Apps.Stop();
         foreach (var monitor in Monitors) monitor.SoftwareColor?.Release();
         returnTimer.Stop();

@@ -14,7 +14,10 @@ public static class DemoMonitors
 
     public static IReadOnlyList<MonitorDevice> Create(string scenario, ICoreLog? log = null)
     {
-        var quirks = QuirkDatabase.LoadEmbedded();
+        // The demo's own data folder: settings learned in the demo show up there as on a real monitor.
+        QuirkDatabase quirks;
+        try { quirks = QuirkDatabase.LoadDefault(); }
+        catch (Exception error) when (error is FormatException or System.Text.Json.JsonException or IOException) { quirks = QuirkDatabase.LoadEmbedded(); }
         var result = new List<MonitorDevice>();
         switch (scenario)
         {
@@ -61,7 +64,13 @@ public static class DemoMonitors
         transport.Set(0x16, 50); transport.Set(0x18, 50); transport.Set(0x1A, 50);
         transport.Set(0x6C, 50); transport.Set(0x6E, 50); transport.Set(0x70, 50);
         transport.Set(0xF7, 0x01, 0x03); transport.Set(0xF8, 0x00, 0x01); transport.Set(0xF9, 50); transport.Set(0xFE, 0x02, 0x07);
-        transport.Set(0xF4, 0x90, 0xFF);
+        transport.Set(0xF4, 0x90, 0xFF); transport.Set(0x87, 50);
+        // Codes nobody has mapped, for the Learn settings wizard: a level that only works in the Custom picture modes,
+        // a three-value list and a standard saturation the LG does not advertise.
+        transport.Set(0xE9, 40); transport.Set(0xEA, 1, 2); transport.Set(0x8A, 50);
+        // As on the real LG: a code that reboots the monitor (hidden) and information that is never written.
+        transport.Set(0xF6, 2, 255); transport.Set(0x20, 0); transport.Set(0x4D, 30771, 0xFFFF);
+        transport.IgnoreWrite = (code, _) => code == 0xE9 && transport.Peek(0x15) is not (0x0B or 0x0E);
         // The LG switches inputs through its vendor code 0xF4; the standard 0x60 then reports the new input.
         transport.AfterWrite = (code, value) =>
         {
@@ -101,8 +110,17 @@ public static class DemoMonitors
     private sealed class DemoTransport(string id, string capabilities) : IMonitorTransport
     {
         private readonly Dictionary<byte, VcpValue> values = [];
+        // Codes not modeled answer only when advertised (as 50 of 100), so a deep scan finds what a monitor would.
+        private readonly HashSet<byte> advertised = Capabilities.MccsCapabilitiesParser.Parse(capabilities).VcpCodes.ToHashSet();
         public HashSet<byte> FailingCodes { get; } = [];
         public Action<byte, uint>? AfterWrite { get; set; }
+        /// <summary>Writes the monitor accepts but does not apply (a setting locked by the picture mode).</summary>
+        public Func<byte, uint, bool>? IgnoreWrite { get; set; }
+
+        public uint Peek(byte code)
+        {
+            lock (values) return values.TryGetValue(code, out var value) ? value.Current : 0;
+        }
         public string Id => id;
         public bool SupportsWrites => true;
 
@@ -117,13 +135,19 @@ public static class DemoMonitors
         {
             Thread.Sleep(15);   // a little of the real bus latency, so loading states are visible
             if (FailingCodes.Contains(code)) throw new TransportException(Id, $"demo: VCP 0x{code:X2} does not answer.");
-            lock (values) return values.TryGetValue(code, out var value) ? value : new VcpValue(50, 100);
+            lock (values)
+            {
+                if (values.TryGetValue(code, out var value)) return value;
+                if (advertised.Contains(code)) return new VcpValue(50, 100);
+            }
+            throw new TransportException(Id, $"demo: VCP 0x{code:X2} is not supported.");
         }
 
         public void Write(byte code, uint value)
         {
             Thread.Sleep(80);
             if (FailingCodes.Contains(code)) throw new TransportException(Id, $"demo: VCP 0x{code:X2} ignores writes.");
+            if (IgnoreWrite?.Invoke(code, value) == true) return;
             lock (values) values[code] = new VcpValue(value, values.TryGetValue(code, out var old) ? old.Maximum : 100);
             AfterWrite?.Invoke(code, value);
         }
