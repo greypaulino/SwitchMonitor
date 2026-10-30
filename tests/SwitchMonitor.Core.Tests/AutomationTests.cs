@@ -32,8 +32,10 @@ internal static class AutomationTests
     [Test]
     public static void ProfilesKeepTheirColor()
     {
-        const string json = """{ "scenes": [ { "name": "Work", "color": "#4c8dff", "settings": { "brightness": 50 } },
-                                              { "name": "Odd", "color": "blue", "settings": { "brightness": 40 } } ] }""";
+        const string json = """
+            { "scenes": [ { "name": "Work", "color": "#4c8dff", "settings": { "brightness": 50 } },
+                          { "name": "Odd", "color": "blue", "settings": { "brightness": 40 } } ] }
+            """;
         var scenes = SceneStore.Parse(json);
         Assert.Equal("#4C8DFF", scenes[0].Color, "normalized to upper case");
         Assert.Equal<string?>(null, scenes[1].Color, "anything but #RRGGBB is ignored");
@@ -48,8 +50,10 @@ internal static class AutomationTests
     [Test]
     public static void ProfilesKeepTheirIcon()
     {
-        const string json = """{ "scenes": [ { "name": "Work", "icon": "glyph:e821", "settings": { "brightness": 50 } },
-                                              { "name": "Odd", "icon": "image:../evil.png", "settings": { "brightness": 40 } } ] }""";
+        const string json = """
+            { "scenes": [ { "name": "Work", "icon": "glyph:e821", "settings": { "brightness": 50 } },
+                          { "name": "Odd", "icon": "image:../evil.png", "settings": { "brightness": 40 } } ] }
+            """;
         var scenes = SceneStore.Parse(json);
         Assert.Equal("glyph:E821", scenes[0].Icon, "glyph code in upper case");
         Assert.Equal<string?>(null, scenes[1].Icon, "no folders in an image name");
