@@ -12,8 +12,10 @@ public static class HotkeyAction
     public const string NextMonitor = "nextMonitor";
     public const string NextInput = "nextInput";
     public const string OpenWindow = "openWindow";
+    /// <summary>Back to Custom (the person's own settings), like the Custom button of the profile row.</summary>
+    public const string CustomProfile = "customProfile";
 
-    public static IReadOnlyList<string> All { get; } = [BrightnessUp, BrightnessDown, NextMonitor, NextInput, OpenWindow];
+    public static IReadOnlyList<string> All { get; } = [BrightnessUp, BrightnessDown, NextMonitor, NextInput, OpenWindow, CustomProfile];
 
     public static string Describe(string action) => action switch
     {
@@ -22,6 +24,7 @@ public static class HotkeyAction
         NextMonitor => "Next display (brightness)",
         NextInput => "Next input",
         OpenWindow => "Open window",
+        CustomProfile => "Custom",
         _ => action
     };
 }
@@ -45,7 +48,8 @@ public sealed record AppSettings
             [HotkeyAction.BrightnessDown] = [HotkeyChord.Parse("Ctrl+Alt+NumpadSubtract"), HotkeyChord.Parse("Ctrl+Alt+Minus")],
             [HotkeyAction.NextMonitor] = [HotkeyChord.Parse("Ctrl+Alt+NumpadMultiply"), HotkeyChord.Parse("Ctrl+Alt+Shift+8")],
             [HotkeyAction.NextInput] = [HotkeyChord.Parse("Ctrl+Alt+M")],
-            [HotkeyAction.OpenWindow] = [HotkeyChord.Parse("Ctrl+Alt+Shift+M")]
+            [HotkeyAction.OpenWindow] = [HotkeyChord.Parse("Ctrl+Alt+Shift+M")],
+            [HotkeyAction.CustomProfile] = []
         };
 
     public IReadOnlyDictionary<string, IReadOnlyList<HotkeyChord>> Hotkeys { get; init; } = DefaultHotkeys;

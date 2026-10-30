@@ -115,7 +115,10 @@ public sealed class AppLinker
     }
 
     /// <summary>"game.exe" for a window, or null (desktop, closed process, no access).</summary>
-    internal static string? ExeOf(IntPtr window)
+    internal static string? ExeOf(IntPtr window) => PathOf(window) is { } full ? SceneStore.AppName(full) : null;
+
+    /// <summary>Full path of the program that owns a window, or null.</summary>
+    internal static string? PathOf(IntPtr window)
     {
         if (window == IntPtr.Zero) return null;
         GetWindowThreadProcessId(window, out uint processId);
@@ -126,29 +129,30 @@ public sealed class AppLinker
         {
             var buffer = new StringBuilder(1024);
             int size = buffer.Capacity;
-            return QueryFullProcessImageName(process, 0, buffer, ref size) ? SceneStore.AppName(buffer.ToString()) : null;
+            return QueryFullProcessImageName(process, 0, buffer, ref size) ? buffer.ToString() : null;
         }
         finally { CloseHandle(process); }
     }
 
-    /// <summary>Programs with a window now, for "Add app" (name and full path), sorted by name.</summary>
-    public static IReadOnlyList<(string Exe, string Title)> RunningApps()
+    /// <summary>Programs with a window now, for "Add app" (name, window title and full path), sorted by name.</summary>
+    public static IReadOnlyList<(string Exe, string Title, string Path)> RunningApps()
     {
-        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var result = new Dictionary<string, (string Title, string Path)>(StringComparer.OrdinalIgnoreCase);
         foreach (var process in Process.GetProcesses())
         {
             try
             {
-                if (process.MainWindowHandle == IntPtr.Zero || ExeOf(process.MainWindowHandle) is not { } exe) continue;
+                if (process.MainWindowHandle == IntPtr.Zero || PathOf(process.MainWindowHandle) is not { } full) continue;
+                string exe = SceneStore.AppName(full);
                 string title = string.IsNullOrWhiteSpace(process.MainWindowTitle) ? exe : process.MainWindowTitle.Trim();
-                result.TryAdd(exe, title);
+                result.TryAdd(exe, (title, full));
             }
             catch (Exception error) when (error is InvalidOperationException or System.ComponentModel.Win32Exception) { }
             finally { process.Dispose(); }
         }
         string own = SceneStore.AppName(Environment.ProcessPath ?? "");
         return result.Where(p => p.Key != own && p.Key != "explorer.exe")
-            .OrderBy(p => p.Key).Select(p => (p.Key, p.Value)).ToArray();
+            .OrderBy(p => p.Key).Select(p => (p.Key, p.Value.Title, p.Value.Path)).ToArray();
     }
 
     private const uint EventSystemForeground = 0x0003;

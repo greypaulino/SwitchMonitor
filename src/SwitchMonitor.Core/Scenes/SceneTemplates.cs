@@ -17,6 +17,8 @@ namespace SwitchMonitor.Core.Scenes;
 /// step (the fastest one causes inverse ghosting), adaptive sync on.</item>
 /// <item>Theater: cinema mode, about 100 cd/m² for a dark room (40 %), D65 white (6500 K).</item>
 /// </list>
+/// Colors (one per profile, changeable in the editor) follow the usual associations: blue for focus and work,
+/// indigo/violet for night and sleep, red for games (energy, the gaming brands), amber for cinema (warm house lights).
 /// </summary>
 public static class SceneTemplates
 {
@@ -24,12 +26,12 @@ public static class SceneTemplates
         {
           "version": 4,
           "scenes": [
-            { "name": "Work",    "settings": { "picture mode": ["Custom", "Standard"], "brightness": 50, "contrast": 70,
+            { "name": "Work",    "color": "#4C8DFF", "settings": { "picture mode": ["Custom", "Standard"], "brightness": 50, "contrast": 70,
                                                "color preset": "6500 K", "sharpness": 50 } },
-            { "name": "Night",   "settings": { "picture mode": ["Reader"], "brightness": 20, "color preset": "5000 K" } },
-            { "name": "Game",    "settings": { "picture mode": ["Custom (Game)", "Games"], "brightness": 80,
+            { "name": "Night",   "color": "#8B7CF6", "settings": { "picture mode": ["Reader"], "brightness": 20, "color preset": "5000 K" } },
+            { "name": "Game",    "color": "#FF6B6B", "settings": { "picture mode": ["Custom (Game)", "Games"], "brightness": 80,
                                                "response time": "Fast", "FreeSync": "On" } },
-            { "name": "Theater", "settings": { "picture mode": ["Cinema", "Movie"], "brightness": 40, "color preset": "6500 K" } }
+            { "name": "Theater", "color": "#F5B544", "settings": { "picture mode": ["Cinema", "Movie"], "brightness": 40, "color preset": "6500 K" } }
           ]
         }
         """;

@@ -11,6 +11,7 @@ public sealed class AutomationStore
 {
     private readonly string? path;
     private readonly object gate = new();
+    private readonly Dictionary<string, string> appPaths = new(StringComparer.OrdinalIgnoreCase);
 
     public AutomationStore(string? path = null) => this.path = path;
 
@@ -18,6 +19,22 @@ public sealed class AutomationStore
 
     /// <summary>Linked programs switch profiles (off: they are ignored until turned on again).</summary>
     public bool AppsEnabled { get; private set; } = true;
+
+    /// <summary>Where a linked program was found ("game.exe" → its full path), for its icon and name.</summary>
+    public string? PathFor(string exe)
+    {
+        lock (gate) return appPaths.GetValueOrDefault(exe);
+    }
+
+    public void RememberAppPath(string exe, string fullPath)
+    {
+        lock (gate)
+        {
+            if (appPaths.TryGetValue(exe, out var known) && string.Equals(known, fullPath, StringComparison.OrdinalIgnoreCase)) return;
+            appPaths[exe] = fullPath;
+            Save();
+        }
+    }
 
     public void SetAppsEnabled(bool enabled)
     {
@@ -39,6 +56,9 @@ public sealed class AutomationStore
             if (JsonNode.Parse(File.ReadAllText(path)) is JsonObject root && root["apps"] is JsonValue apps &&
                 apps.TryGetValue(out bool enabled))
                 store.AppsEnabled = enabled;
+            if (JsonNode.Parse(File.ReadAllText(path)) is JsonObject again && again["appPaths"] is JsonObject paths)
+                foreach (var (exe, node) in paths)
+                    if (node is JsonValue value && value.TryGetValue(out string? full) && full is { Length: > 0 }) store.appPaths[exe] = full;
         }
         catch (Exception error) when (error is JsonException or IOException or InvalidOperationException or FormatException)
         {
@@ -52,7 +72,9 @@ public sealed class AutomationStore
         if (path is null) return;
         try
         {
-            var root = new JsonObject { ["version"] = 2, ["apps"] = AppsEnabled };
+            var paths = new JsonObject();
+            foreach (var (exe, full) in appPaths) paths[exe] = full;
+            var root = new JsonObject { ["version"] = 2, ["apps"] = AppsEnabled, ["appPaths"] = paths };
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             string temporary = path + ".tmp";
             File.WriteAllText(temporary, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));

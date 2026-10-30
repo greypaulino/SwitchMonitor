@@ -10,7 +10,17 @@ public abstract class ControlViewModel(MonitorViewModel owner, MonitorFeature fe
 {
     protected MonitorViewModel Owner { get; } = owner;
     public MonitorFeature Feature { get; } = feature;
-    public string Name => Feature.Name;
+    public string Name => Icons.DisplayName(Feature.Definition, Feature.Name);
+
+    /// <summary>Icon of the setting (Windows icon font).</summary>
+    public string Glyph => Icons.ForFeature(Feature.Definition);
+    /// <summary>Contrast, sharpness and picture mode: a drawn icon instead of the glyph.</summary>
+    public Icons.DrawnIcon? Drawn => Icons.DrawnFor(Feature.Definition);
+    public bool HasDrawn => Drawn is not null;
+    /// <summary>Red, green and blue rows show a dot of their color instead of a glyph.</summary>
+    public System.Windows.Media.Brush? Dot => Icons.DotFor(Feature.Definition) is { } color
+        ? new System.Windows.Media.SolidColorBrush(color) : null;
+    public bool HasDot => Icons.DotFor(Feature.Definition) is not null;
 
     private string? note;
     /// <summary>Small hint under the control (read-only reason, last error).</summary>
@@ -129,10 +139,66 @@ public sealed class SliderControlViewModel(MonitorViewModel owner, MonitorFeatur
         {
             double rounded = Levels is not null ? Nearest(value)
                 : SnapsToSteps ? Math.Round(value / SmallStep) * SmallStep : Math.Round(value);
-            if (!Set(ref this.value, Math.Clamp(rounded, 0, 100))) return;
+            if (!Set(ref this.value, Math.Clamp(rounded, 0, 100))) { if (fromSlider) SyncShown(); return; }
             Raise(nameof(ValueText));
+            if (fromSlider) SyncShown();
+            else GlideShown();
             if (!publishing) ScheduleWrite(this.value);
         }
+    }
+
+    // ---- What the slider shows: follows the hand at once, glides to values set by anything else ----
+
+    private double shown;
+    private bool fromSlider;
+    private System.Windows.Threading.DispatcherTimer? glide;
+    private double glideFrom, glideTo;
+    private DateTime glideStart;
+
+    /// <summary>Glide length for values that change by themselves (profile, shortcut, reading the monitor).</summary>
+    private static readonly TimeSpan GlideTime = TimeSpan.FromMilliseconds(260);
+
+    /// <summary>The slider's position: dragging sets the value; a value set elsewhere moves it smoothly.</summary>
+    public double Shown
+    {
+        get => shown;
+        set
+        {
+            fromSlider = true;
+            try { Value = value; }
+            finally { fromSlider = false; }
+        }
+    }
+
+    private void SyncShown()
+    {
+        glide?.Stop();
+        shown = value;
+        Raise(nameof(Shown));
+    }
+
+    private void GlideShown()
+    {
+        if (System.Windows.Application.Current?.Dispatcher is not { } dispatcher || !dispatcher.CheckAccess() || Math.Abs(shown - value) < 0.5)
+        {
+            SyncShown();
+            return;
+        }
+        glideFrom = shown;
+        glideTo = value;
+        glideStart = DateTime.UtcNow;
+        glide ??= new System.Windows.Threading.DispatcherTimer(TimeSpan.FromMilliseconds(15), System.Windows.Threading.DispatcherPriority.Render,
+            (_, _) => GlideStep(), dispatcher);
+        glide.Start();
+    }
+
+    private void GlideStep()
+    {
+        double t = Math.Min(1, (DateTime.UtcNow - glideStart).TotalMilliseconds / GlideTime.TotalMilliseconds);
+        double eased = 1 - Math.Pow(1 - t, 3);   // ease-out: quick start, soft landing
+        shown = glideFrom + (glideTo - glideFrom) * eased;
+        Raise(nameof(Shown));
+        if (t >= 1) SyncShown();
     }
 
     public string ValueText => IsUnread ? "—" : $"{Value:0}%";
@@ -227,6 +293,38 @@ public sealed class SliderControlViewModel(MonitorViewModel owner, MonitorFeatur
 
 public sealed record ChoiceOption(uint Value, string Label)
 {
+    /// <summary>Icon of the value (picture modes, response time), or null.</summary>
+    public string? Glyph { get; init; }
+    /// <summary>Color swatch of the value (Warm / Cool), or null.</summary>
+    public System.Windows.Media.Brush? Swatch { get; init; }
+    public bool HasGlyph => Glyph is not null;
+    public bool HasSwatch => Swatch is not null;
+
+    public static ChoiceOption For(FeatureDefinition feature, uint value, string? label = null)
+    {
+        string text = label ?? feature.DescribeValue(value);
+        string plain = feature.DescribeValue(value);
+        return new ChoiceOption(value, text)
+        {
+            Glyph = Icons.ForValue(feature, plain),
+            Swatch = Icons.SwatchFor(feature, plain) is { } color ? Frozen(color) : null
+        };
+    }
+
+    /// <summary>Every value of a choice, in a sensible order (response time: Off, Normal, Fast, Faster).</summary>
+    public static IEnumerable<ChoiceOption> AllFor(MonitorFeature feature) =>
+        feature.AllowedValues.Select(v => For(feature.Definition, v))
+            .Select((option, index) => (option, index))
+            .OrderBy(p => Icons.ValueRank(feature.Definition, feature.Definition.DescribeValue(p.option.Value)) ?? p.index)
+            .Select(p => p.option);
+
+    private static System.Windows.Media.SolidColorBrush Frozen(System.Windows.Media.Color color)
+    {
+        var brush = new System.Windows.Media.SolidColorBrush(color);
+        brush.Freeze();
+        return brush;
+    }
+
     public override string ToString() => Label;
 }
 
@@ -239,7 +337,7 @@ public sealed class ChoiceControlViewModel : ControlViewModel
 
     public ChoiceControlViewModel(MonitorViewModel owner, MonitorFeature feature) : base(owner, feature)
     {
-        Options = new(feature.AllowedValues.Select(v => new ChoiceOption(v, feature.Definition.DescribeValue(v))));
+        Options = new(ChoiceOption.AllFor(feature));
     }
 
     public ObservableCollection<ChoiceOption> Options { get; }
@@ -275,7 +373,7 @@ public sealed class ChoiceControlViewModel : ControlViewModel
             if (match is null)
             {
                 // The monitor reports a value outside the known list (e.g. a transitional state). Show it, don't offer it.
-                match = new ChoiceOption(loaded, Feature.Definition.DescribeValue(loaded) + " (current)");
+                match = ChoiceOption.For(Feature.Definition, loaded, Feature.Definition.DescribeValue(loaded) + " (current)");
                 Options.Insert(0, match);
             }
             Selected = match;
@@ -411,10 +509,14 @@ public sealed class InputViewModel : ObservableObject
 
     public int Code { get; }
     public string Label { get; }
+    /// <summary>Outline of the connector (HDMI, DisplayPort, USB-C, VGA, DVI).</summary>
+    public System.Windows.Media.Geometry ConnectorShape => Icons.ConnectorShape(Label);
     public bool IsCurrent { get => isCurrent; set => Set(ref isCurrent, value); }
     public ICommand SelectCommand { get; }
 
     public string Shortcut => coordinator.ShortcutFor(owner, Code);
+    /// <summary>The shortcut as keycaps (Ctrl · Alt · 1), empty when there is none.</summary>
+    public IReadOnlyList<string> ShortcutKeys => string.IsNullOrEmpty(Shortcut) ? [] : Shortcut.Split('+');
 
     /// <summary>1.x "connected" box: Next input only visits checked inputs.</summary>
     public bool InCycle
@@ -430,6 +532,7 @@ public sealed class InputViewModel : ObservableObject
     public void Refresh()
     {
         Raise(nameof(Shortcut));
+        Raise(nameof(ShortcutKeys));
         Raise(nameof(InCycle));
     }
 }

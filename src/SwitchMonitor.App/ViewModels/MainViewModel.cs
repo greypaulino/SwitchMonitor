@@ -26,6 +26,7 @@ public sealed class SceneViewModel : ObservableObject
     public bool IsCustom => Scene is null;
     public string Name => Scene?.Name ?? MainViewModel.CustomName;
     public string Hotkey => Scene?.Hotkey?.ToString() ?? "";
+    public IReadOnlyList<string> HotkeyKeys => Hotkey.Length == 0 ? [] : Hotkey.Split('+');
     public string Summary => Scene is null
         ? "Your own settings. Changing any setting by hand selects Custom; after applying a profile, click Custom to get your settings back."
         : string.Join(" · ", Scene.Settings.Select(s => s.ToString()));
@@ -34,9 +35,25 @@ public sealed class SceneViewModel : ObservableObject
     public bool IsActive { get => isActive; set => Set(ref isActive, value); }
 
     public ICommand ApplyCommand { get; }
+
+    /// <summary>The profile's color and icon (its own color, or the usual one for its name).</summary>
+    public string Color => Icons.ColorForProfile(Name, Scene?.Color);
+    public string Glyph => Icons.ForProfile(Name, Scene?.Icon);
+    /// <summary>The profile's icon as drawn (its style's font and weight).</summary>
+    public Icons.Mark Mark => Icons.ProfileMark(Name, Scene?.Icon);
+    public void RefreshMark() => Raise(nameof(Mark));
+
+    private bool isShown = true;
+    /// <summary>The profile applies to the display selected (Custom always does).</summary>
+    public bool IsShown { get => isShown; set => Set(ref isShown, value); }
+    /// <summary>The picture the profile chose as its icon, or null.</summary>
+    public System.Windows.Media.ImageSource? IconImage => Icons.ProfileImage(Scene?.Icon);
+    public System.Windows.Media.Brush ColorBrush => Icons.Brush(Color);
+    public System.Windows.Media.Brush SoftBrush => Icons.Brush(Color, 0.18);
+    public System.Windows.Media.Brush EdgeBrush => Icons.Brush(Color, 0.55);
 }
 
-public enum AppTab { Displays, Advanced, Profiles, Shortcuts }
+public enum AppTab { Displays, Advanced, Profiles, Shortcuts, Settings }
 
 public sealed class MainViewModel : ObservableObject, IInputCoordinator
 {
@@ -171,11 +188,17 @@ public sealed class MainViewModel : ObservableObject, IInputCoordinator
                 ResetShortcutEditor();
             }
             if (value == AppTab.Profiles) ResetProfileEditor();
+            if (previous == AppTab.Settings && Interface.IsDirty)
+            {
+                Interface.Discard();   // a preview that was not saved does not stay
+                Report("Settings not saved: the saved look is back.", true);
+            }
             Raise();
             Raise(nameof(IsDisplaysTab));
             Raise(nameof(IsAdvancedTab));
             Raise(nameof(IsProfilesTab));
             Raise(nameof(IsShortcutsTab));
+            Raise(nameof(IsSettingsTab));
             Raise(nameof(ShowsMonitorList));
         }
     }
@@ -184,6 +207,24 @@ public sealed class MainViewModel : ObservableObject, IInputCoordinator
     public bool IsAdvancedTab { get => tab == AppTab.Advanced; set { if (value) Tab = AppTab.Advanced; } }
     public bool IsProfilesTab { get => tab == AppTab.Profiles; set { if (value) Tab = AppTab.Profiles; } }
     public bool IsShortcutsTab { get => tab == AppTab.Shortcuts; set { if (value) Tab = AppTab.Shortcuts; } }
+
+    /// <summary>The app's own settings (gear button); pressing the gear again goes back to Displays.</summary>
+    public bool IsSettingsTab
+    {
+        get => tab == AppTab.Settings;
+        set => Tab = value ? AppTab.Settings : tab == AppTab.Settings ? AppTab.Displays : tab;
+    }
+
+    private InterfaceViewModel? interfaceSettings;
+
+    /// <summary>Profiles that keep their usual icon follow the panel's icon style: redraw them.</summary>
+    public void RefreshProfileMarks()
+    {
+        foreach (var scene in Scenes) scene.RefreshMark();
+    }
+
+    /// <summary>The Settings view: interface color, appearance, linked apps.</summary>
+    public InterfaceViewModel Interface => interfaceSettings ??= new(Theme.Current, this);
 
     /// <summary>The display list on the left serves the Displays and Advanced tabs.</summary>
     public bool ShowsMonitorList => tab is AppTab.Displays or AppTab.Advanced;
@@ -229,7 +270,16 @@ public sealed class MainViewModel : ObservableObject, IInputCoordinator
 
     private void ResetShortcutEditor()
     {
-        var editor = new ShortcutEditorViewModel(Settings, DisplayInputsForEditor(), SceneProfiles, IsShortcutFree);
+        // Only what concerns the display selected on the Displays view; the rest is kept and counts as taken.
+        var display = Selected ?? Monitors.FirstOrDefault(m => m.Inputs.Count > 0);
+        var displays = DisplayInputsForEditor().Where(d => display is null || d.Key == display.Key).ToArray();
+        var scenes = SceneProfiles.Where(s => display is null || s.AppliesTo(display.Device)).ToArray();
+        var reserved = new Dictionary<Core.Hotkeys.HotkeyChord, string>();
+        foreach (var input in Settings.InputShortcuts.Where(i => display is null || i.MonitorKey != display.Key))
+            reserved.TryAdd(input.Chord, DescribeInputShortcut(input));
+        foreach (var scene in SceneProfiles.Except(scenes))
+            if (scene.Hotkey is { } chord) reserved.TryAdd(chord, $"profile {scene.Name} (another display)");
+        var editor = new ShortcutEditorViewModel(Settings, displays, scenes, IsShortcutFree, reserved, display?.Name);
         editor.Saved += SaveShortcuts;
         editor.CloseRequested += () => { if (tab == AppTab.Shortcuts) ResetShortcutEditor(); };
         ShortcutEditor = editor;
@@ -240,8 +290,9 @@ public sealed class MainViewModel : ObservableObject, IInputCoordinator
         get => selected;
         set
         {
-            if (Set(ref selected, value) && value is not null)
-                _ = value.EnsureLoadedAsync();
+            if (!Set(ref selected, value)) return;
+            ShowProfilesForSelected();
+            if (value is not null) _ = value.EnsureLoadedAsync();
         }
     }
 
@@ -274,9 +325,14 @@ public sealed class MainViewModel : ObservableObject, IInputCoordinator
         log.Write(ok ? LogLevel.Info : LogLevel.Warning, message);
     }
 
+    /// <summary>Keys of the Next input shortcut ("Ctrl", "Alt", "M"), shown in the Input heading.</summary>
+    public IReadOnlyList<string> NextInputKeys =>
+        Settings.For(HotkeyAction.NextInput) is [var first, ..] ? first.ToString().Split('+') : ["not set"];
+
     public void UpdateSettings(AppSettings updated, bool shortcutsChanged)
     {
         Settings = updated;
+        Raise(nameof(NextInputKeys));
         try { updated.Save(); }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {
@@ -381,7 +437,15 @@ public sealed class MainViewModel : ObservableObject, IInputCoordinator
             Report($"Profiles (scenes.json): {error.Message}", false);
         }
         MarkActiveProfile();
+        ShowProfilesForSelected();
         ShortcutsChanged?.Invoke();
+    }
+
+    /// <summary>The profile row shows the profiles that apply to the selected display.</summary>
+    private void ShowProfilesForSelected()
+    {
+        foreach (var scene in Scenes)
+            scene.IsShown = scene.Scene is null || selected is null || scene.Scene.AppliesTo(selected.Device);
     }
 
     private void MarkActiveProfile()
