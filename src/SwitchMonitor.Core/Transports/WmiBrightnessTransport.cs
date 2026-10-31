@@ -154,10 +154,12 @@ internal sealed class WmiBrightnessTransport : IMonitorTransport
     {
         RequireBrightness(code);
         byte level = (byte)Math.Clamp(value, 0u, 100u);
+        // WMI takes any 0-100 value (the panel goes to its nearest level); the LCD IOCTL only takes one of the panel's levels.
+        byte lcdLevel = NearestLevel(level);
         // When only the LCD device could read the level, WMI is broken here: write the same way.
         if (readStrategy == LcdStrategy)
         {
-            LcdBrightness.Write(level);
+            LcdBrightness.Write(lcdLevel);
             return;
         }
         try
@@ -172,10 +174,22 @@ internal sealed class WmiBrightnessTransport : IMonitorTransport
         }
         catch (COMException error)
         {
-            try { LcdBrightness.Write(level); return; }
+            try { LcdBrightness.Write(lcdLevel); return; }
             catch (Win32Exception lcd) { throw new TransportException(Id, $"WMI brightness write failed ({Describe(error)}); LCD IOCTL: {lcd.Message}", error); }
         }
         throw new TransportException(Id, $"WMI no longer exposes brightness methods for {instanceName}.");
+    }
+
+    private byte NearestLevel(byte level)
+    {
+        if (BrightnessLevels is not { Count: > 0 } levels) return level;
+        uint best = levels[0];
+        foreach (uint candidate in levels)
+        {
+            long diff = Math.Abs((long)candidate - level), bestDiff = Math.Abs((long)best - level);
+            if (diff < bestDiff || (diff == bestDiff && candidate > best)) best = candidate;
+        }
+        return (byte)best;
     }
 
     public void Dispose() { }
@@ -196,6 +210,22 @@ internal sealed class WmiBrightnessTransport : IMonitorTransport
         }
         catch (COMException) { }   // No WMI brightness provider: desktops usually have none.
         return names;
+    }
+
+    /// <summary>Computer maker from root\cimv2 Win32_ComputerSystem (e.g. "Dell Inc."), or null.</summary>
+    internal static string? ComputerMaker()
+    {
+        try
+        {
+            foreach (object wmiObject in Query("SELECT Manufacturer FROM Win32_ComputerSystem", @"root\cimv2"))
+            {
+                dynamic item = wmiObject;
+                object maker = item.Manufacturer;
+                return maker as string;
+            }
+        }
+        catch (COMException) { }
+        return null;
     }
 
     /// <summary>Computer model from root\cimv2 Win32_ComputerSystem (e.g. "Inspiron N5050"), or null.</summary>

@@ -218,7 +218,9 @@ public sealed class SliderControlViewModel(MonitorViewModel owner, MonitorFeatur
         {
             if (levelsRead) return levels;
             levelsRead = true;
-            levels = Feature.Code == VcpCode.Brightness ? Owner.Device.BrightnessLevels : null;
+            // Laptop brightness moves 1 % at a time, like a monitor's (slider, wheel, + and -): the panel itself takes
+            // the nearest level it has. Panel levels are no longer used to snap the slider.
+            levels = null;
             return levels;
         }
     }

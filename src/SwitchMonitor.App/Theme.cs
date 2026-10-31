@@ -37,7 +37,8 @@ public static class Theme
         double s = Math.Min(saturation, 0.6) * 0.6;
         Color Tone(double lightness, byte alpha = 255) => WithAlpha(FromHsl(hue, s, lightness), alpha);
 
-        byte glass = look.Appearance == Appearance.Translucent ? (byte)0x8C : (byte)0xFF;
+        // Translucent: 60 % opaque (was 55 %), so what shows through is 5 % darker and text keeps more contrast.
+        byte glass = look.Appearance == Appearance.Translucent ? (byte)0x99 : (byte)0xFF;
         resources["WindowBrush"] = Freeze(new SolidColorBrush(Tone(0.08, glass)));
         resources["PopupBrush"] = Freeze(new SolidColorBrush(Tone(0.15)));
         if (look.Appearance == Appearance.Matte)
@@ -83,9 +84,11 @@ public static class Theme
     public const double TranslucentCornerRadius = CornerRadius;
 
     /// <summary>Turns Windows' acrylic blur behind the (see-through) window on or off; Windows adds no border or rounding.</summary>
-    public static void FitWindow(Window window, bool translucent)
+    public static void FitWindow(Window window, bool translucent) => FitWindow(new WindowInteropHelper(window).Handle, translucent);
+
+    /// <summary>The same for any window handle (a popup's, for example).</summary>
+    public static void FitWindow(IntPtr handle, bool translucent)
     {
-        var handle = new WindowInteropHelper(window).Handle;
         if (handle == IntPtr.Zero) return;
         // Translucent: Windows 11 rounds the window, so the blur behind it follows the rounded frame instead of filling the
         // square corners. Otherwise no rounding and no border from Windows: the frame is drawn by the app.
@@ -93,6 +96,14 @@ public static class Theme
         DwmSetWindowAttribute(handle, DwmBorderColor, ref none, sizeof(int));
         DwmSetWindowAttribute(handle, DwmCornerPreference, ref corners, sizeof(int));
         SetAccent(handle, translucent);
+    }
+
+    /// <summary>Turns off Windows' show and hide animation for a window that animates itself (the sun panel).</summary>
+    public static void NoShowAnimation(IntPtr handle)
+    {
+        if (handle == IntPtr.Zero) return;
+        int on = 1;
+        DwmSetWindowAttribute(handle, DwmTransitionsForceDisabled, ref on, sizeof(int));
     }
 
     /// <summary>Dark title bar for a normal window (dialogs such as the crop step).</summary>
@@ -213,6 +224,7 @@ public static class Theme
     }
 
     [DllImport("user32.dll")] private static extern int SetWindowCompositionAttribute(IntPtr window, ref CompositionAttributeData data);
+    private const int DwmTransitionsForceDisabled = 3;
     private const int DwmDarkMode = 20;
     private const int DwmCornerPreference = 33;
     private const int DwmBorderColor = 34;

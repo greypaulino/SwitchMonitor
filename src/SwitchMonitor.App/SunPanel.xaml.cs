@@ -1,0 +1,434 @@
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Input;
+using System.Windows.Media;
+using System.Windows.Media.Animation;
+using System.Windows.Threading;
+using SwitchMonitor.App.ViewModels;
+using SwitchMonitor.Core.Inputs;
+
+namespace SwitchMonitor.App;
+
+/// <summary>
+/// The sun panel (1.x "brillo"): opens above the notification area from the sun icon, closes when something else is
+/// clicked, with Esc, or after five seconds without the pointer on it. Keys work while it is open (see
+/// <see cref="SunPanelViewModel"/>): + and -, digits, Enter, Esc, * (held: link) and M (held: main display).
+/// </summary>
+public partial class SunPanel : Window
+{
+    private static readonly TimeSpan IdleClose = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan StarHold = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan MainHold = TimeSpan.FromSeconds(0.5);
+    private static readonly IEasingFunction Ease = new CubicEase { EasingMode = EasingMode.EaseOut };
+
+    private readonly DispatcherTimer idle = new() { Interval = IdleClose };
+    private readonly DispatcherTimer starTimer = new() { Interval = StarHold };
+    private readonly DispatcherTimer mainTimer = new() { Interval = MainHold };
+    private DateTime hiddenAt = DateTime.MinValue;
+    private DateTime stepDown;
+    private DateTime lastHoldStep;
+    private bool starHeld, mainHeld;
+
+    public SunPanel(SunPanelViewModel model)
+    {
+        InitializeComponent();
+        DataContext = model;
+        idle.Tick += (_, _) => { if (!IsMouseOver && !Model.IsTyping && !Model.IsModePending && !ModesPopup.IsMouseOver && !InputsPopup.IsMouseOver) HidePanel(); };
+        starTimer.Tick += (_, _) => { starTimer.Stop(); starHeld = true; Model.Linked = !Model.Linked; };
+        mainTimer.Tick += (_, _) => { mainTimer.Stop(); mainHeld = true; Model.SwitchMain(); Place(); };
+        Deactivated += (_, _) => HidePanel();
+        MouseEnter += (_, _) => idle.Stop();
+        MouseLeave += (_, _) => RestartIdle();
+        PreviewMouseDown += (_, _) => RestartIdle();
+        SizeChanged += (_, _) => { Place(); MoveHighlight(animate: false); };
+        PreviewKeyDown += OnKeyDown;
+        ModesPopup.CustomPopupPlacementCallback = PlaceModes;
+        ModesPopup.Opened += (_, _) => FitPopupLook(ModesCard);
+        InputsPopup.Opened += (_, _) => FitPopupLook(InputsCard);
+        InputsPopup.CustomPopupPlacementCallback = PlaceModes;   // beside the panel, like the picture modes
+        // Its list grows once it is shown: place it again so the bottoms stay lined up.
+        InputsPopup.Opened += (_, _) => Dispatcher.BeginInvoke(() => Reposition(InputsPopup), DispatcherPriority.Background);
+        ModesPopup.Opened += (_, _) => Dispatcher.BeginInvoke(() => Reposition(ModesPopup), DispatcherPriority.Background);
+        hoverTimer.Tick += (_, _) =>
+        {
+            hoverTimer.Stop();
+            if (hovered is { IsCustom: true, IsActive: true } && Model.ShowsModes && !ModesPopup.IsOpen) OpenModes();
+        };
+        // The window's look (Settings > Appearance) applies here too.
+        SourceInitialized += (_, _) => FitLook();
+        Theme.Changed += FitLook;
+        Closed += (_, _) => Theme.Changed -= FitLook;
+        Card.MouseMove += (_, e) => MovePointerLight(e.GetPosition(PointerLight));
+        Card.MouseLeave += (_, _) =>
+        {
+            lightShown = false;
+            PointerLight.BeginAnimation(OpacityProperty, new DoubleAnimation(0, TimeSpan.FromMilliseconds(250)));
+        };
+        model.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(SunPanelViewModel.ShowsModes) && !Model.ShowsModes) ModesPopup.IsOpen = false;
+        };
+        PreviewKeyUp += OnKeyUp;
+        model.SelectionMoved += () => Dispatcher.BeginInvoke(() => MoveHighlight(animate: true), DispatcherPriority.Loaded);
+    }
+
+    private SunPanelViewModel Model => (SunPanelViewModel)DataContext;
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(IntPtr window);
+
+    private bool closing;
+
+    /// <summary>Sun icon clicked: open, or close when open. A click that just closed it (by taking focus) does not reopen it.</summary>
+    public void Toggle()
+    {
+        if (IsVisible && !closing) { HidePanel(); return; }
+        if (DateTime.UtcNow - hiddenAt < TimeSpan.FromMilliseconds(350)) return;
+        Open();
+    }
+
+    /// <summary>
+    /// Opens the panel from a shortcut. <paramref name="activate"/> false (brightness keys) shows it without taking the
+    /// keyboard from the app in use; it then closes after the idle time. Already open: it just stays open longer.
+    /// </summary>
+    public void ShowPanel(bool activate = true)
+    {
+        if (IsVisible && !closing)
+        {
+            if (activate) Activate();
+            RestartIdle();
+            return;
+        }
+        Open(activate);
+    }
+
+    private void Open(bool activate = true)
+    {
+        closing = false;
+        // Laid out and placed while still invisible, so it never flashes where it was last (or at its default place)
+        // before moving above the tray: that was the "first try fails, then it comes out again" glitch.
+        BeginAnimation(OpacityProperty, null);
+        Opacity = 0;
+        Slide.BeginAnimation(System.Windows.Media.TranslateTransform.YProperty, null);
+        Slide.Y = 14;
+        ShowActivated = activate;
+        if (!IsVisible) Show();
+        UpdateLayout();
+        Place();
+        if (activate)
+        {
+            Activate();
+            // The tray click gives this app the right to take the foreground: take it, so the keys reach the panel.
+            SetForegroundWindow(new System.Windows.Interop.WindowInteropHelper(this).Handle);
+            Focus();
+        }
+        Slide.BeginAnimation(System.Windows.Media.TranslateTransform.YProperty,
+            new DoubleAnimation(14, 0, TimeSpan.FromMilliseconds(200)) { EasingFunction = Ease });
+        BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(170)));
+        RestartIdle();
+        _ = Model.RefreshAsync();
+        Dispatcher.BeginInvoke(() => MoveHighlight(animate: false), DispatcherPriority.Loaded);
+    }
+
+    /// <summary>Closes with a short slide down and fade, then hides.</summary>
+    public void HidePanel()
+    {
+        if (!IsVisible || closing) return;
+        closing = true;
+        ModesPopup.IsOpen = false;
+        InputsPopup.IsOpen = false;
+        hoverTimer.Stop();
+        idle.Stop();
+        starTimer.Stop();
+        mainTimer.Stop();
+        Model.Closed();
+        hiddenAt = DateTime.UtcNow;
+        var fade = new DoubleAnimation(Opacity, 0, TimeSpan.FromMilliseconds(150)) { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn } };
+        fade.Completed += (_, _) =>
+        {
+            if (!closing) return;   // opened again meanwhile
+            closing = false;
+            Hide();
+        };
+        Slide.BeginAnimation(System.Windows.Media.TranslateTransform.YProperty,
+            new DoubleAnimation(Slide.Y, 12, TimeSpan.FromMilliseconds(150)) { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn } });
+        BeginAnimation(OpacityProperty, fade);
+    }
+
+    private void RestartIdle()
+    {
+        idle.Stop();
+        idle.Start();
+    }
+
+    /// <summary>Bottom right of the work area, just above the taskbar (where the notification area usually is).</summary>
+    private void Place()
+    {
+        var area = SystemParameters.WorkArea;
+        double inset = Translucent ? 12 : 4;   // the card sits at the same spot with or without its transparent margin
+        Left = area.Right - ActualWidth - inset;
+        Top = area.Bottom - ActualHeight - inset;
+    }
+
+    // ---- Keys ----
+
+    private void OnKeyDown(object sender, KeyEventArgs e)
+    {
+        RestartIdle();
+        var key = e.Key == Key.System ? e.SystemKey : e.Key;
+        bool shift = Keyboard.Modifiers.HasFlag(ModifierKeys.Shift);
+        int? digit = key switch
+        {
+            >= Key.D0 and <= Key.D9 when !shift => key - Key.D0,
+            >= Key.NumPad0 and <= Key.NumPad9 => key - Key.NumPad0,
+            _ => null
+        };
+        int sign = key switch
+        {
+            Key.Add or Key.Up or Key.Right => 1,
+            Key.OemPlus => 1,
+            Key.Subtract or Key.OemMinus or Key.Down or Key.Left => -1,
+            _ => 0
+        };
+        bool star = key == Key.Multiply || (key == Key.D8 && shift);
+
+        if (star)
+        {
+            if (!e.IsRepeat) { starHeld = false; starTimer.Start(); }
+        }
+        else if (key == Key.M)
+        {
+            if (!e.IsRepeat) { mainHeld = false; mainTimer.Start(); }
+        }
+        else if (sign != 0)
+        {
+            var now = DateTime.UtcNow;
+            if (!e.IsRepeat)
+            {
+                stepDown = now;
+                lastHoldStep = now;
+                Model.Tap(sign);
+            }
+            else
+            {
+                var held = now - stepDown;
+                if (held >= BrightnessSteps.HoldFirst && now - lastHoldStep >= BrightnessSteps.HoldRepeat(held))
+                {
+                    lastHoldStep = now;
+                    Model.Hold(sign, held);
+                }
+            }
+        }
+        else if (digit is int d) Model.Digit(d);
+        else if (key == Key.Enter) Model.CommitTyped();
+        else if (key == Key.Escape)
+        {
+            if (!Model.CancelTyped()) HidePanel();
+        }
+        else return;
+        e.Handled = true;
+    }
+
+    private void OnKeyUp(object sender, KeyEventArgs e)
+    {
+        var key = e.Key == Key.System ? e.SystemKey : e.Key;
+        if (key == Key.Multiply || key == Key.D8)
+        {
+            bool wasTap = starTimer.IsEnabled && !starHeld;
+            starTimer.Stop();
+            if (wasTap) Model.SelectNext();   // * tapped: next display
+            e.Handled = true;
+        }
+        else if (key == Key.M)
+        {
+            mainTimer.Stop();   // a short tap does nothing (a held M moves the main display)
+            e.Handled = true;
+        }
+    }
+
+    // ---- Pointer ----
+
+    // ---- Profiles and the picture modes beside the panel ----
+
+    /// <summary>A profile icon: applies it; Custom clicked again while in use opens (or closes) the picture modes.</summary>
+    private void ProfileClick(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.DataContext is not SceneViewModel scene) return;
+        hoverTimer.Stop();
+        InputsPopup.IsOpen = false;
+        if (scene.IsCustom && scene.IsActive && Model.ShowsModes)
+        {
+            if (ModesPopup.IsOpen) ModesPopup.IsOpen = false;
+            else OpenModes();
+            return;
+        }
+        ModesPopup.IsOpen = false;
+        scene.ApplyCommand.Execute(null);
+    }
+
+    private void OpenModes()
+    {
+        InputsPopup.IsOpen = false;
+        ModesPopup.IsOpen = true;
+        ModesSlide.BeginAnimation(System.Windows.Media.TranslateTransform.XProperty,
+            new DoubleAnimation(16, 0, TimeSpan.FromMilliseconds(180)) { EasingFunction = Ease });
+        ModesCard.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(150)));
+        RestartIdle();
+    }
+
+    // Resting the pointer on Custom (while it is in use) for half a second also opens the picture modes.
+    private readonly DispatcherTimer hoverTimer = new() { Interval = TimeSpan.FromMilliseconds(500) };
+    private SceneViewModel? hovered;
+
+    private void ProfileEnter(object sender, MouseEventArgs e)
+    {
+        hovered = (sender as FrameworkElement)?.DataContext as SceneViewModel;
+        hoverTimer.Stop();
+        if (hovered?.IsCustom == true) hoverTimer.Start();
+    }
+
+    private void ProfileLeave(object sender, MouseEventArgs e)
+    {
+        hoverTimer.Stop();
+        hovered = null;
+    }
+
+    // ---- Inputs of a monitor ----
+
+    /// <summary>The inputs button of a row: opens that monitor's inputs under it (or closes them).</summary>
+    private void InputsClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { DataContext: SunRow { HasInputs: true } row }) return;
+        bool same = InputsPopup.IsOpen && ReferenceEquals(InputsPopup.DataContext, row);
+        InputsPopup.IsOpen = false;
+        if (same) return;
+        ModesPopup.IsOpen = false;
+        InputsPopup.DataContext = row;
+        InputsPopup.IsOpen = true;
+        InputsSlide.BeginAnimation(TranslateTransform.XProperty, new DoubleAnimation(16, 0, TimeSpan.FromMilliseconds(180)) { EasingFunction = Ease });
+        InputsCard.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(150)));
+        RestartIdle();
+        _ = row.Monitor.ReadInputAsync();   // the current input may have changed on the monitor itself
+    }
+
+    private static void Reposition(System.Windows.Controls.Primitives.Popup popup)
+    {
+        if (!popup.IsOpen) return;
+        double offset = popup.VerticalOffset;
+        popup.VerticalOffset = offset + 1;
+        popup.VerticalOffset = offset;
+    }
+
+    private void InputsClose(object sender, RoutedEventArgs e) => InputsPopup.IsOpen = false;
+
+    private void ModeClick(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.DataContext is ModeItem item) Model.PendingMode = item.Option;
+        RestartIdle();
+    }
+
+    private void ModesClose(object sender, RoutedEventArgs e) => ModesPopup.IsOpen = false;
+
+    private void ModesEnter(object sender, MouseEventArgs e) => idle.Stop();
+
+    private static bool Translucent => Theme.Current.Appearance == Core.Settings.Appearance.Translucent;
+
+    /// <summary>
+    /// Ground, edge and blur like the main window. Translucent: the card fills the whole window (no transparent margin),
+    /// because Windows blurs the full window rectangle.
+    /// </summary>
+    private void FitLook()
+    {
+        bool translucent = Translucent;
+        Card.Margin = new Thickness(translucent ? 0 : 8);
+        Width = translucent ? 384 : 400;
+        var edge = new System.Windows.Media.SolidColorBrush(translucent
+            ? System.Windows.Media.Color.FromArgb(0x48, 0xFF, 0xFF, 0xFF)
+            : System.Windows.Media.Color.FromArgb(0x30, 0xFF, 0xFF, 0xFF));
+        Card.BorderBrush = ModesCard.BorderBrush = InputsCard.BorderBrush = edge;
+        Theme.FitWindow(this, translucent);
+        // Windows' own fade when a window is shown, on top of the panel's: the panel seemed to come out twice.
+        Theme.NoShowAnimation(new System.Windows.Interop.WindowInteropHelper(this).Handle);
+        if (!Theme.Current.PointerLight)
+        {
+            lightShown = false;
+            PointerLight.BeginAnimation(OpacityProperty, null);
+            PointerLight.Opacity = 0;
+        }
+        if (IsVisible) Place();
+    }
+
+    private static void FitPopupLook(Visual card)
+    {
+        if (System.Windows.PresentationSource.FromVisual(card) is not System.Windows.Interop.HwndSource source) return;
+        Theme.FitWindow(source.Handle, Translucent);
+        Theme.NoShowAnimation(source.Handle);
+    }
+
+    private bool lightShown;
+
+    private void MovePointerLight(Point at)
+    {
+        if (!Theme.Current.PointerLight) return;
+        PointerLightBrush.Center = PointerLightBrush.GradientOrigin = at;
+        if (lightShown) return;
+        lightShown = true;
+        PointerLight.BeginAnimation(OpacityProperty, new DoubleAnimation(1, TimeSpan.FromMilliseconds(200)));
+    }
+
+    /// <summary>Left of the panel with a small gap, bottoms lined up (the panel sits above the taskbar). Sizes are in pixels.</summary>
+    private System.Windows.Controls.Primitives.CustomPopupPlacement[] PlaceModes(Size popup, Size target, Point offset)
+    {
+        double gap = 10 * VisualTreeHelper.GetDpi(this).DpiScaleX;
+        return [new(new Point(-popup.Width - gap, target.Height - popup.Height), System.Windows.Controls.Primitives.PopupPrimaryAxis.Horizontal)];
+    }
+
+    private void RowHover(object sender, MouseEventArgs e)
+    {
+        if (sender is FrameworkElement { Tag: SunRow row }) Model.Select(row);
+    }
+
+    private void RowClick(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is FrameworkElement { Tag: SunRow row }) Model.Select(row);
+    }
+
+    private void RowWheel(object sender, MouseWheelEventArgs e)
+    {
+        if (sender is FrameworkElement { Tag: SunRow row } && row.IsReady)
+        {
+            Model.Select(row);
+            row.MoveTo(row.Percent + Notches(e));
+            RestartIdle();
+            e.Handled = true;
+        }
+    }
+
+    private void LinkedWheel(object sender, MouseWheelEventArgs e)
+    {
+        if (Model.LeadRow is { IsReady: true } row) row.MoveTo(row.Percent + Notches(e));
+        RestartIdle();
+        e.Handled = true;
+    }
+
+    private static int Notches(MouseWheelEventArgs e) => Math.Sign(e.Delta) * Math.Max(1, Math.Abs(e.Delta) / 120);
+
+    // ---- Highlight ----
+
+    /// <summary>Glides the rounded highlight to the selected row (hidden while linked: one box stands for all).</summary>
+    private void MoveHighlight(bool animate)
+    {
+        if (Model.Linked || Model.Selected is not { } row
+            || RowList.ItemContainerGenerator.ContainerFromItem(row) is not FrameworkElement box || box.ActualHeight <= 0)
+        {
+            Highlight.BeginAnimation(OpacityProperty, new DoubleAnimation(0, TimeSpan.FromMilliseconds(120)));
+            return;
+        }
+        double top = box.TranslatePoint(new Point(0, 0), Rows).Y;
+        var time = TimeSpan.FromMilliseconds(animate && Highlight.Opacity > 0 ? 200 : 0);
+        HighlightShift.BeginAnimation(System.Windows.Media.TranslateTransform.YProperty,
+            new DoubleAnimation(top, time) { EasingFunction = Ease });
+        Highlight.BeginAnimation(HeightProperty, new DoubleAnimation(box.ActualHeight, time) { EasingFunction = Ease });
+        Highlight.BeginAnimation(OpacityProperty, new DoubleAnimation(1, TimeSpan.FromMilliseconds(120)));
+    }
+}

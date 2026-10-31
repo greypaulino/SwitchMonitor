@@ -41,7 +41,13 @@ public sealed class SceneViewModel : ObservableObject
     public string Glyph => Icons.ForProfile(Name, Scene?.Icon);
     /// <summary>The profile's icon as drawn (its style's font and weight).</summary>
     public Icons.Mark Mark => Icons.ProfileMark(Name, Scene?.Icon);
-    public void RefreshMark() => Raise(nameof(Mark));
+    /// <summary>The same icon, solid (the brightness panel's small badges).</summary>
+    public Icons.Mark SolidMark => Icons.SolidProfileMark(Name, Scene?.Icon);
+    public void RefreshMark()
+    {
+        Raise(nameof(Mark));
+        Raise(nameof(SolidMark));
+    }
 
     private bool isShown = true;
     /// <summary>The profile applies to the display selected (Custom always does).</summary>

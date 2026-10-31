@@ -62,6 +62,9 @@ public sealed class MonitorDevice : IDisposable
     public MonitorQuirk? Quirk { get; }
     public string Key => Identity.Key;
     public string Name => Quirk?.Name ?? Identity.FriendlyName;
+
+    /// <summary>Model from the capabilities string, when it has already been read (never reads it).</summary>
+    public string? CachedModel => capabilities?.Model;
     public string TransportId => transport.Id;
     /// <summary>False when Windows is not currently using this display (for example a closed laptop lid).</summary>
     public bool IsActive => Identity.IsActive;
@@ -525,7 +528,11 @@ public sealed class MonitorDevice : IDisposable
 /// <param name="IsActive">Whether Windows currently outputs to this display; inactive ones are listed but not controlled.</param>
 public sealed record MonitorIdentity(
     string Key, string FriendlyName, string DeviceId, string GdiName, string? PnpId, bool IsPrimary, bool IsBuiltIn,
-    bool IsActive = true);
+    bool IsActive = true)
+{
+    /// <summary>Short name for the interface when known at discovery (built-in screens: "Laptop DELL N5050").</summary>
+    public string? Label { get; init; }
+}
 
 /// <summary>Placeholder for displays that Windows lists but that no transport can control.</summary>
 internal sealed class UnavailableTransport : IMonitorTransport

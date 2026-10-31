@@ -302,7 +302,7 @@ public sealed class ProfileEditorViewModel : ObservableObject
         ImportIconCommand = new RelayCommand(ImportIcon);
 
         NewProfileCommand = new RelayCommand(() => _ = StartDraftAsync(null));
-        AddTemplateCommand = new RelayCommand(name => _ = StartDraftAsync(name as string));
+        AddTemplateCommand = new RelayCommand(name => AddTemplate(name as string));
         CaptureCommand = new RelayCommand(_ => Capture(), _ => Source is not null);
         TryCommand = new RelayCommand(_ => _ = TryAsync(), _ => Source is not null && !isCustom);
         SaveCommand = new RelayCommand(_ => { if (isCustom) _ = ApplyCustomAsync(); else Save(); },
@@ -583,7 +583,7 @@ public sealed class ProfileEditorViewModel : ObservableObject
         dirty = false;
         confirmingDelete = false;
         RaiseHeader();
-        Inform(Source is null ? "" : $"Settings this profile did not have yet show what {Source.Name} has now; Save keeps them all.");
+        Inform(Source is null ? "Saved." : $"Saved. Settings this profile does not set show what {Source.Name} has now (Save would add them to it).");
     }
 
     private void RaiseHeader()
@@ -695,7 +695,7 @@ public sealed class ProfileEditorViewModel : ObservableObject
         Inform($"Current values of {Source.Name} copied. Save to keep them.");
     }
 
-    private string? Filter => OnlyThisDisplay ? monitorFilter ?? Source?.Name : null;
+    private string? Filter => OnlyThisDisplay ? monitorFilter ?? Source?.Device.Name : null;
 
     private List<KeyValuePair<string, JsonNode>> Lines()
     {
@@ -1123,6 +1123,30 @@ public sealed class ProfileEditorViewModel : ObservableObject
             string saved = Name.Trim();
             main.Report($"Profile \"{saved}\" saved.", true);
             main.ProfilesChanged(saved);
+        }
+        catch (Exception error) when (error is FormatException or System.Text.Json.JsonException or IOException or UnauthorizedAccessException)
+        {
+            Inform(error.Message, true);
+        }
+    }
+
+    /// <summary>
+    /// A template is a finished profile: it is saved at once with its own lines and color (as "Night 2" when "Night"
+    /// exists) and opened in the editor, where it can still be changed.
+    /// </summary>
+    private void AddTemplate(string? templateName)
+    {
+        if (templateName is null || SceneTemplates.Find(templateName) is not { } template) { _ = StartDraftAsync(null); return; }
+        try
+        {
+            string name = UniqueName(template.Name);
+            var lines = SceneTemplates.RawSettings(template.Name)
+                .Where(p => p.Value is not null)
+                .Select(p => new KeyValuePair<string, System.Text.Json.Nodes.JsonNode>(p.Key, p.Value!.DeepClone()))
+                .ToArray();
+            SceneStore.Write(SceneStore.Upsert(SceneStore.ReadText(), null, name, null, lines, color: template.Color));
+            main.Report($"Profile \"{name}\" added from the {template.Name} template.", true);
+            main.ProfilesChanged(name);
         }
         catch (Exception error) when (error is FormatException or System.Text.Json.JsonException or IOException or UnauthorizedAccessException)
         {

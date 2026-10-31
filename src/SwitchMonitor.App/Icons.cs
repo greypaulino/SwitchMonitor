@@ -353,6 +353,16 @@ public static class Icons
         return Restyle(glyph, PanelStyle) ?? new Mark(glyph, LineFont, FontWeights.Normal);
     }
 
+    /// <summary>The profile's icon in the solid (Fill) style, whatever style it chose: small badges read better filled.</summary>
+    public static Mark SolidProfileMark(string name, string? icon)
+    {
+        if (icon is not null && icon.StartsWith("icon:", StringComparison.Ordinal) && icon.Split(':') is [_, _, var id] &&
+            LibraryMark("fill", id) is { } chosen)
+            return chosen;
+        string glyph = ForProfile(name, icon);
+        return Restyle(glyph, "fill") ?? new Mark(glyph, LineFont, FontWeights.Normal);
+    }
+
     /// <summary>Icon of a profile: the glyph it chose ("glyph:E7FC"), or the usual one of its name.</summary>
     public static string ForProfile(string name, string? icon) =>
         icon is { Length: 10 } && icon.StartsWith("glyph:", StringComparison.Ordinal) &&

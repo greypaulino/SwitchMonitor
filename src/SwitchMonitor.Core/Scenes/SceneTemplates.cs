@@ -1,8 +1,8 @@
 namespace SwitchMonitor.Core.Scenes;
 
 /// <summary>
-/// Ready-made starting points offered by "Add profile" (never created on their own). Each one becomes a new, unsaved
-/// profile: the template's lines replace the display's current values, everything else starts as the display has it.
+/// Ready-made profiles offered by "Add profile" (never created on their own). Picking one saves it at once with the
+/// template's own lines (brightness 80 and contrast 50 in every template, by choice); it can be changed afterwards.
 /// Lines a display lacks, or values it does not offer, are skipped when the profile is applied; a list is tried in order
 /// (LG picture-mode names first, then the standard MCCS ones).
 ///
@@ -26,12 +26,12 @@ public static class SceneTemplates
         {
           "version": 4,
           "scenes": [
-            { "name": "Work",    "color": "#4C8DFF", "settings": { "picture mode": ["Custom", "Standard"], "brightness": 50, "contrast": 70,
+            { "name": "Work",    "color": "#4C8DFF", "settings": { "picture mode": ["Custom", "Standard"], "brightness": 80, "contrast": 50,
                                                "color preset": "6500 K", "sharpness": 50 } },
-            { "name": "Night",   "color": "#8B7CF6", "settings": { "picture mode": ["Reader"], "brightness": 20, "color preset": "5000 K" } },
-            { "name": "Game",    "color": "#FF6B6B", "settings": { "picture mode": ["Custom (Game)", "Games"], "brightness": 80,
+            { "name": "Night",   "color": "#8B7CF6", "settings": { "picture mode": ["Reader"], "brightness": 80, "contrast": 50, "color preset": "5000 K" } },
+            { "name": "Game",    "color": "#FF6B6B", "settings": { "picture mode": ["Custom (Game)", "Games"], "brightness": 80, "contrast": 50,
                                                "response time": "Fast", "FreeSync": "On" } },
-            { "name": "Theater", "color": "#F5B544", "settings": { "picture mode": ["Cinema", "Movie"], "brightness": 40, "color preset": "6500 K" } }
+            { "name": "Theater", "color": "#F5B544", "settings": { "picture mode": ["Cinema", "Movie"], "brightness": 80, "contrast": 50, "color preset": "6500 K" } }
           ]
         }
         """;
