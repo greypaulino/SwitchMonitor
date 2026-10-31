@@ -46,7 +46,10 @@ public partial class MainWindow : Window
     {
         bool maximized = WindowState == WindowState.Maximized;
         bool translucent = Theme.Current.Appearance == Core.Settings.Appearance.Translucent;
-        Frame.Margin = new Thickness(0);   // a see-through window maximizes to the work area exactly
+        // Maximized, Windows may place the window a few pixels past the screen edges (its resize border): the part of
+        // the header under the pointer was then not where it was drawn, and the header buttons ignored clicks. Pull the
+        // frame back inside the monitor's work area by exactly that overhang.
+        Frame.Margin = maximized ? MaximizedInset() : new Thickness(0);
         double radius = maximized ? 0 : translucent ? Theme.TranslucentCornerRadius : Theme.CornerRadius;
         Chrome.CornerRadius = new CornerRadius(radius);
         Chrome.BorderThickness = new Thickness(maximized ? 0 : 1);
@@ -57,6 +60,34 @@ public partial class MainWindow : Window
         MaximizeButton.Content = maximized ? "\uE923" : "\uE922";
         MaximizeButton.ToolTip = maximized ? "Restore" : "Maximize";
     }
+
+    /// <summary>How far the maximized window reaches past its monitor's work area on each side, in this window's units.</summary>
+    private Thickness MaximizedInset()
+    {
+        var handle = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+        if (handle == IntPtr.Zero || !GetWindowRect(handle, out var window)) return new Thickness(0);
+        var info = new MonitorInfo { Size = System.Runtime.InteropServices.Marshal.SizeOf<MonitorInfo>() };
+        if (!GetMonitorInfo(MonitorFromWindow(handle, 2), ref info)) return new Thickness(0);
+        var scale = PresentationSource.FromVisual(this)?.CompositionTarget?.TransformToDevice ?? System.Windows.Media.Matrix.Identity;
+        return new Thickness(
+            Math.Max(0, info.Work.Left - window.Left) / scale.M11, Math.Max(0, info.Work.Top - window.Top) / scale.M22,
+            Math.Max(0, window.Right - info.Work.Right) / scale.M11, Math.Max(0, window.Bottom - info.Work.Bottom) / scale.M22);
+    }
+
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+    private struct NativeRect { public int Left, Top, Right, Bottom; }
+
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+    private struct MonitorInfo { public int Size; public NativeRect Monitor; public NativeRect Work; public uint Flags; }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool GetWindowRect(IntPtr window, out NativeRect rect);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern IntPtr MonitorFromWindow(IntPtr window, uint flags);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool GetMonitorInfo(IntPtr monitor, ref MonitorInfo info);
 
     [System.Runtime.InteropServices.DllImport("dwmapi.dll")]
     private static extern int DwmSetWindowAttribute(IntPtr window, int attribute, ref int value, int size);
@@ -91,6 +122,46 @@ public partial class MainWindow : Window
         new(value, TimeSpan.FromMilliseconds(Animate ? milliseconds : 0)) { EasingFunction = EaseOut };
 
     private bool navPlaced;
+    private int lastViewOrder;
+
+    /// <summary>Holds <paramref name="from"/> until <paramref name="delay"/>, then eases to <paramref name="to"/>.</summary>
+    private static System.Windows.Media.Animation.DoubleAnimationUsingKeyFrames Delayed(double from, double to, TimeSpan delay, int milliseconds)
+    {
+        var frames = new System.Windows.Media.Animation.DoubleAnimationUsingKeyFrames();
+        frames.KeyFrames.Add(new System.Windows.Media.Animation.DiscreteDoubleKeyFrame(from, System.Windows.Media.Animation.KeyTime.FromTimeSpan(TimeSpan.Zero)));
+        frames.KeyFrames.Add(new System.Windows.Media.Animation.DiscreteDoubleKeyFrame(from, System.Windows.Media.Animation.KeyTime.FromTimeSpan(delay)));
+        frames.KeyFrames.Add(new System.Windows.Media.Animation.EasingDoubleKeyFrame(to,
+            System.Windows.Media.Animation.KeyTime.FromTimeSpan(delay + TimeSpan.FromMilliseconds(milliseconds)), EaseOut));
+        return frames;
+    }
+
+    /// <summary>The cards of a view that just appeared rise into place one after another (the first eight).</summary>
+    private void StaggerCards(FrameworkElement view)
+    {
+        if (!Animate) return;
+        var cardStyle = TryFindResource("Card") as Style;
+        var found = new List<System.Windows.Controls.Border>();
+        void Walk(DependencyObject parent)
+        {
+            for (int i = 0; i < System.Windows.Media.VisualTreeHelper.GetChildrenCount(parent) && found.Count < 8; i++)
+            {
+                var child = System.Windows.Media.VisualTreeHelper.GetChild(parent, i);
+                if (child is UIElement { IsVisible: false }) continue;
+                if (child is System.Windows.Controls.Border border && border.Style == cardStyle) { found.Add(border); continue; }
+                Walk(child);
+            }
+        }
+        Walk(view);
+        for (int i = 0; i < found.Count; i++)
+        {
+            var card = found[i];
+            var start = TimeSpan.FromMilliseconds(40 * i);
+            if (card.RenderTransform is not System.Windows.Media.TranslateTransform move || move.IsFrozen)
+                card.RenderTransform = move = new System.Windows.Media.TranslateTransform();
+            card.BeginAnimation(OpacityProperty, Delayed(0, 1, start, 220));
+            move.BeginAnimation(System.Windows.Media.TranslateTransform.YProperty, Delayed(12, 0, start, 260));
+        }
+    }
 
     private void SetUpMotion()
     {
@@ -103,17 +174,26 @@ public partial class MainWindow : Window
         NavTabs.SizeChanged += (_, _) => PlaceNavIndicator(animate: navPlaced);
         NavTabs.Loaded += (_, _) => PlaceNavIndicator(animate: false);
 
-        foreach (var view in new FrameworkElement[] { DisplaysView, ProfilesView, ShortcutsView, SettingsView, LearnView })
+        // Views slide in from the side of the tab that was chosen (left or right of the previous one), and their cards
+        // follow one after another; the gear and the wizard come up from below.
+        var views = new FrameworkElement[] { DisplaysView, ProfilesView, ShortcutsView, SettingsView, LearnView };
+        foreach (var view in views)
         {
             var shift = new System.Windows.Media.TranslateTransform();
             view.RenderTransform = shift;
             view.IsVisibleChanged += (_, e) =>
             {
                 if (e.NewValue is not true || !Animate) return;
-                // Settles in: a short fade with a few pixels of rise.
-                view.BeginAnimation(OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(180)) { EasingFunction = EaseOut });
+                int order = Array.IndexOf(views, view);
+                int direction = Math.Sign(order - lastViewOrder);
+                lastViewOrder = order;
+                bool sideways = order <= 2 && direction != 0;
+                view.BeginAnimation(OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(200)) { EasingFunction = EaseOut });
+                shift.BeginAnimation(System.Windows.Media.TranslateTransform.XProperty,
+                    new System.Windows.Media.Animation.DoubleAnimation(sideways ? 28 * direction : 0, 0, TimeSpan.FromMilliseconds(260)) { EasingFunction = EaseOut });
                 shift.BeginAnimation(System.Windows.Media.TranslateTransform.YProperty,
-                    new System.Windows.Media.Animation.DoubleAnimation(8, 0, TimeSpan.FromMilliseconds(220)) { EasingFunction = EaseOut });
+                    new System.Windows.Media.Animation.DoubleAnimation(sideways ? 0 : 10, 0, TimeSpan.FromMilliseconds(240)) { EasingFunction = EaseOut });
+                Dispatcher.BeginInvoke(() => StaggerCards(view), System.Windows.Threading.DispatcherPriority.Loaded);
             };
         }
 
@@ -127,54 +207,13 @@ public partial class MainWindow : Window
     private DateTime cardsReadAt = DateTime.MinValue;
 
     /// <summary>
-    /// Moves the light: the ground around the pointer gets a soft glow except where cards are (the clip cuts them out),
-    /// and the edges of the nearby cards catch a thin ring of it.
+    /// Moves the light. It sits under everything (window ground and card backgrounds, which are see-through), so it only
+    /// brightens backgrounds: never text, icons or controls drawn on top.
     /// </summary>
     private void MovePointerLight(Point at)
     {
         if (!Theme.Current.PointerLight) return;
         PointerLightBrush.Center = PointerLightBrush.GradientOrigin = at;
-        EdgeLightBrush.Center = EdgeLightBrush.GradientOrigin = at;
-
-        // The cards on screen change with the view, scrolling and folding: read them again now and then.
-        if ((DateTime.UtcNow - cardsReadAt).TotalMilliseconds > 400)
-        {
-            cards.Clear();
-            var cardStyle = TryFindResource("Card") as Style;
-            Collect(Chrome, cardStyle);
-            cardsReadAt = DateTime.UtcNow;
-        }
-
-        var holes = new System.Windows.Media.GeometryGroup { FillRule = System.Windows.Media.FillRule.Nonzero };
-        var rings = new System.Windows.Media.GeometryGroup { FillRule = System.Windows.Media.FillRule.Nonzero };
-        double reach = PointerLightBrush.RadiusX + 30;
-        foreach (var card in cards)
-        {
-            if (!card.IsVisible || card.ActualWidth < 1) continue;
-            Rect bounds;
-            try { bounds = card.TransformToAncestor(PointerLight).TransformBounds(new Rect(card.RenderSize)); }
-            catch (InvalidOperationException) { continue; }
-            // Only the part inside its scrolling area is on screen.
-            if (FindScroller(card) is { } scroller)
-            {
-                var view = scroller.TransformToAncestor(PointerLight).TransformBounds(new Rect(scroller.RenderSize));
-                bounds.Intersect(view);
-                if (bounds.IsEmpty) continue;
-            }
-            if (Distance(at, bounds) > reach) continue;
-            double radius = card.CornerRadius.TopLeft;
-            holes.Children.Add(new System.Windows.Media.RectangleGeometry(bounds, radius, radius));
-            var inner = bounds;
-            inner.Inflate(-1.2, -1.2);
-            if (inner.Width > 0 && inner.Height > 0)
-                rings.Children.Add(new System.Windows.Media.CombinedGeometry(System.Windows.Media.GeometryCombineMode.Exclude,
-                    new System.Windows.Media.RectangleGeometry(bounds, radius, radius),
-                    new System.Windows.Media.RectangleGeometry(inner, Math.Max(0, radius - 1.2), Math.Max(0, radius - 1.2))));
-        }
-        var all = new System.Windows.Media.RectangleGeometry(new Rect(PointerLight.RenderSize));
-        PointerLight.Clip = holes.Children.Count == 0 ? null
-            : new System.Windows.Media.CombinedGeometry(System.Windows.Media.GeometryCombineMode.Exclude, all, holes);
-        EdgeLight.Data = rings;
         if (!pointerLightShown) ShowPointerLight(true);
     }
 
@@ -210,7 +249,6 @@ public partial class MainWindow : Window
         pointerLightShown = show && Theme.Current.PointerLight;
         var fade = To(pointerLightShown ? 1 : 0, pointerLightShown ? 240 : 400);
         PointerLight.BeginAnimation(OpacityProperty, fade);
-        EdgeLight.BeginAnimation(OpacityProperty, fade);
     }
 
     private void FitPointerLight()

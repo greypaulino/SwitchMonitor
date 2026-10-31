@@ -21,7 +21,7 @@ public static class HotkeyAction
     {
         BrightnessUp => "Brightness up",
         BrightnessDown => "Brightness down",
-        NextMonitor => "Next display (brightness)",
+        NextMonitor => "Next display (hold 1.5 s: brightness panel)",
         NextInput => "Next input",
         OpenWindow => "Open window",
         CustomProfile => "Custom",
@@ -73,6 +73,9 @@ public sealed record AppSettings
 
     /// <summary>Shows the Advanced tab (red/green/blue, black levels) and the advanced rows of the profile editor.</summary>
     public bool ShowAdvanced { get; init; }
+
+    /// <summary>Sun panel: moving one display's brightness moves the others to the same level (1.x chain button).</summary>
+    public bool LinkBrightness { get; init; }
 
     public IReadOnlyList<HotkeyChord> For(string action) =>
         Hotkeys.TryGetValue(action, out var chords) ? chords : [];
@@ -161,7 +164,8 @@ public sealed record AppSettings
             CycleInputs = cycle,
             BrightnessStep = step,
             StartMinimized = root.TryGetProperty("startMinimized", out var min) && min.ValueKind == JsonValueKind.True,
-            ShowAdvanced = root.TryGetProperty("showAdvanced", out var adv) && adv.ValueKind == JsonValueKind.True
+            ShowAdvanced = root.TryGetProperty("showAdvanced", out var adv) && adv.ValueKind == JsonValueKind.True,
+            LinkBrightness = root.TryGetProperty("linkBrightness", out var link) && link.ValueKind == JsonValueKind.True
         };
     }
 
@@ -209,7 +213,8 @@ public sealed record AppSettings
             ["cycleInputs"] = cycle,
             ["brightnessStep"] = BrightnessStep,
             ["startMinimized"] = StartMinimized,
-            ["showAdvanced"] = ShowAdvanced
+            ["showAdvanced"] = ShowAdvanced,
+            ["linkBrightness"] = LinkBrightness
         };
         return root.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
     }

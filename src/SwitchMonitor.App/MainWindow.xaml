@@ -268,13 +268,13 @@
         </Grid.RowDefinitions>
         <!-- Soft light behind the glass, top left -->
         <Rectangle Grid.RowSpan="5" Fill="{DynamicResource GlowBrush}" IsHitTestVisible="False" RadiusX="8" RadiusY="8" />
-        <!-- A soft point of light that follows the pointer over the ground only: cut out where cards are (PointerLight's
-             clip), so it never shines inside them; their edges catch it instead (EdgeLight, above the content). -->
+        <!-- A soft point of light that follows the pointer, under everything: it brightens the window ground and the
+             see-through card backgrounds, never the text or controls on top of them -->
         <Rectangle x:Name="PointerLight" Grid.RowSpan="5" IsHitTestVisible="False" Opacity="0">
             <Rectangle.Fill>
                 <RadialGradientBrush x:Name="PointerLightBrush" MappingMode="Absolute" RadiusX="150" RadiusY="150" Center="0,0" GradientOrigin="0,0">
-                    <GradientStop Color="#0FFFFFFF" Offset="0" />
-                    <GradientStop Color="#06FFFFFF" Offset="0.5" />
+                    <GradientStop Color="#14FFFFFF" Offset="0" />
+                    <GradientStop Color="#08FFFFFF" Offset="0.5" />
                     <GradientStop Color="#00FFFFFF" Offset="1" />
                 </RadialGradientBrush>
             </Rectangle.Fill>
@@ -2040,15 +2040,6 @@
                 </TextBlock>
             </StackPanel>
         </Border>
-        <!-- Edges of the cards near the pointer catch a little of its light (drawn over everything, rings only) -->
-        <Path x:Name="EdgeLight" Grid.RowSpan="5" IsHitTestVisible="False" Opacity="0">
-            <Path.Fill>
-                <RadialGradientBrush x:Name="EdgeLightBrush" MappingMode="Absolute" RadiusX="120" RadiusY="120" Center="0,0" GradientOrigin="0,0">
-                    <GradientStop Color="#55FFFFFF" Offset="0" />
-                    <GradientStop Color="#00FFFFFF" Offset="1" />
-                </RadialGradientBrush>
-            </Path.Fill>
-        </Path>
     </Grid>
     </Border>
     </Grid>

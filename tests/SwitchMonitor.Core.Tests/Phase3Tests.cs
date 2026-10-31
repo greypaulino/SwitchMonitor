@@ -659,11 +659,12 @@ internal static class SceneHotkeyTests
         var work = SceneTemplates.Find("work")!;
         Assert.Equal<uint?>(0x0B, work.Settings[0].Value, "LG Custom first");
         Assert.Equal("Standard", work.Settings[0].Alternatives[0].Feature.DescribeValue(work.Settings[0].Alternatives[0].Value!.Value));
-        Assert.Equal(50.0, work.Settings[1].Percent);
+        Assert.Equal(80.0, work.Settings[1].Percent);
+        Assert.True(SceneTemplates.All.All(t => t.Settings.Any(x => x.Feature.Name == "Brightness" && x.Percent == 80) && t.Settings.Any(x => x.Feature.Name == "Contrast" && x.Percent == 50)), "every template: brightness 80, contrast 50");
         Assert.Equal<uint?>(0x05, work.Settings[3].Value, "6500 K");
         var game = SceneTemplates.Find("Game")!;
-        Assert.Sequence(["Picture mode", "Brightness", "Response time", "FreeSync"], game.Settings.Select(s => s.Feature.Name));
-        Assert.Equal<uint?>(0x02, game.Settings[2].Value, "Fast, the middle overdrive step");
+        Assert.Sequence(["Picture mode", "Brightness", "Contrast", "Response time", "FreeSync"], game.Settings.Select(s => s.Feature.Name));
+        Assert.Equal<uint?>(0x02, game.Settings[3].Value, "Fast, the middle overdrive step");
         Assert.Equal<uint?>(0x30, SceneTemplates.Find("Theater")!.Settings[0].Value, "LG Cinema");
         Assert.Equal(2, SceneTemplates.RawSettings("Theater")[0].Value!.AsArray().Count, "lists kept as written");
     }
@@ -738,7 +739,7 @@ internal static class SceneHotkeyTests
         using var lg = new MonitorDevice(TestMonitors.Identity(lgId), fake, QuirkDatabase.LoadEmbedded().Match(lgId), null, new RecordingDelay());
         var steps = SceneApplier.Apply(SceneTemplates.Find("Night")!, [lg], delay: new RecordingDelay());
         Assert.Equal(0x01u, fake.Values[0x15].Current, "Reader");
-        Assert.Equal(20u, fake.Values[0x10].Current);
+        Assert.Equal(80u, fake.Values[0x10].Current);
         Assert.True(fake.Writes.All(w => w.Code != 0x14), "5000 K does not exist on the LG, so 0x14 is left alone");
         Assert.True(steps.All(s => s.Status is not SceneStepStatus.Failed), "nothing fails");
     }

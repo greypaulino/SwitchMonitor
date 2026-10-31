@@ -31,7 +31,8 @@ public sealed class MonitorViewModel : ObservableObject
     public int? CurrentInput => Inputs.FirstOrDefault(i => i.IsCurrent)?.Code;
 
     public MonitorDevice Device { get; }
-    public string Name => Device.Name;
+    /// <summary>Type, brand and model ("Monitor LG 29WK600", "Laptop DELL N5050").</summary>
+    public string Name => DisplayNames.For(Device);
     public bool IsActive => Device.IsActive;
     public bool IsControllable => Device.IsControllable;
 
@@ -106,6 +107,19 @@ public sealed class MonitorViewModel : ObservableObject
     }
 
     private async Task LoadAsync()
+    {
+        IsLoading = true;
+        try
+        {
+            await LoadControlsAsync();
+        }
+        finally
+        {
+            Raise(nameof(Name));   // the model is known once the capabilities have been read
+        }
+    }
+
+    private async Task LoadControlsAsync()
     {
         IsLoading = true;
         try
@@ -427,7 +441,7 @@ public sealed class MonitorViewModel : ObservableObject
     public void ShowApplied(IEnumerable<Core.Scenes.SceneStep> steps)
     {
         bool modeChanged = false;
-        foreach (var step in steps.Where(s => s.Monitor == Name))
+        foreach (var step in steps.Where(s => s.Monitor == Device.Name))   // steps carry the device name, not the shown one
         {
             if (step.Status is not (Core.Scenes.SceneStepStatus.Applied or Core.Scenes.SceneStepStatus.AlreadySet
                 or Core.Scenes.SceneStepStatus.Unconfirmed)) continue;

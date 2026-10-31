@@ -19,6 +19,8 @@ public partial class App : Application
     private MainViewModel? model;
     private MainWindow? window;
     private TrayIcon? tray;
+    private SunTrayIcon? sunTray;
+    private SunPanel? sunPanel;
     private HotkeyService? hotkeys;
     private bool shortcutsPaused;
     private bool exiting;
@@ -91,6 +93,12 @@ public partial class App : Application
             model.IsDisplaysTab = true;   // leaving the Shortcuts tab resumes global shortcuts
             window.Hide();
         };
+
+        // The sun (1.x "brillo"): always in the notification area, also in demo mode (it only changes demo displays there).
+        var sunModel = new ViewModels.SunPanelViewModel(model);
+        sunModel.OpenWindowRequested += () => { sunPanel?.HidePanel(); ShowWindow(); };
+        sunPanel = new SunPanel(sunModel);
+        sunTray = new SunTrayIcon(() => sunPanel.Toggle(), ShowWindow, ExitApp);
 
         if (demoScenario is not null)
         {
@@ -172,12 +180,22 @@ public partial class App : Application
             if (!hotkeys.Register(chord, press, hold)) failed.Add($"{chord} ({owner})");
         }
 
+        // Brightness keys also bring up the panel (without taking the keyboard), so the new level can be seen.
         foreach (var chord in settings.For(HotkeyAction.BrightnessUp))
-            Add("brightness up", chord, () => model.StepBrightness(+1), held => model.HoldBrightness(+1, held));
+            Add("brightness up", chord, () => { model.StepBrightness(+1); sunPanel?.ShowPanel(activate: false); },
+                held => { model.HoldBrightness(+1, held); sunPanel?.ShowPanel(activate: false); });
         foreach (var chord in settings.For(HotkeyAction.BrightnessDown))
-            Add("brightness down", chord, () => model.StepBrightness(-1), held => model.HoldBrightness(-1, held));
+            Add("brightness down", chord, () => { model.StepBrightness(-1); sunPanel?.ShowPanel(activate: false); },
+                held => { model.HoldBrightness(-1, held); sunPanel?.ShowPanel(activate: false); });
+        // Tap: next display. Held 1.5 s: the brightness panel opens (once per hold).
+        bool panelShown = false;
         foreach (var chord in settings.For(HotkeyAction.NextMonitor))
-            Add("next display", chord, model.NextBrightnessTarget);
+            Add("next display", chord, () => { panelShown = false; model.NextBrightnessTarget(); }, held =>
+            {
+                if (panelShown || held < TimeSpan.FromSeconds(1.5)) return;
+                panelShown = true;
+                sunPanel?.ShowPanel();
+            });
         foreach (var chord in settings.For(HotkeyAction.NextInput))
             Add("next input", chord, () => _ = model.NextInputAsync());
         foreach (var chord in settings.For(HotkeyAction.OpenWindow))
@@ -251,6 +269,8 @@ public partial class App : Application
         window?.Close();
         hotkeys?.Dispose();
         tray?.Dispose();
+        sunTray?.Dispose();
+        sunPanel?.Close();
         model?.Shutdown();
         log?.Write(LogLevel.Info, "SwitchMonitor v2 stopped.");
         Shutdown();

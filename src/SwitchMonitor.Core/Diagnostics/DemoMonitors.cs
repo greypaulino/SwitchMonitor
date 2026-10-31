@@ -102,7 +102,7 @@ public static class DemoMonitors
 
     private static MonitorDevice LaptopOff(ICoreLog? log) =>
         Device(new MonitorIdentity("demo|wmi-laptop", "N5050 Laptop Screen", @"DISPLAY\CMO15A4\{demo}", "", "CMO15A4",
-            false, true, IsActive: false), new DemoTransport("wmi", "(vcp(10))"), null, log);
+            false, true, IsActive: false) { Label = "Laptop DELL N5050" }, new DemoTransport("wmi", "(vcp(10))"), null, log);
 
     private static MonitorDevice Device(MonitorIdentity identity, IMonitorTransport transport, MonitorQuirk? quirk, ICoreLog? log) =>
         new(identity, transport, quirk, log);

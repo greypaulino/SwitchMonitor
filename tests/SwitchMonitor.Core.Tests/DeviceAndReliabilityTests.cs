@@ -240,4 +240,18 @@ internal static class InactiveDisplayTests
         Assert.Equal("Built-in display", MonitorEnumerator.BuiltInDisplayName(null));
         Assert.Equal("Surface Laptop Screen", MonitorEnumerator.BuiltInDisplayName("Surface"));
     }
+
+    [Test]
+    public static void InterfaceNamesAreTypeBrandAndModel()
+    {
+        Assert.Equal("Laptop DELL N5050", DisplayNames.Laptop("Dell Inc.", "Inspiron N5050"));
+        Assert.Equal("Laptop HP", DisplayNames.Laptop("Hewlett-Packard", "To Be Filled By O.E.M."));
+        Assert.Equal("Laptop", DisplayNames.Laptop(null, null));
+        var lg = new MonitorDevice(TestMonitors.Identity(@"MONITOR\GSM7714\{x}\0001"), new FakeTransport(),
+            Quirks.QuirkDatabase.LoadEmbedded().Match(@"MONITOR\GSM7714\{x}\0001"), null, new RecordingDelay());
+        Assert.Equal("Monitor LG 29WK600", DisplayNames.For(lg));
+        var dell = new MonitorDevice(TestMonitors.Identity() with { FriendlyName = "DELL U2723QE 27\" 4K USB-C Hub Monitor" },
+            new FakeTransport(), null, null, new RecordingDelay());
+        Assert.Equal("Monitor Dell U2723QE", DisplayNames.For(dell));
+    }
 }
