@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The computer is reached by its home-network address over plain ws:// (no certificate on a LAN address).
+     The app only ever connects to the SwitchMonitor computer it found or was given. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>
