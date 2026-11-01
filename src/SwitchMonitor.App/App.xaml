@@ -100,6 +100,38 @@
             <Setter Property="Padding" Value="24,20" />
             <Setter Property="Margin" Value="0,0,0,24" />
         </Style>
+        <!-- Loading skeleton: a grey shape the size of what will come, softly pulsing until it does -->
+        <Style x:Key="Bone" TargetType="Border">
+            <Setter Property="Background" Value="{StaticResource TileBrush}" />
+            <Setter Property="CornerRadius" Value="6" />
+            <Setter Property="IsHitTestVisible" Value="False" />
+            <Setter Property="Opacity" Value="0.55" />
+            <Style.Triggers>
+                <EventTrigger RoutedEvent="FrameworkElement.Loaded">
+                    <BeginStoryboard>
+                        <Storyboard RepeatBehavior="Forever" AutoReverse="True">
+                            <DoubleAnimation Storyboard.TargetProperty="Opacity" From="0.4" To="0.95" Duration="0:0:0.85">
+                                <DoubleAnimation.EasingFunction><SineEase EasingMode="EaseInOut" /></DoubleAnimation.EasingFunction>
+                            </DoubleAnimation>
+                        </Storyboard>
+                    </BeginStoryboard>
+                </EventTrigger>
+            </Style.Triggers>
+        </Style>
+        <!-- A card whose content arrives after loading: it fades in instead of popping -->
+        <Style x:Key="RevealCard" TargetType="Border" BasedOn="{StaticResource Card}">
+            <Style.Triggers>
+                <Trigger Property="IsVisible" Value="True">
+                    <Trigger.EnterActions>
+                        <BeginStoryboard>
+                            <Storyboard>
+                                <DoubleAnimation Storyboard.TargetProperty="Opacity" From="0" To="1" Duration="0:0:0.22" />
+                            </Storyboard>
+                        </BeginStoryboard>
+                    </Trigger.EnterActions>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
         <!-- Keycap: one key of a shortcut -->
         <Style x:Key="Keycap" TargetType="Border">
             <Setter Property="Background" Value="{StaticResource RaisedBrush}" />

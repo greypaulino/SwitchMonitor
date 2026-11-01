@@ -138,8 +138,14 @@ public sealed class MonitorViewModel : ObservableObject
         Controls.Concat(AdvancedControls)
             .Concat(Controls.OfType<SliderControlViewModel>().Select(s => (ControlViewModel?)s.Mute).OfType<ControlViewModel>());
 
-    public bool IsLoading { get => isLoading; private set => Set(ref isLoading, value); }
-    public string? LoadError { get => loadError; private set => Set(ref loadError, value); }
+    public bool IsLoading { get => isLoading; private set { if (Set(ref isLoading, value)) Raise(nameof(ShowsSkeleton)); } }
+
+    /// <summary>
+    /// While the controls are being read for the first time: the page shows grey placeholders the size of the Input and
+    /// Settings cards, so nothing jumps when they arrive.
+    /// </summary>
+    public bool ShowsSkeleton => Device.IsControllable && Controls.Count == 0 && loadError is null && (isLoading || !loaded);
+    public string? LoadError { get => loadError; private set { if (Set(ref loadError, value)) Raise(nameof(ShowsSkeleton)); } }
 
     /// <summary>Builds the panel the first time the monitor is selected (reading every control takes a few seconds on GPU transports).</summary>
     public Task EnsureLoadedAsync()
@@ -447,10 +453,10 @@ public sealed class MonitorViewModel : ObservableObject
         foreach (var input in Inputs) input.IsCurrent = input.Code == code;
     }
 
-    /// <summary>A write the person made on the panel (slider, list, switch, reset): Custom becomes the active profile.</summary>
-    public Task<bool> RunByHandAsync(string what, Func<MonitorDevice, WriteOutcome> action)
+    /// <summary>A write the person made on the panel (slider, list, switch, reset): the active profile shows "custom".</summary>
+    public Task<bool> RunByHandAsync(string what, Func<MonitorDevice, WriteOutcome> action, byte? code = null)
     {
-        inputs.SettingChangedByHand(this);
+        inputs.SettingChangedByHand(this, code);
         return RunAsync(what, action);
     }
 

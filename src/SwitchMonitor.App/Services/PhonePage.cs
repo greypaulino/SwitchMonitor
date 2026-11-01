@@ -127,7 +127,7 @@ internal static class PhonePage
     const profiles = $('profiles'); profiles.innerHTML = '';
     for (const p of state.profiles) {
       const b = el('button', 'profile'); const badge = el('span', 'badge' + (p.active ? ' on' : ''), p.name.substring(0, 1));
-      badge.style.background = p.color; b.append(badge, el('span', '', p.name)); b.onclick = () => send({type:'profile', name:p.name});
+      badge.style.background = p.color; b.append(badge, el('span', '', p.modified ? p.name + ' · custom' : p.name)); b.onclick = () => send({type:'profile', name:p.name});
       profiles.append(b);
     }
     $('modesBox').classList.toggle('hidden', !state.modes);

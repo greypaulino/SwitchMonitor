@@ -289,7 +289,7 @@ public sealed class SliderControlViewModel(MonitorViewModel owner, MonitorFeatur
     {
         try { await Task.Delay(150, token); }
         catch (TaskCanceledException) { return; }
-        await Owner.RunByHandAsync($"{Name} {target:0}%", device => device.SetPercent(Feature.Code, target));
+        await Owner.RunByHandAsync($"{Name} {target:0}%", device => device.SetPercent(Feature.Code, target), Feature.Code);
     }
 }
 
@@ -385,7 +385,7 @@ public sealed class ChoiceControlViewModel : ControlViewModel
 
     private async Task ApplyAsync(ChoiceOption option, ChoiceOption? previous)
     {
-        bool ok = await Owner.RunByHandAsync($"{Name}: {option.Label}", device => device.SetChoice(Feature.Code, option.Value));
+        bool ok = await Owner.RunByHandAsync($"{Name}: {option.Label}", device => device.SetChoice(Feature.Code, option.Value), Feature.Code);
         if (!ok && previous is not null)
         {
             publishing = true;
@@ -440,7 +440,7 @@ public sealed class ToggleControlViewModel(MonitorViewModel owner, MonitorFeatur
     private async Task ApplyAsync(bool on, bool previous)
     {
         uint raw = on ? onValue : offValue;
-        bool ok = await Owner.RunByHandAsync($"{Name}: {(on ? "ON" : "OFF")}", device => device.SetChoice(Feature.Code, raw));
+        bool ok = await Owner.RunByHandAsync($"{Name}: {(on ? "ON" : "OFF")}", device => device.SetChoice(Feature.Code, raw), Feature.Code);
         if (!ok)
         {
             publishing = true;
@@ -489,8 +489,11 @@ public interface IInputCoordinator
     void SetInCycle(MonitorViewModel monitor, int code, bool included);
     void InputsLoaded(MonitorViewModel monitor);
 
-    /// <summary>A picture or sound setting was changed by hand: the active profile becomes Custom.</summary>
-    void SettingChangedByHand(MonitorViewModel monitor);
+    /// <summary>
+    /// A picture or sound setting was changed by hand (<paramref name="code"/>: which one, when known). A saved profile
+    /// stays chosen and shows "custom" until its new values are saved into it or it is chosen again.
+    /// </summary>
+    void SettingChangedByHand(MonitorViewModel monitor, byte? code = null);
 }
 
 /// <summary>One input button (HDMI 1, DisplayPort 1 ...) with its shortcut and its Next input mark.</summary>

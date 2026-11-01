@@ -316,7 +316,7 @@
         </Border>
 
         <!-- Navigation on the left; on the Displays view, the profiles (apply to every display) on the right, in one row -->
-        <DockPanel Grid.Row="1" Margin="22,8,22,24" LastChildFill="True">
+        <DockPanel Grid.Row="1" Margin="22,8,22,24" LastChildFill="True" Panel.ZIndex="5">
             <Border DockPanel.Dock="Left" VerticalAlignment="Top" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}"
                     BorderThickness="1" CornerRadius="20" Padding="2">
                 <!-- The light pill slides to the current view (NavTab leaves its own background clear) -->
@@ -343,7 +343,7 @@
                         <DataTemplate DataType="{x:Type vm:SceneViewModel}">
                             <!-- Compact profile pill: its color dot and name; the shortcut is in the tooltip. The active one glows
                                  softly in its color (a blurred copy of the pill behind it). -->
-                            <Grid Visibility="{Binding IsShown, Converter={StaticResource BoolToVisibility}}" Margin="6,2,0,2">
+                            <Grid x:Name="Pill" Margin="6,2,0,2" Visibility="{Binding IsShown, Converter={StaticResource BoolToVisibility}}">
                                 <Border x:Name="Glow" CornerRadius="16" Background="{Binding ColorBrush}" Opacity="0" Margin="1,2,1,0"
                                         IsHitTestVisible="False">
                                     <Border.Effect>
@@ -356,9 +356,18 @@
                                         <app:ProfileBadge Width="22" Height="22" CornerRadius="11" Margin="0,0,7,0" GlyphSize="10"
                                                           Fill="{Binding ColorBrush}" Glyph="{Binding Mark.Text}" GlyphFont="{Binding Mark.Font}"
                                                           GlyphWeight="{Binding Mark.Weight}" Secondary="{Binding Mark.Secondary}" Image="{Binding IconImage}" />
-                                        <TextBlock x:Name="SceneName" Text="{Binding Name}" FontSize="12.5" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                                        <TextBlock x:Name="SceneName" Text="{Binding Label}" FontSize="12.5" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
                                     </StackPanel>
                                 </Button>
+                                <!-- Changed by hand ("Work · custom"): Save? just below the pill, floating so the row does not move -->
+                                <Canvas Width="0" Height="0" HorizontalAlignment="Center" VerticalAlignment="Bottom"
+                                        Visibility="{Binding IsModified, Converter={StaticResource BoolToVisibility}}">
+                                    <Grid Width="120" Canvas.Left="-60" Canvas.Top="5">
+                                        <Button Content="Save?" Command="{Binding SaveCommand}" MinHeight="0" Height="26" Padding="10,0"
+                                                FontSize="12" HorizontalAlignment="Center" ToolTip="Save the values changed by hand into this profile"
+                                                Style="{StaticResource PrimaryButton}" />
+                                    </Grid>
+                                </Canvas>
                             </Grid>
                             <DataTemplate.Triggers>
                                 <DataTrigger Binding="{Binding IsActive}" Value="True">
@@ -444,6 +453,77 @@
                 </ListBox.ItemTemplate>
             </ListBox>
 
+            <!-- Looking for displays (start, Refresh): the list and the page as placeholders, so nothing pops in from empty -->
+            <StackPanel Grid.Row="1" Grid.RowSpan="2" Margin="22,0,10,16"
+                        Visibility="{Binding ShowsSearchSkeleton, Converter={StaticResource BoolToVisibility}}">
+                <DockPanel Margin="10,10,10,14">
+                    <Border Style="{StaticResource Bone}" Width="38" Height="38" CornerRadius="12" Margin="0,0,12,0" />
+                    <StackPanel VerticalAlignment="Center">
+                        <Border Style="{StaticResource Bone}" Width="130" Height="12" HorizontalAlignment="Left" />
+                        <Border Style="{StaticResource Bone}" Width="90" Height="10" Margin="0,6,0,0" HorizontalAlignment="Left" />
+                    </StackPanel>
+                </DockPanel>
+                <DockPanel Margin="10,0,10,10">
+                    <Border Style="{StaticResource Bone}" Width="38" Height="38" CornerRadius="12" Margin="0,0,12,0" />
+                    <StackPanel VerticalAlignment="Center">
+                        <Border Style="{StaticResource Bone}" Width="110" Height="12" HorizontalAlignment="Left" />
+                        <Border Style="{StaticResource Bone}" Width="120" Height="10" Margin="0,6,0,0" HorizontalAlignment="Left" />
+                    </StackPanel>
+                </DockPanel>
+            </StackPanel>
+            <StackPanel Grid.Row="1" Grid.Column="1" Margin="12,0,22,16"
+                        Visibility="{Binding ShowsSearchSkeleton, Converter={StaticResource BoolToVisibility}}">
+                <DockPanel Margin="4,6,0,26">
+                    <Border Style="{StaticResource Bone}" Width="48" Height="48" CornerRadius="15" Margin="0,0,14,0" />
+                    <StackPanel VerticalAlignment="Center">
+                        <Border Style="{StaticResource Bone}" Width="220" Height="18" HorizontalAlignment="Left" />
+                        <Border Style="{StaticResource Bone}" Width="140" Height="11" Margin="0,8,0,0" HorizontalAlignment="Left" />
+                    </StackPanel>
+                </DockPanel>
+                <Border Style="{StaticResource Card}">
+                    <StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
+                            <Border Style="{StaticResource Bone}" Width="30" Height="30" CornerRadius="9" />
+                            <Border Style="{StaticResource Bone}" Width="64" Height="14" Margin="12,0,0,0" />
+                        </StackPanel>
+                        <UniformGrid Columns="3" HorizontalAlignment="Left" Width="420">
+                            <Border Style="{StaticResource Bone}" Height="100" CornerRadius="14" Margin="0,0,12,0" />
+                            <Border Style="{StaticResource Bone}" Height="100" CornerRadius="14" Margin="0,0,12,0" />
+                            <Border Style="{StaticResource Bone}" Height="100" CornerRadius="14" Margin="0,0,12,0" />
+                        </UniformGrid>
+                    </StackPanel>
+                </Border>
+                <Border Style="{StaticResource Card}">
+                    <StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
+                            <Border Style="{StaticResource Bone}" Width="30" Height="30" CornerRadius="9" />
+                            <Border Style="{StaticResource Bone}" Width="80" Height="14" Margin="12,0,0,0" />
+                        </StackPanel>
+                        <Grid Height="34" Margin="0,0,0,10">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="42" /><ColumnDefinition Width="150" /><ColumnDefinition Width="*" /><ColumnDefinition Width="52" /></Grid.ColumnDefinitions>
+                            <Border Style="{StaticResource Bone}" Width="30" Height="30" CornerRadius="9" HorizontalAlignment="Left" />
+                            <Border Grid.Column="1" Style="{StaticResource Bone}" Width="90" Height="12" HorizontalAlignment="Left" />
+                            <Border Grid.Column="2" Style="{StaticResource Bone}" Height="6" CornerRadius="3" Margin="0,0,8,0" />
+                            <Border Grid.Column="3" Style="{StaticResource Bone}" Width="32" Height="12" HorizontalAlignment="Right" />
+                        </Grid>
+                        <Grid Height="34" Margin="0,0,0,10">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="42" /><ColumnDefinition Width="150" /><ColumnDefinition Width="*" /><ColumnDefinition Width="52" /></Grid.ColumnDefinitions>
+                            <Border Style="{StaticResource Bone}" Width="30" Height="30" CornerRadius="9" HorizontalAlignment="Left" />
+                            <Border Grid.Column="1" Style="{StaticResource Bone}" Width="70" Height="12" HorizontalAlignment="Left" />
+                            <Border Grid.Column="2" Style="{StaticResource Bone}" Height="6" CornerRadius="3" Margin="0,0,8,0" />
+                            <Border Grid.Column="3" Style="{StaticResource Bone}" Width="32" Height="12" HorizontalAlignment="Right" />
+                        </Grid>
+                        <Grid Height="34" Margin="0,0,0,10">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="42" /><ColumnDefinition Width="150" /><ColumnDefinition Width="*" /><ColumnDefinition Width="52" /></Grid.ColumnDefinitions>
+                            <Border Style="{StaticResource Bone}" Width="30" Height="30" CornerRadius="9" HorizontalAlignment="Left" />
+                            <Border Grid.Column="1" Style="{StaticResource Bone}" Width="110" Height="12" HorizontalAlignment="Left" />
+                            <Border Grid.Column="2" Style="{StaticResource Bone}" Height="6" CornerRadius="3" Margin="0,0,8,0" />
+                            <Border Grid.Column="3" Style="{StaticResource Bone}" Width="32" Height="12" HorizontalAlignment="Right" />
+                        </Grid>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+
             <!-- No display found at all -->
             <Border Grid.Row="1" Grid.Column="1" Style="{StaticResource Card}" Margin="12,0,22,16" MaxWidth="480"
                     HorizontalAlignment="Left" VerticalAlignment="Top">
@@ -518,8 +598,93 @@
                         </DockPanel>
                     </Border>
 
-                    <TextBlock Text="Reading the monitor's settings…" Foreground="{StaticResource MutedBrush}"
-                               Visibility="{Binding IsLoading, Converter={StaticResource BoolToVisibility}}" Margin="4,0,0,12" />
+                    <!-- First read of the controls: placeholders the size of the Input and Settings cards (nothing jumps) -->
+                        <Border Style="{StaticResource Card}" Visibility="{Binding ShowsSkeleton, Converter={StaticResource BoolToVisibility}}"
+                                AutomationProperties.Name="Reading the monitor's inputs">
+                            <StackPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,18">
+                                    <Border Style="{StaticResource Bone}" Width="30" Height="30" CornerRadius="9" />
+                                    <Border Style="{StaticResource Bone}" Width="64" Height="14" Margin="12,0,0,0" />
+                                </StackPanel>
+                                <WrapPanel HorizontalAlignment="Center" Margin="0,4,0,0">
+                                    <StackPanel Margin="8,0,8,8" Width="144">
+                                        <Border Style="{StaticResource Bone}" Height="100" CornerRadius="14" />
+                                        <Border Style="{StaticResource Bone}" Width="78" Height="22" Margin="0,10,0,0" />
+                                    </StackPanel>
+                                    <StackPanel Margin="8,0,8,8" Width="144">
+                                        <Border Style="{StaticResource Bone}" Height="100" CornerRadius="14" />
+                                        <Border Style="{StaticResource Bone}" Width="78" Height="22" Margin="0,10,0,0" />
+                                    </StackPanel>
+                                    <StackPanel Margin="8,0,8,8" Width="144">
+                                        <Border Style="{StaticResource Bone}" Height="100" CornerRadius="14" />
+                                        <Border Style="{StaticResource Bone}" Width="78" Height="22" Margin="0,10,0,0" />
+                                    </StackPanel>
+                                </WrapPanel>
+                            </StackPanel>
+                        </Border>
+                        <Border Style="{StaticResource Card}" Visibility="{Binding ShowsSkeleton, Converter={StaticResource BoolToVisibility}}"
+                                AutomationProperties.Name="Reading the monitor's settings">
+                            <StackPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,18">
+                                    <Border Style="{StaticResource Bone}" Width="30" Height="30" CornerRadius="9" />
+                                    <Border Style="{StaticResource Bone}" Width="80" Height="14" Margin="12,0,0,0" />
+                                </StackPanel>
+                                <Grid Height="34" Margin="0,0,0,10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="42" /><ColumnDefinition Width="150" /><ColumnDefinition Width="*" /><ColumnDefinition Width="52" />
+                                    </Grid.ColumnDefinitions>
+                                    <Border Style="{StaticResource Bone}" Width="30" Height="30" CornerRadius="9" HorizontalAlignment="Left" />
+                                    <Border Grid.Column="1" Style="{StaticResource Bone}" Width="92" Height="12" HorizontalAlignment="Left" />
+                                    <Border Grid.Column="2" Style="{StaticResource Bone}" Height="30" CornerRadius="10" Margin="0,0,180,0" />
+                                    <Border Grid.Column="3" Style="{StaticResource Bone}" Width="32" Height="12" HorizontalAlignment="Right" />
+                                </Grid>
+                                <Grid Height="34" Margin="0,0,0,10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="42" /><ColumnDefinition Width="150" /><ColumnDefinition Width="*" /><ColumnDefinition Width="52" />
+                                    </Grid.ColumnDefinitions>
+                                    <Border Style="{StaticResource Bone}" Width="30" Height="30" CornerRadius="9" HorizontalAlignment="Left" />
+                                    <Border Grid.Column="1" Style="{StaticResource Bone}" Width="78" Height="12" HorizontalAlignment="Left" />
+                                    <Border Grid.Column="2" Style="{StaticResource Bone}" Height="6" CornerRadius="3" Margin="0,0,8,0" />
+                                    <Border Grid.Column="3" Style="{StaticResource Bone}" Width="32" Height="12" HorizontalAlignment="Right" />
+                                </Grid>
+                                <Grid Height="34" Margin="0,0,0,10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="42" /><ColumnDefinition Width="150" /><ColumnDefinition Width="*" /><ColumnDefinition Width="52" />
+                                    </Grid.ColumnDefinitions>
+                                    <Border Style="{StaticResource Bone}" Width="30" Height="30" CornerRadius="9" HorizontalAlignment="Left" />
+                                    <Border Grid.Column="1" Style="{StaticResource Bone}" Width="70" Height="12" HorizontalAlignment="Left" />
+                                    <Border Grid.Column="2" Style="{StaticResource Bone}" Height="6" CornerRadius="3" Margin="0,0,8,0" />
+                                    <Border Grid.Column="3" Style="{StaticResource Bone}" Width="32" Height="12" HorizontalAlignment="Right" />
+                                </Grid>
+                                <Grid Height="34" Margin="0,0,0,10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="42" /><ColumnDefinition Width="150" /><ColumnDefinition Width="*" /><ColumnDefinition Width="52" />
+                                    </Grid.ColumnDefinitions>
+                                    <Border Style="{StaticResource Bone}" Width="30" Height="30" CornerRadius="9" HorizontalAlignment="Left" />
+                                    <Border Grid.Column="1" Style="{StaticResource Bone}" Width="110" Height="12" HorizontalAlignment="Left" />
+                                    <Border Grid.Column="2" Style="{StaticResource Bone}" Height="30" CornerRadius="10" Margin="0,0,180,0" />
+                                    <Border Grid.Column="3" Style="{StaticResource Bone}" Width="32" Height="12" HorizontalAlignment="Right" />
+                                </Grid>
+                                <Grid Height="34" Margin="0,0,0,10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="42" /><ColumnDefinition Width="150" /><ColumnDefinition Width="*" /><ColumnDefinition Width="52" />
+                                    </Grid.ColumnDefinitions>
+                                    <Border Style="{StaticResource Bone}" Width="30" Height="30" CornerRadius="9" HorizontalAlignment="Left" />
+                                    <Border Grid.Column="1" Style="{StaticResource Bone}" Width="80" Height="12" HorizontalAlignment="Left" />
+                                    <Border Grid.Column="2" Style="{StaticResource Bone}" Height="6" CornerRadius="3" Margin="0,0,8,0" />
+                                    <Border Grid.Column="3" Style="{StaticResource Bone}" Width="32" Height="12" HorizontalAlignment="Right" />
+                                </Grid>
+                                <Grid Height="34" Margin="0,0,0,10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="42" /><ColumnDefinition Width="150" /><ColumnDefinition Width="*" /><ColumnDefinition Width="52" />
+                                    </Grid.ColumnDefinitions>
+                                    <Border Style="{StaticResource Bone}" Width="30" Height="30" CornerRadius="9" HorizontalAlignment="Left" />
+                                    <Border Grid.Column="1" Style="{StaticResource Bone}" Width="96" Height="12" HorizontalAlignment="Left" />
+                                    <Border Grid.Column="2" Style="{StaticResource Bone}" Height="30" CornerRadius="10" Margin="0,0,180,0" />
+                                    <Border Grid.Column="3" Style="{StaticResource Bone}" Width="32" Height="12" HorizontalAlignment="Right" />
+                                </Grid>
+                            </StackPanel>
+                        </Border>
                     <TextBlock Text="{Binding LoadError}" Foreground="{StaticResource ErrorBrush}" TextWrapping="Wrap" Margin="4,0,0,12">
                         <TextBlock.Style>
                             <Style TargetType="TextBlock">
@@ -534,7 +699,7 @@
 
                     <!-- Input: one tile per connector, the current one filled. Next input is part of each tile: the round switch
                          in its corner says whether the Next input shortcut (shown in the heading) stops on it. -->
-                    <Border Style="{StaticResource Card}" Visibility="{Binding HasInputs, Converter={StaticResource BoolToVisibility}}">
+                    <Border Style="{StaticResource RevealCard}" Visibility="{Binding HasInputs, Converter={StaticResource BoolToVisibility}}">
                         <StackPanel>
                             <Border Style="{StaticResource CardHeader}">
                                 <DockPanel>
@@ -599,7 +764,7 @@
                     </Border>
 
                     <!-- Settings: picture mode first, then brightness and the rest -->
-                    <Border Style="{StaticResource Card}">
+                    <Border Style="{StaticResource RevealCard}">
                         <Border.Visibility>
                             <MultiBinding Converter="{x:Static app:AllTrueToVisibility.Instance}">
                                 <Binding Path="IsControllable" />
@@ -777,6 +942,9 @@
                         <TextBlock x:Name="SettingFixed" Grid.Column="2" Text="{Binding FixedText}"
                                    Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" Visibility="Collapsed"
                                    ToolTip="This display does not have this control; the line is kept as saved" />
+                        <!-- Locked: the chosen value as text instead of the drop-down -->
+                        <ContentPresenter x:Name="SettingChoiceText" Grid.Column="2" Content="{Binding Selected}" VerticalAlignment="Center"
+                                          HorizontalAlignment="Left" Margin="2,0,0,0" Visibility="Collapsed" />
                         <Button x:Name="SettingRemove" Grid.Column="3" Content="&#xE711;" FontFamily="{DynamicResource IconFont}" FontWeight="{DynamicResource IconWeight}" Style="{StaticResource ChipRemove}"
                                 HorizontalAlignment="Right" Command="{Binding RemoveCommand}" Visibility="Collapsed"
                                 ToolTip="Remove this line from the profile" />
@@ -801,6 +969,21 @@
                             <Setter TargetName="SettingFixed" Property="Visibility" Value="Visible" />
                             <Setter TargetName="SettingRemove" Property="Visibility" Value="Visible" />
                         </DataTrigger>
+                        <DataTrigger Binding="{Binding IsLocked}" Value="True">
+                            <Setter TargetName="SettingSlider" Property="IsHitTestVisible" Value="False" />
+                            <Setter TargetName="SettingSlider" Property="Focusable" Value="False" />
+                            <Setter TargetName="SettingSpeaker" Property="IsHitTestVisible" Value="False" />
+                            <Setter TargetName="SettingSpeaker" Property="Focusable" Value="False" />
+                            <Setter TargetName="SettingRemove" Property="Visibility" Value="Collapsed" />
+                        </DataTrigger>
+                        <MultiDataTrigger>
+                            <MultiDataTrigger.Conditions>
+                                <Condition Binding="{Binding IsLocked}" Value="True" />
+                                <Condition Binding="{Binding IsChoice}" Value="True" />
+                            </MultiDataTrigger.Conditions>
+                            <Setter TargetName="SettingChoice" Property="Visibility" Value="Collapsed" />
+                            <Setter TargetName="SettingChoiceText" Property="Visibility" Value="Visible" />
+                        </MultiDataTrigger>
                     </DataTemplate.Triggers>
                 </DataTemplate>
                 <!-- A program shown as a label: its icon and name -->
@@ -911,7 +1094,31 @@
                         <app:ProfileBadge Width="48" Height="48" CornerRadius="15" Margin="0,0,14,0" GlyphSize="22"
                                           Fill="{Binding ProfileColorBrush}" Glyph="{Binding ProfileMark.Text}" GlyphFont="{Binding ProfileMark.Font}"
                                           GlyphWeight="{Binding ProfileMark.Weight}" Secondary="{Binding ProfileMark.Secondary}" Image="{Binding ProfileImage}" />
-                        <TextBlock Text="{Binding Title}" FontSize="22" FontWeight="SemiBold" VerticalAlignment="Center" />
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <TextBlock Text="{Binding Title}" FontSize="22" FontWeight="SemiBold" VerticalAlignment="Center" />
+                            <!-- Padlock: a saved profile opens locked (shows what it sets); click to edit -->
+                            <Button Command="{Binding ToggleLockCommand}" Margin="12,2,0,0"
+                                          Width="34" Height="34" Padding="0" MinHeight="0" VerticalAlignment="Center" Cursor="Hand"
+                                          ToolTip="{Binding LockToolTip}" AutomationProperties.Name="{Binding LockToolTip}"
+                                          Visibility="{Binding ShowsLock, Converter={StaticResource BoolToVisibility}}">
+                                <Button.Template>
+                                    <ControlTemplate TargetType="Button">
+                                        <Border x:Name="LockBack" CornerRadius="17" Background="{StaticResource AccentSoftBrush}">
+                                            <TextBlock Text="{Binding LockGlyph}" Style="{StaticResource Glyph}" FontSize="14"
+                                                       Foreground="{StaticResource AccentTextBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                        </Border>
+                                        <ControlTemplate.Triggers>
+                                            <DataTrigger Binding="{Binding IsLocked}" Value="True">
+                                                <Setter TargetName="LockBack" Property="Background" Value="{StaticResource PanelBrush}" />
+                                            </DataTrigger>
+                                            <Trigger Property="IsMouseOver" Value="True">
+                                                <Setter TargetName="LockBack" Property="Opacity" Value="0.8" />
+                                            </Trigger>
+                                        </ControlTemplate.Triggers>
+                                    </ControlTemplate>
+                                </Button.Template>
+                            </Button>
+                        </StackPanel>
                     </DockPanel>
 
                     <!-- Name, color, which display the values come from -->
@@ -930,8 +1137,11 @@
                                 <RowDefinition Height="Auto" />
                             </Grid.RowDefinitions>
                             <TextBlock Text="Name" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}" />
+                            <TextBlock Grid.Column="1" Text="{Binding Name}" FontWeight="SemiBold" VerticalAlignment="Center" MinHeight="32"
+                                       Padding="2,7,0,0" Visibility="{Binding IsLocked, Converter={StaticResource BoolToVisibility}}" />
                             <TextBox Grid.Column="1" Text="{Binding Name, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" MaxWidth="320"
                                      HorizontalAlignment="Left" MinWidth="260" MaxLength="40" IsReadOnly="{Binding IsCustom}"
+                                     Visibility="{Binding IsLocked, Converter={StaticResource InverseBoolToVisibility}}"
                                      AutomationProperties.Name="Profile name">
                                 <TextBox.Style>
                                     <Style TargetType="TextBox" BasedOn="{StaticResource {x:Type TextBox}}">
@@ -949,6 +1159,10 @@
                                        Visibility="{Binding CanAutomate, Converter={StaticResource BoolToVisibility}}" />
                             <WrapPanel Grid.Row="1" Grid.Column="1" Margin="0,14,0,-8"
                                        Visibility="{Binding CanAutomate, Converter={StaticResource BoolToVisibility}}">
+                                <!-- Locked: just the profile's color -->
+                                <Ellipse Width="22" Height="22" Fill="{Binding ProfileColorBrush}" Margin="2,0,0,8" Stroke="#33FFFFFF" StrokeThickness="1"
+                                         Visibility="{Binding IsLocked, Converter={StaticResource BoolToVisibility}}" />
+                                <WrapPanel Visibility="{Binding IsLocked, Converter={StaticResource InverseBoolToVisibility}}">
                                 <ItemsControl ItemsSource="{Binding ColorChoices}">
                                     <ItemsControl.ItemsPanel>
                                         <ItemsPanelTemplate><WrapPanel /></ItemsPanelTemplate>
@@ -968,6 +1182,7 @@
                                         <app:ColorPicker Color="{Binding ProfileColor, Mode=TwoWay}" />
                                     </Border>
                                 </Popup>
+                                </WrapPanel>
                             </WrapPanel>
                             <!-- Icon: the chosen one is shown; the library (styles and icons) opens on demand -->
                             <TextBlock Grid.Row="2" Text="Icon" VerticalAlignment="Top" Margin="0,24,0,0" Foreground="{StaticResource MutedBrush}"
@@ -982,7 +1197,7 @@
                                     <StackPanel>
                                         <TextBlock Text="{Binding IconDescription}" FontWeight="SemiBold" />
                                         <TextBlock Text="Shown on the profile row, the list and Shortcuts" Style="{StaticResource Hint}" />
-                                        <WrapPanel Margin="0,8,0,0">
+                                        <WrapPanel Margin="0,8,0,0" Visibility="{Binding IsLocked, Converter={StaticResource InverseBoolToVisibility}}">
                                             <Button Command="{Binding ToggleIconLibraryCommand}" Margin="0,0,6,6">
                                                 <StackPanel Orientation="Horizontal">
                                                     <TextBlock Text="&#xE8B9;" Style="{StaticResource Glyph}" FontSize="13" Margin="0,1,8,0" />
@@ -999,7 +1214,8 @@
                                                     Margin="0,0,0,6" ToolTip="The icon its name usually gets"
                                                     Visibility="{Binding IsDefaultIcon, Converter={StaticResource InverseBoolToVisibility}}" />
                                         </WrapPanel>
-                                        <TextBlock Text="{Binding ImportHint}" Style="{StaticResource Hint}" Margin="0,2,0,0" MaxWidth="520" HorizontalAlignment="Left" />
+                                        <TextBlock Text="{Binding ImportHint}" Style="{StaticResource Hint}" Margin="0,2,0,0" MaxWidth="520" HorizontalAlignment="Left"
+                                                   Visibility="{Binding IsLocked, Converter={StaticResource InverseBoolToVisibility}}" />
                                     </StackPanel>
                                 </DockPanel>
 
@@ -1080,7 +1296,7 @@
                                 </ComboBox.ItemTemplate>
                             </ComboBox>
                             <CheckBox Grid.Row="4" Grid.Column="1" Content="{Binding OnlyThisDisplayLabel}" Margin="0,14,0,0"
-                                      IsChecked="{Binding OnlyThisDisplay, Mode=TwoWay}"
+                                      IsChecked="{Binding OnlyThisDisplay, Mode=TwoWay}" IsHitTestVisible="{Binding IsUnlocked}"
                                       ToolTip="Unticked, the profile applies to every display that has these controls" />
                             <StackPanel Grid.Row="5" Grid.Column="1" Orientation="Horizontal" Margin="0,12,0,0">
                                 <TextBlock Text="&#xE765;" Style="{StaticResource Glyph}" FontSize="12" Margin="0,1,8,0" />
@@ -1099,12 +1315,62 @@
                                     <TextBlock Text="Settings" Style="{StaticResource CardTitle}" />
                                 </StackPanel>
                             </Border>
+                            <StackPanel Visibility="{Binding ShowsRowsSkeleton, Converter={StaticResource BoolToVisibility}}">
+                                <Grid Height="34" Margin="0,0,0,10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="42" /><ColumnDefinition Width="150" /><ColumnDefinition Width="*" /><ColumnDefinition Width="52" />
+                                    </Grid.ColumnDefinitions>
+                                    <Border Style="{StaticResource Bone}" Width="30" Height="30" CornerRadius="9" HorizontalAlignment="Left" />
+                                    <Border Grid.Column="1" Style="{StaticResource Bone}" Width="92" Height="12" HorizontalAlignment="Left" />
+                                    <Border Grid.Column="2" Style="{StaticResource Bone}" Height="6" CornerRadius="3" Margin="0,0,8,0" />
+                                </Grid>
+                                <Grid Height="34" Margin="0,0,0,10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="42" /><ColumnDefinition Width="150" /><ColumnDefinition Width="*" /><ColumnDefinition Width="52" />
+                                    </Grid.ColumnDefinitions>
+                                    <Border Style="{StaticResource Bone}" Width="30" Height="30" CornerRadius="9" HorizontalAlignment="Left" />
+                                    <Border Grid.Column="1" Style="{StaticResource Bone}" Width="78" Height="12" HorizontalAlignment="Left" />
+                                    <Border Grid.Column="2" Style="{StaticResource Bone}" Height="6" CornerRadius="3" Margin="0,0,8,0" />
+                                </Grid>
+                                <Grid Height="34" Margin="0,0,0,10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="42" /><ColumnDefinition Width="150" /><ColumnDefinition Width="*" /><ColumnDefinition Width="52" />
+                                    </Grid.ColumnDefinitions>
+                                    <Border Style="{StaticResource Bone}" Width="30" Height="30" CornerRadius="9" HorizontalAlignment="Left" />
+                                    <Border Grid.Column="1" Style="{StaticResource Bone}" Width="70" Height="12" HorizontalAlignment="Left" />
+                                    <Border Grid.Column="2" Style="{StaticResource Bone}" Height="6" CornerRadius="3" Margin="0,0,8,0" />
+                                </Grid>
+                                <Grid Height="34" Margin="0,0,0,10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="42" /><ColumnDefinition Width="150" /><ColumnDefinition Width="*" /><ColumnDefinition Width="52" />
+                                    </Grid.ColumnDefinitions>
+                                    <Border Style="{StaticResource Bone}" Width="30" Height="30" CornerRadius="9" HorizontalAlignment="Left" />
+                                    <Border Grid.Column="1" Style="{StaticResource Bone}" Width="110" Height="12" HorizontalAlignment="Left" />
+                                    <Border Grid.Column="2" Style="{StaticResource Bone}" Height="6" CornerRadius="3" Margin="0,0,8,0" />
+                                </Grid>
+                                <Grid Height="34" Margin="0,0,0,10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="42" /><ColumnDefinition Width="150" /><ColumnDefinition Width="*" /><ColumnDefinition Width="52" />
+                                    </Grid.ColumnDefinitions>
+                                    <Border Style="{StaticResource Bone}" Width="30" Height="30" CornerRadius="9" HorizontalAlignment="Left" />
+                                    <Border Grid.Column="1" Style="{StaticResource Bone}" Width="80" Height="12" HorizontalAlignment="Left" />
+                                    <Border Grid.Column="2" Style="{StaticResource Bone}" Height="6" CornerRadius="3" Margin="0,0,8,0" />
+                                </Grid>
+                                <Grid Height="34" Margin="0,0,0,10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="42" /><ColumnDefinition Width="150" /><ColumnDefinition Width="*" /><ColumnDefinition Width="52" />
+                                    </Grid.ColumnDefinitions>
+                                    <Border Style="{StaticResource Bone}" Width="30" Height="30" CornerRadius="9" HorizontalAlignment="Left" />
+                                    <Border Grid.Column="1" Style="{StaticResource Bone}" Width="96" Height="12" HorizontalAlignment="Left" />
+                                    <Border Grid.Column="2" Style="{StaticResource Bone}" Height="6" CornerRadius="3" Margin="0,0,8,0" />
+                                </Grid>
+                            </StackPanel>
                             <ItemsControl ItemsSource="{Binding Rows}" ItemTemplate="{StaticResource SettingRowTemplate}" />
 
                             <!-- Advanced: a heading with an expand chevron; open = part of the profile -->
                             <Button Command="{Binding ToggleAdvancedCommand}" HorizontalAlignment="Left" Cursor="Hand"
                                     ToolTip="{Binding AdvancedToolTip}" FocusVisualStyle="{StaticResource FocusRing}"
-                                    Visibility="{Binding HasAdvancedRows, Converter={StaticResource BoolToVisibility}}">
+                                    Visibility="{Binding ShowsAdvancedHeading, Converter={StaticResource BoolToVisibility}}">
                                 <Button.Template>
                                     <ControlTemplate TargetType="Button">
                                         <StackPanel x:Name="Heading" Orientation="Horizontal" Background="Transparent" Margin="0,10,0,12">
@@ -1159,7 +1425,8 @@
                                             <StackPanel Orientation="Horizontal">
                                                 <ContentPresenter Content="{Binding}" ContentTemplate="{StaticResource AppLabel}" />
                                                 <Button Content="&#xE711;" FontFamily="{DynamicResource IconFont}" FontWeight="{DynamicResource IconWeight}" Style="{StaticResource ChipRemove}"
-                                                        Command="{Binding RemoveCommand}" Margin="6,0,0,0" ToolTip="Unlink this program" />
+                                                        Command="{Binding RemoveCommand}" Margin="6,0,0,0" ToolTip="Unlink this program"
+                                                        Visibility="{Binding DataContext.IsLocked, RelativeSource={RelativeSource AncestorType=ScrollViewer}, Converter={StaticResource InverseBoolToVisibility}}" />
                                             </StackPanel>
                                         </Border>
                                     </DataTemplate>
@@ -1167,7 +1434,8 @@
                             </ItemsControl>
                             <!-- Every program installed for Windows (Start menu), searchable; click one to link it -->
                             <Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1"
-                                    CornerRadius="14" Padding="10" Margin="0,4,0,10">
+                                    CornerRadius="14" Padding="10" Margin="0,4,0,10"
+                                    Visibility="{Binding IsLocked, Converter={StaticResource InverseBoolToVisibility}}">
                                 <DockPanel>
                                     <Grid DockPanel.Dock="Top" Margin="0,0,0,8">
                                         <TextBox Text="{Binding AppSearch, UpdateSourceTrigger=PropertyChanged}" Padding="34,0,10,0"
@@ -1188,8 +1456,42 @@
                                             </TextBlock.Style>
                                         </TextBlock>
                                     </Grid>
-                                    <TextBlock DockPanel.Dock="Top" Text="Reading the programs installed…" Foreground="{StaticResource MutedBrush}" Margin="4,6"
-                                               Visibility="{Binding IsLoadingApps, Converter={StaticResource BoolToVisibility}}" />
+                                    <!-- Reading the installed programs: placeholder rows the height of the list -->
+                                    <StackPanel DockPanel.Dock="Top" Visibility="{Binding IsLoadingApps, Converter={StaticResource BoolToVisibility}}"
+                                                AutomationProperties.Name="Reading the programs installed">
+                                        <DockPanel Height="30" Margin="10,0,4,2">
+                                            <Border Style="{StaticResource Bone}" Width="18" Height="18" CornerRadius="5" />
+                                            <Border Style="{StaticResource Bone}" Width="140" Height="11" Margin="8,0,0,0" HorizontalAlignment="Left" />
+                                        </DockPanel>
+                                        <DockPanel Height="30" Margin="10,0,4,2">
+                                            <Border Style="{StaticResource Bone}" Width="18" Height="18" CornerRadius="5" />
+                                            <Border Style="{StaticResource Bone}" Width="110" Height="11" Margin="8,0,0,0" HorizontalAlignment="Left" />
+                                        </DockPanel>
+                                        <DockPanel Height="30" Margin="10,0,4,2">
+                                            <Border Style="{StaticResource Bone}" Width="18" Height="18" CornerRadius="5" />
+                                            <Border Style="{StaticResource Bone}" Width="170" Height="11" Margin="8,0,0,0" HorizontalAlignment="Left" />
+                                        </DockPanel>
+                                        <DockPanel Height="30" Margin="10,0,4,2">
+                                            <Border Style="{StaticResource Bone}" Width="18" Height="18" CornerRadius="5" />
+                                            <Border Style="{StaticResource Bone}" Width="90" Height="11" Margin="8,0,0,0" HorizontalAlignment="Left" />
+                                        </DockPanel>
+                                        <DockPanel Height="30" Margin="10,0,4,2">
+                                            <Border Style="{StaticResource Bone}" Width="18" Height="18" CornerRadius="5" />
+                                            <Border Style="{StaticResource Bone}" Width="130" Height="11" Margin="8,0,0,0" HorizontalAlignment="Left" />
+                                        </DockPanel>
+                                        <DockPanel Height="30" Margin="10,0,4,2">
+                                            <Border Style="{StaticResource Bone}" Width="18" Height="18" CornerRadius="5" />
+                                            <Border Style="{StaticResource Bone}" Width="150" Height="11" Margin="8,0,0,0" HorizontalAlignment="Left" />
+                                        </DockPanel>
+                                        <DockPanel Height="30" Margin="10,0,4,2">
+                                            <Border Style="{StaticResource Bone}" Width="18" Height="18" CornerRadius="5" />
+                                            <Border Style="{StaticResource Bone}" Width="100" Height="11" Margin="8,0,0,0" HorizontalAlignment="Left" />
+                                        </DockPanel>
+                                        <DockPanel Height="30" Margin="10,0,4,2">
+                                            <Border Style="{StaticResource Bone}" Width="18" Height="18" CornerRadius="5" />
+                                            <Border Style="{StaticResource Bone}" Width="120" Height="11" Margin="8,0,0,0" HorizontalAlignment="Left" />
+                                        </DockPanel>
+                                    </StackPanel>
                                     <ListBox ItemsSource="{Binding AvailableApps}" MaxHeight="264" Background="Transparent" BorderThickness="0"
                                              ScrollViewer.HorizontalScrollBarVisibility="Disabled" VirtualizingPanel.IsVirtualizing="True"
                                              AutomationProperties.Name="Installed programs">
@@ -1220,7 +1522,8 @@
                                 </DockPanel>
                             </Border>
                             <Button Command="{Binding BrowseAppCommand}" HorizontalAlignment="Left" Style="{StaticResource QuietButton}"
-                                    ToolTip="Choose a program file (.exe) that is not in the list">
+                                    ToolTip="Choose a program file (.exe) that is not in the list"
+                                    Visibility="{Binding IsLocked, Converter={StaticResource InverseBoolToVisibility}}">
                                 <StackPanel Orientation="Horizontal">
                                     <TextBlock Text="&#xE838;" Style="{StaticResource Glyph}" FontSize="13" Margin="0,1,8,0" />
                                     <TextBlock Text="Browse…" />
@@ -1235,7 +1538,8 @@
                 <DockPanel>
                     <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
                         <Button Content="Capture current" Command="{Binding CaptureCommand}" Margin="0,0,6,0"
-                                ToolTip="Copy what the display shows now into every line" />
+                                ToolTip="Copy what the display shows now into every line"
+                                Visibility="{Binding IsLocked, Converter={StaticResource InverseBoolToVisibility}}" />
                         <Button Content="Try" Command="{Binding TryCommand}" Margin="0,0,6,0" ToolTip="Apply the profile as it is here, without saving">
                             <Button.Style>
                                 <Style TargetType="Button" BasedOn="{StaticResource FlatButton}">
