@@ -26,6 +26,9 @@ object Glyphs {
     val Link = line("link", "M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7", "M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7")
     val More = line("more", "M12 5h.01M12 12h.01M12 19h.01", width = 3f)
     val ChevronRight = line("chevron", "M9 5l7 7-7 7", width = 2.4f)
+    val ChevronDown = line("chevron-down", "M6 9l6 6 6-6", width = 2.4f)
+    val Speaker = line("speaker", "M4 9.5h3.5L12 5.5v13l-4.5-4H4z", "M15.5 9a4.5 4.5 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11")
+    val SpeakerOff = line("speaker-off", "M4 9.5h3.5L12 5.5v13l-4.5-4H4z", "M16 9.5l5 5M21 9.5l-5 5")
     val Wifi = line("wifi", "M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0M2 9a15 15 0 0 1 20 0", circle(12f, 19.5f, 1f))
     val Check = line("check", "M5 12.5l4.5 4.5L19 7.5", width = 2.2f)
     val Port = line("port", "M2 7h20v6l-3 4H5l-3-4z", "M7 10h10", width = 1.8f)
@@ -51,6 +54,7 @@ object Glyphs {
         }
     }
 
+    val Close = line("close", "M6 6l12 12M18 6L6 18", width = 2.2f)
     val Refresh = line("refresh", "M20 11a8 8 0 1 0-2.3 5.7", "M20 4v7h-7")
 
     // Profile icons, by the library ids the PC sends (Icons.ProfileIconId).

@@ -29,6 +29,39 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <activity
+            android:name=".surfaces.QuickPanelActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTask"
+            android:taskAffinity="com.greypaulino.switchmonitor.panel"
+            android:theme="@style/Theme.SwitchMonitor.Panel" />
+
+        <receiver android:name=".surfaces.ControlReceiver" android:exported="false" />
+
+        <receiver android:name=".surfaces.LargeWidget" android:exported="false" android:label="SwitchMonitor">
+            <intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE" /></intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/widget_large_info" />
+        </receiver>
+        <receiver android:name=".surfaces.SmallWidget" android:exported="false" android:label="SwitchMonitor brightness">
+            <intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE" /></intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/widget_small_info" />
+        </receiver>
+        <receiver android:name=".surfaces.ProfilesWidget" android:exported="false" android:label="SwitchMonitor profiles">
+            <intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE" /></intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/widget_profiles_info" />
+        </receiver>
+
+        <service
+            android:name=".surfaces.QuickTile"
+            android:exported="true"
+            android:icon="@drawable/g_monitor"
+            android:label="SwitchMonitor"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter><action android:name="android.service.quicksettings.action.QS_TILE" /></intent-filter>
+            <meta-data android:name="android.service.quicksettings.ACTIVE_TILE" android:value="false" />
+        </service>
     </application>
 
 </manifest>

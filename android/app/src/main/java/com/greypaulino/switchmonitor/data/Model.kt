@@ -11,7 +11,11 @@ data class PcState(
     val displays: List<Display>,
     val profiles: List<Profile>,
     val modes: Modes?,
+    /** The computer's Windows volume (default playback device); null when it has none or is an older version. */
+    val volume: Volume? = null,
 )
+
+data class Volume(val percent: Int, val muted: Boolean)
 
 data class Display(
     val id: String,
@@ -29,7 +33,7 @@ data class Display(
 
 data class InputPort(val code: Int, val label: String, val current: Boolean, val inCycle: Boolean)
 
-data class Profile(val name: String, val color: Long, val icon: String?, val active: Boolean, val custom: Boolean)
+data class Profile(val name: String, val color: Long, val icon: String?, val active: Boolean, val custom: Boolean, val modified: Boolean = false)
 
 data class Modes(val display: String, val current: Int?, val options: List<ModeOption>)
 
@@ -66,6 +70,7 @@ internal fun parseState(o: JSONObject): PcState = PcState(
             icon = if (p.isNull("icon")) null else p.optString("icon"),
             active = p.optBoolean("active"),
             custom = p.optBoolean("custom"),
+            modified = p.optBoolean("modified"),
         )
     },
     modes = o.optJSONObject("modes")?.let { m ->
@@ -75,6 +80,7 @@ internal fun parseState(o: JSONObject): PcState = PcState(
             options = m.optJSONArray("options").objects().map { ModeOption(it.optInt("value"), it.optString("label")) },
         )
     },
+    volume = o.optJSONObject("volume")?.let { Volume(it.optInt("percent"), it.optBoolean("muted")) },
 )
 
 private fun JSONArray?.objects(): List<JSONObject> =

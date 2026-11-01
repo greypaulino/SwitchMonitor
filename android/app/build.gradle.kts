@@ -23,7 +23,9 @@ android {
         release {
             optimization {
                 enable = true
-                packageScope = setOf("androidx.**", "kotlin.**", "kotlinx.**")
+                // Every package that uses the Kotlin library is optimized with it: optimizing (renaming) kotlin.** while
+                // OkHttp stayed as it was made the release build crash at start (IllegalAccessError in okhttp3.internal.Util).
+                packageScope = setOf("androidx.**", "kotlin.**", "kotlinx.**", "okhttp3.**", "okio.**", "com.greypaulino.**")
             }
         }
     }

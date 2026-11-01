@@ -1,3 +1,6 @@
 <resources>
     <string name="app_name">SwitchMonitor</string>
+    <string name="widget_large_info_desc">Brightness, display and profiles</string>
+    <string name="widget_small_info_desc">Brightness with − and +</string>
+    <string name="widget_profiles_info_desc">Profiles</string>
 </resources>
