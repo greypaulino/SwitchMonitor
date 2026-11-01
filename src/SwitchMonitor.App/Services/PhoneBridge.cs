@@ -219,7 +219,8 @@ public sealed class PhoneBridge : ObservableObject, IRemoteHost, IDisposable
                 ["color"] = scene.Color,
                 ["icon"] = Icons.ProfileIconId(scene.Name, scene.Scene?.Icon),
                 ["active"] = scene.IsActive,
-                ["custom"] = scene.IsCustom
+                ["custom"] = scene.IsCustom,
+                ["modified"] = scene.IsModified
             });
         JsonObject? modes = null;
         if (panel.ShowsModes && panel.PictureMode is { } mode)
@@ -235,7 +236,10 @@ public sealed class PhoneBridge : ObservableObject, IRemoteHost, IDisposable
             ["canLink"] = panel.HasSeveral,
             ["displays"] = displays,
             ["profiles"] = profiles,
-            ["modes"] = modes
+            ["modes"] = modes,
+            ["volume"] = WindowsVolume.Read() is { } sound
+                ? new JsonObject { ["percent"] = sound.Percent, ["muted"] = sound.Muted }
+                : null
         };
     }
 
@@ -295,6 +299,12 @@ public sealed class PhoneBridge : ObservableObject, IRemoteHost, IDisposable
                 if (Row() is not { IsOn: true } preferred) return "Unknown display.";
                 panel.TogglePreferred(preferred);
                 return null;
+            case "volume":
+                if (Int("value") is not int level) return "Missing volume value.";
+                return WindowsVolume.SetPercent(level) ? null : "No sound output to set.";
+            case "mute":
+                if (Bool("on") is not bool silent) return "Missing mute value.";
+                return WindowsVolume.SetMuted(silent) ? null : "No sound output to set.";
             default:
                 return $"Unknown command \"{type}\".";
         }

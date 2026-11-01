@@ -137,7 +137,12 @@ public sealed class ProfileSettingRowViewModel : ObservableObject
     public bool Include
     {
         get => include;
-        set { if (Set(ref include, value) && !loading) editor.MarkDirty(); }
+        set
+        {
+            if (!Set(ref include, value)) return;
+            Raise(nameof(IsVisible));
+            if (!loading) editor.MarkDirty();
+        }
     }
 
     public double Percent
@@ -213,7 +218,16 @@ public sealed class ProfileSettingRowViewModel : ObservableObject
     }
 
     /// <summary>The row is drawn: shown by the picture mode and not folded into the volume line.</summary>
-    public bool IsVisible => IsShown && VolumeRow is null;
+    public bool IsVisible => IsShown && VolumeRow is null && (Include || !editor.IsLocked);
+
+    /// <summary>Locked profile: the line only shows its value.</summary>
+    public bool IsLocked => editor.IsLocked;
+
+    internal void LockChanged()
+    {
+        Raise(nameof(IsLocked));
+        Raise(nameof(IsVisible));
+    }
 
     private bool isShown = true;
 
@@ -369,6 +383,39 @@ public sealed class ProfileEditorViewModel : ObservableObject
     }
 
     public bool IsEditing => isCustom || !string.IsNullOrWhiteSpace(Name);
+
+    private bool unlocked;
+
+    /// <summary>
+    /// A saved profile (and Custom) opens locked: it only shows what it sets. The padlock next to the title unlocks it
+    /// for editing. A new profile is always editable.
+    /// </summary>
+    public bool IsLocked => !unlocked && (!IsNew || isCustom);
+
+    public bool IsUnlocked => !IsLocked;
+
+    /// <summary>The padlock: on saved profiles and Custom (a new one is always being edited).</summary>
+    public bool ShowsLock => !IsNew || isCustom;
+
+    public string LockGlyph => IsLocked ? "\uE72E" : "\uE785";
+    public string LockToolTip => IsLocked ? "Locked: click to edit this profile" : "Editing: click to lock it again";
+
+    public ICommand ToggleLockCommand => new RelayCommand(() => SetUnlocked(!unlocked));
+
+    private void SetUnlocked(bool value)
+    {
+        unlocked = value;
+        if (IsLocked) IsIconLibraryOpen = false;
+        Raise(nameof(IsLocked));
+        Raise(nameof(IsUnlocked));
+        Raise(nameof(ShowsLock));
+        Raise(nameof(LockGlyph));
+        Raise(nameof(LockToolTip));
+        Raise(nameof(ShowsSave));
+        Raise(nameof(ShowsAdvancedHeading));
+        foreach (var row in allRows) row.LockChanged();
+        CommandManager.InvalidateRequerySuggested();
+    }
     public bool IsNew => originalName is null;
     /// <summary>Custom is the person's own settings: always called Custom, applied rather than saved.</summary>
     public bool IsCustom => isCustom;
@@ -416,7 +463,7 @@ public sealed class ProfileEditorViewModel : ObservableObject
     /// Save (Apply for Custom) shows only when there is something to keep: a new profile, Custom, or a saved profile
     /// that was changed here. A template added as it is needs no Save.
     /// </summary>
-    public bool ShowsSave => isCustom || IsNew || dirty;
+    public bool ShowsSave => (isCustom || IsNew || dirty) && (!IsLocked || dirty);
 
     /// <summary>The ⋯ menu's Delete: asks once in a dialog (the two-click Delete does not work from a menu).</summary>
     public ICommand DeleteAskCommand => deleteAsk ??= new RelayCommand(_ =>
@@ -450,12 +497,20 @@ public sealed class ProfileEditorViewModel : ObservableObject
         {
             if (!Set(ref includeAdvanced, value)) return;
             RebuildVisibleRows();
-            Raise(nameof(AdvancedGlyph)); Raise(nameof(AdvancedToolTip));
+            Raise(nameof(AdvancedGlyph)); Raise(nameof(AdvancedToolTip)); Raise(nameof(ShowsAdvancedHeading));
             MarkDirty();
         }
     }
 
+    private bool showsRowsSkeleton;
+
+    /// <summary>Settings rows not built yet (the source display is being read): grey placeholder rows.</summary>
+    public bool ShowsRowsSkeleton { get => showsRowsSkeleton; private set => Set(ref showsRowsSkeleton, value); }
+
     public bool HasAdvancedRows => allRows.Any(r => r.IsAvailable && r.IsAdvanced);
+
+    /// <summary>Locked, the Advanced heading shows only when the profile includes those lines.</summary>
+    public bool ShowsAdvancedHeading => HasAdvancedRows && (!IsLocked || IncludeAdvanced);
 
     /// <summary>Chevron of the ADVANCED heading: down while open, right while closed (Segoe MDL2 Assets).</summary>
     public string AdvancedGlyph => IncludeAdvanced ? "\uE70D" : "\uE76C";
@@ -464,7 +519,7 @@ public sealed class ProfileEditorViewModel : ObservableObject
         ? "Red, green, blue and black levels are part of the profile. Click to leave them out."
         : "Red, green, blue and black levels are left as they are. Click to include them.";
 
-    public ICommand ToggleAdvancedCommand => new RelayCommand(() => IncludeAdvanced = !IncludeAdvanced);
+    public ICommand ToggleAdvancedCommand => new RelayCommand(() => { if (!IsLocked) IncludeAdvanced = !IncludeAdvanced; });
 
     public void RemoveRow(ProfileSettingRowViewModel row)
     {
@@ -507,6 +562,7 @@ public sealed class ProfileEditorViewModel : ObservableObject
         LoadCurrentValues(allRows);
         RebuildVisibleRows();
         SetDirty(false);
+        SetUnlocked(false);
         RaiseHeader();
         Inform(Source is null
             ? "No display to read settings from."
@@ -544,6 +600,7 @@ public sealed class ProfileEditorViewModel : ObservableObject
         LoadCurrentValues(allRows.Where(r => !r.Include));
         RebuildVisibleRows();
         SetDirty(true);
+        SetUnlocked(true);
         RaiseHeader();
         Raise(nameof(IsEditing));
         Inform(templateProfile is null
@@ -614,6 +671,8 @@ public sealed class ProfileEditorViewModel : ObservableObject
         Raise(nameof(AdvancedGlyph)); Raise(nameof(AdvancedToolTip));
         SetDirty(false);
         confirmingDelete = false;
+        if (!keepDraft) SetUnlocked(false);
+        else SetUnlocked(unlocked);
         RaiseHeader();
         Inform(Source is null ? "Saved." : $"Saved. Settings this profile does not set show what {Source.Name} has now (Save would add them to it).");
     }
@@ -642,7 +701,15 @@ public sealed class ProfileEditorViewModel : ObservableObject
     private async Task BuildRowsAsync(SceneProfile? profile, IReadOnlyList<KeyValuePair<string, JsonNode?>> raw)
     {
         allRows.Clear();
-        if (Source is { } display) await display.EnsureLoadedAsync();
+        if (Source is { } display && !display.IsLoaded)
+        {
+            // The display is read for the first time: placeholder rows hold the card's size meanwhile.
+            Rows.Clear();
+            AdvancedRows.Clear();
+            ShowsRowsSkeleton = true;
+            try { await display.EnsureLoadedAsync(); }
+            finally { ShowsRowsSkeleton = false; }
+        }
         var controls = Source?.AllControls.Where(c => c is not ReadOnlyControlViewModel).ToArray() ?? [];
         var features = controls.Select(c => c.Feature).ToArray();
         foreach (var feature in features) allRows.Add(new ProfileSettingRowViewModel(this, feature));
@@ -684,6 +751,7 @@ public sealed class ProfileEditorViewModel : ObservableObject
         LinkVolumeAndMute();
         UpdateModeLocks();
         Raise(nameof(HasAdvancedRows));
+        Raise(nameof(ShowsAdvancedHeading));
         Raise(nameof(HasMissingRows));
     }
 

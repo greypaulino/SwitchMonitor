@@ -20,7 +20,16 @@ public sealed class SceneViewModel : ObservableObject
     {
         Scene = scene;
         ApplyCommand = new RelayCommand(() => _ = scene is null ? main.RestoreCustomAsync() : main.ApplySceneAsync(scene));
+        SaveCommand = new RelayCommand(main.SaveModifiedProfile);
     }
+
+    private bool isModified;
+    /// <summary>The active profile, with settings changed by hand since it was applied ("Work · custom").</summary>
+    public bool IsModified { get => isModified; set { if (Set(ref isModified, value)) Raise(nameof(Label)); } }
+    /// <summary>The name shown on the pill: "Work", or "Work · custom" once changed by hand.</summary>
+    public string Label => isModified ? $"{Name} · custom" : Name;
+    /// <summary>"Save?": writes the values changed by hand into this profile.</summary>
+    public ICommand SaveCommand { get; }
 
     public SceneProfile? Scene { get; }
     public bool IsCustom => Scene is null;
@@ -28,7 +37,7 @@ public sealed class SceneViewModel : ObservableObject
     public string Hotkey => Scene?.Hotkey?.ToString() ?? "";
     public IReadOnlyList<string> HotkeyKeys => Hotkey.Length == 0 ? [] : Hotkey.Split('+');
     public string Summary => Scene is null
-        ? "Your own settings. Changing any setting by hand selects Custom; after applying a profile, click Custom to get your settings back."
+        ? "Your own settings. After applying a profile, click Custom to get your settings back."
         : string.Join(" · ", Scene.Settings.Select(s => s.ToString()));
 
     /// <summary>The profile the displays are in now (Custom until one is applied).</summary>
@@ -95,6 +104,11 @@ public sealed partial class MainViewModel : ObservableObject, IInputCoordinator
     private readonly Core.Color.ColorStore colorStore = Core.Color.ColorStore.Load();
     private string activeProfile = CustomName;
     private Dictionary<string, List<SceneSetting>>? customSnapshot;
+    /// <summary>The active saved profile was changed by hand since it was applied (shown as "custom", can be saved).</summary>
+    private bool profileModified;
+    /// <summary>What was changed by hand: the display and the control codes (brightness 0x10...).</summary>
+    private MonitorViewModel? modifiedOn;
+    private readonly HashSet<byte> modifiedCodes = [];
 
     /// <summary>Name of the always-present first profile: the person's own (hand-made) settings.</summary>
     public const string CustomName = SceneStore.CustomName;
@@ -394,7 +408,10 @@ public sealed partial class MainViewModel : ObservableObject, IInputCoordinator
 
     public string Status { get => status; private set => Set(ref status, value); }
     public bool StatusIsError { get => statusIsError; private set => Set(ref statusIsError, value); }
-    public bool IsBusy { get => isBusy; private set => Set(ref isBusy, value); }
+    public bool IsBusy { get => isBusy; private set { if (Set(ref isBusy, value)) Raise(nameof(ShowsSearchSkeleton)); } }
+
+    /// <summary>Looking for displays with none listed yet: the list and the page show placeholders instead of an empty window.</summary>
+    public bool ShowsSearchSkeleton => isBusy && Monitors.Count == 0;
 
     /// <summary>Shortcut problems stay visible (unlike the status line) until they are fixed.</summary>
     public string? ShortcutWarning
@@ -451,12 +468,14 @@ public sealed partial class MainViewModel : ObservableObject, IInputCoordinator
             string? keep = Selected?.Device.Key;
             foreach (var old in Monitors) old.Dispose();
             Monitors.Clear();
+            Raise(nameof(ShowsSearchSkeleton));
             Selected = null;
             returnWatches.Clear();
 
             var devices = await Task.Run(() => DeviceSource?.Invoke() ?? MonitorEnumerator.Enumerate(CoreOptions.FromDataDirectory(), log: log));
             foreach (var device in devices.OrderByDescending(d => d.IsControllable).ThenByDescending(d => d.Identity.IsPrimary))
                 Monitors.Add(new MonitorViewModel(device, Report, this) { TogglePreferred = TogglePreferred });
+            Raise(nameof(ShowsSearchSkeleton));
             // Panel names from the EDID for built-in screens (Windows display configuration, quick and read-only).
             var summaries = await Task.Run(() => BuiltInProbe.Displays());
             foreach (var monitor in Monitors.Where(m => m.Device.Identity.IsBuiltIn))
@@ -547,17 +566,99 @@ public sealed partial class MainViewModel : ObservableObject, IInputCoordinator
 
     private void MarkActiveProfile()
     {
-        foreach (var scene in Scenes) scene.IsActive = string.Equals(scene.Name, activeProfile, StringComparison.OrdinalIgnoreCase);
+        if (activeProfile == CustomName) ForgetModified();
+        foreach (var scene in Scenes)
+        {
+            scene.IsActive = string.Equals(scene.Name, activeProfile, StringComparison.OrdinalIgnoreCase);
+            scene.IsModified = scene.IsActive && !scene.IsCustom && profileModified;
+        }
         Raise(nameof(CanUndoProfile));
+        Raise(nameof(ProfileModified));
     }
 
-    /// <summary>Changing a setting by hand makes Custom the active profile again (the saved settings before it are dropped).</summary>
-    public void SettingChangedByHand(MonitorViewModel monitor)
+    /// <summary>The active saved profile has values changed by hand (the pill says "custom" and offers "Save?").</summary>
+    public bool ProfileModified => profileModified && activeProfile != CustomName;
+
+    private void ForgetModified()
+    {
+        profileModified = false;
+        modifiedOn = null;
+        modifiedCodes.Clear();
+    }
+
+    /// <summary>
+    /// A setting changed by hand. A saved profile stays the active one and shows "custom" (its values may now differ);
+    /// "Save?" writes them into it, choosing it again brings its saved values back, Custom brings the person's own.
+    /// </summary>
+    public void SettingChangedByHand(MonitorViewModel monitor, byte? code = null)
     {
         if (activeProfile == CustomName) return;
-        activeProfile = CustomName;
-        customSnapshot = null;
+        modifiedOn = monitor;
+        if (code is byte c) modifiedCodes.Add(c);
+        if (profileModified) return;
+        profileModified = true;
         MarkActiveProfile();
+    }
+
+    /// <summary>"Save?": the active profile takes the values the display shows now (what was changed by hand).</summary>
+    public void SaveModifiedProfile()
+    {
+        var scene = SceneProfiles.FirstOrDefault(s => string.Equals(s.Name, activeProfile, StringComparison.OrdinalIgnoreCase));
+        if (scene is null || !profileModified) return;
+        var source = modifiedOn is { } edited && scene.AppliesTo(edited.Device) ? edited
+            : Monitors.FirstOrDefault(m => m.IsControllable && m.IsLoaded && scene.AppliesTo(m.Device));
+        if (source is null)
+        {
+            Report($"{scene.Name}: no display to take the values from.", false);
+            return;
+        }
+        try
+        {
+            string json = SceneStore.ReadText();
+            var raw = SceneStore.RawSettings(json, scene.Name);
+            var lines = new List<KeyValuePair<string, System.Text.Json.Nodes.JsonNode>>();
+            int changed = 0;
+            // Lines are in file order, the same order the profile was read in.
+            for (int i = 0; i < raw.Count; i++)
+            {
+                var (key, node) = raw[i];
+                var keep = node?.DeepClone();
+                var setting = i < scene.Settings.Count ? scene.Settings[i] : null;
+                if (setting is not null && source.ShownValue(setting.Feature.Code) is { } now)
+                {
+                    bool same = setting.Feature.Kind == Core.Vcp.FeatureKind.Continuous
+                        ? setting.Percent is double p && now.Percent is double q && Math.Abs(p - q) < 0.5
+                        : setting.Candidates.Any(c => c.Value == now.Raw);
+                    if (!same) { keep = SceneStore.ValueNode(setting.Feature, now.Percent, now.Raw); changed++; }
+                }
+                if (keep is not null) lines.Add(new(key, keep));
+            }
+            // A control changed by hand that the profile did not set (brightness in a profile without it) joins it.
+            foreach (byte code in modifiedCodes)
+            {
+                if (scene.Settings.Any(s => s.Candidates.Any(c => c.Feature.Code == code))) continue;
+                var control = source.AllControls.FirstOrDefault(c => c.Feature.Code == code);
+                if (control is null || source.ShownValue(code) is not { } now) continue;
+                var definition = control.Feature.Definition;
+                lines.Add(new(definition.Name.ToLowerInvariant(), SceneStore.ValueNode(definition, now.Percent, now.Raw)));
+                changed++;
+            }
+            if (changed == 0)
+            {
+                ForgetModified();
+                MarkActiveProfile();
+                Report($"{scene.Name} already has these values.", true);
+                return;
+            }
+            SceneStore.Write(SceneStore.Upsert(json, scene.Name, scene.Name, scene.MonitorFilter, lines));
+            ForgetModified();
+            LoadScenes();
+            Report($"{scene.Name} saved with the values of {source.Name}.", true);
+        }
+        catch (Exception error) when (error is FormatException or IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
+        {
+            Report($"{scene.Name} could not be saved: {error.Message}", false);
+        }
     }
 
     /// <summary>What each display shows now, as profile lines (modes and levels), so Custom can bring it back later.</summary>
@@ -642,6 +743,7 @@ public sealed partial class MainViewModel : ObservableObject, IInputCoordinator
         // Leaving Custom: remember the person's own settings so the Custom button can bring them back.
         if (activeProfile == CustomName) customSnapshot = CaptureCustom();
         activeProfile = scene.Name;
+        ForgetModified();   // chosen again: its saved values come back
         MarkActiveProfile();
         var targets = Monitors.Where(m => m.IsControllable && scene.AppliesTo(m.Device)).ToArray();
         var devices = targets.Select(m => m.Device).ToArray();

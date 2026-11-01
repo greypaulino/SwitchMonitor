@@ -171,8 +171,12 @@
                                         </Button>
                                         <TextBlock x:Name="RowName" Text="{Binding Name}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
                                     </DockPanel>
-                                    <Slider x:Name="RowSlider" Minimum="0" Maximum="100" Value="{Binding Level, Mode=TwoWay}" IsEnabled="{Binding IsReady}"
-                                            Margin="18,6,0,0" Focusable="False" AutomationProperties.Name="{Binding Name}" />
+                                    <Grid x:Name="RowSliderBox" Margin="18,6,0,0">
+                                        <Slider x:Name="RowSlider" Minimum="0" Maximum="100" Value="{Binding Level, Mode=TwoWay}" IsEnabled="{Binding IsReady}"
+                                                Focusable="False" AutomationProperties.Name="{Binding Name}" />
+                                        <!-- Brightness not read yet: a placeholder bar where the slider goes (same height) -->
+                                        <Border x:Name="RowBone" Style="{StaticResource Bone}" Height="6" CornerRadius="3" VerticalAlignment="Center" Visibility="Collapsed" />
+                                    </Grid>
                                 </StackPanel>
                             </Border>
                             <DataTemplate.Triggers>
@@ -182,8 +186,16 @@
                                 <DataTrigger Binding="{Binding HasInputs}" Value="False">
                                     <Setter TargetName="InputsButton" Property="ToolTip" Value="{x:Null}" />
                                 </DataTrigger>
+                                <MultiDataTrigger>
+                                    <MultiDataTrigger.Conditions>
+                                        <Condition Binding="{Binding IsReady}" Value="False" />
+                                        <Condition Binding="{Binding IsOff}" Value="False" />
+                                    </MultiDataTrigger.Conditions>
+                                    <Setter TargetName="RowSlider" Property="Visibility" Value="Hidden" />
+                                    <Setter TargetName="RowBone" Property="Visibility" Value="Visible" />
+                                </MultiDataTrigger>
                                 <DataTrigger Binding="{Binding IsOff}" Value="True">
-                                    <Setter TargetName="RowSlider" Property="Visibility" Value="Collapsed" />
+                                    <Setter TargetName="RowSliderBox" Property="Visibility" Value="Collapsed" />
                                     <Setter TargetName="RowName" Property="Foreground" Value="{StaticResource FaintBrush}" />
                                     <Setter TargetName="RowBox" Property="Padding" Value="10,5" />
                                 </DataTrigger>
@@ -232,7 +244,7 @@
                 <ItemsControl.ItemTemplate>
                     <DataTemplate DataType="{x:Type vm:SceneViewModel}">
                         <Button x:Name="Pill" Click="ProfileClick" MouseEnter="ProfileEnter" MouseLeave="ProfileLeave" Margin="0,0,6,4" Width="28" Height="28" Padding="0" Focusable="False"
-                                ToolTip="{Binding Name}" AutomationProperties.Name="{Binding Name}" Cursor="Hand">
+                                ToolTip="{Binding Label}" AutomationProperties.Name="{Binding Name}" Cursor="Hand">
                             <Button.Template>
                                 <ControlTemplate TargetType="Button">
                                     <!-- Fixed square: the ring stays a circle -->
@@ -243,6 +255,9 @@
                                                           Fill="{Binding ColorBrush}" Glyph="{Binding SolidMark.Text}" GlyphFont="{Binding SolidMark.Font}"
                                                           GlyphWeight="{Binding SolidMark.Weight}" Image="{Binding IconImage}"
                                                           Opacity="0.85" />
+                                        <!-- Changed by hand since it was applied ("custom"; Save? is on the main window) -->
+                                        <Ellipse x:Name="Modified" Width="8" Height="8" Fill="White" Stroke="#FF1C1C1C" StrokeThickness="1.5"
+                                                 HorizontalAlignment="Right" VerticalAlignment="Bottom" Visibility="Collapsed" />
                                     </Grid>
                                     <ControlTemplate.Triggers>
                                         <Trigger Property="IsMouseOver" Value="True">
@@ -251,6 +266,9 @@
                                         <DataTrigger Binding="{Binding IsActive}" Value="True">
                                             <Setter TargetName="Ring" Property="Opacity" Value="1" />
                                             <Setter TargetName="Badge" Property="Opacity" Value="1" />
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding IsModified}" Value="True">
+                                            <Setter TargetName="Modified" Property="Visibility" Value="Visible" />
                                         </DataTrigger>
                                     </ControlTemplate.Triggers>
                                 </ControlTemplate>
