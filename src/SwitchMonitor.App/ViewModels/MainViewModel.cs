@@ -155,6 +155,10 @@ public sealed partial class MainViewModel : ObservableObject, IInputCoordinator
     public string ActiveProfile => activeProfile;
 
     public AppSettings Settings { get; private set; }
+
+    private Services.PhoneBridge? phone;
+    /// <summary>Settings > Phone (control from a phone on the home Wi-Fi); null in demo mode.</summary>
+    public Services.PhoneBridge? Phone { get => phone; set => Set(ref phone, value); }
     public ObservableCollection<MonitorViewModel> Monitors { get; } = [];
     public ObservableCollection<SceneViewModel> Scenes { get; } = [];
     public IReadOnlyList<SceneProfile> SceneProfiles { get; private set; } = [];
