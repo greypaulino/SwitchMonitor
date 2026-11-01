@@ -81,6 +81,9 @@ public sealed record AppSettings
     /// <summary>Sun panel: moving one display's brightness moves the others to the same level (1.x chain button).</summary>
     public bool LinkBrightness { get; init; }
 
+    /// <summary>A paired phone on the home Wi-Fi may control the displays (off until turned on in Settings).</summary>
+    public bool PhoneAccess { get; init; }
+
     /// <summary>
     /// Key of the preferred main display: whenever it is connected and Windows uses it, it is made the main display
     /// (when it is gone, Windows moves the main display to another one by itself). Null: no preference.
@@ -178,6 +181,7 @@ public sealed record AppSettings
             StartMinimized = root.TryGetProperty("startMinimized", out var min) && min.ValueKind == JsonValueKind.True,
             ShowAdvanced = root.TryGetProperty("showAdvanced", out var adv) && adv.ValueKind == JsonValueKind.True,
             LinkBrightness = root.TryGetProperty("linkBrightness", out var link) && link.ValueKind == JsonValueKind.True,
+            PhoneAccess = root.TryGetProperty("phoneAccess", out var phone) && phone.ValueKind == JsonValueKind.True,
             PreferredMain = root.TryGetProperty("preferredMain", out var preferred) && preferred.ValueKind == JsonValueKind.String
                 && preferred.GetString() is { Length: > 0 } preferredKey ? preferredKey : null
         };
@@ -229,6 +233,7 @@ public sealed record AppSettings
             ["startMinimized"] = StartMinimized,
             ["showAdvanced"] = ShowAdvanced,
             ["linkBrightness"] = LinkBrightness,
+            ["phoneAccess"] = PhoneAccess,
             ["preferredMain"] = PreferredMain
         };
         return root.ToJsonString(new JsonSerializerOptions { WriteIndented = true });

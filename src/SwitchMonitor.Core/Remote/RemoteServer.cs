@@ -1,0 +1,401 @@
+using System.Collections.Concurrent;
+using System.Net;
+using System.Net.Sockets;
+using System.Net.WebSockets;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using SwitchMonitor.Core.Diagnostics;
+
+namespace SwitchMonitor.Core.Remote;
+
+/// <summary>What the phone server shows and does; the app implements it on top of the brightness panel.</summary>
+public interface IRemoteHost
+{
+    /// <summary>The name the phone shows for this computer.</summary>
+    string ComputerName { get; }
+
+    /// <summary>The web page served at "/" (a simple control page, also used for testing from a browser).</summary>
+    string Page { get; }
+
+    /// <summary>The current state as a JSON object (displays, profiles, picture modes, inputs).</summary>
+    Task<JsonObject> StateAsync();
+
+    /// <summary>Runs one command from a paired phone; returns an error text for the phone, or null.</summary>
+    Task<string?> CommandAsync(string type, JsonElement message);
+}
+
+/// <summary>
+/// Lets a phone on the home network control the displays. Plain .NET only: a TCP listener that serves the control page
+/// over HTTP and upgrades "/ws" to a WebSocket (JSON messages both ways), plus a UDP reply so the phone can find the
+/// computer. Only private (home network) addresses may connect, and every command needs a paired phone's token.
+/// </summary>
+public sealed class RemoteServer : IDisposable
+{
+    public const int DefaultPort = 47820;
+    public const int DiscoveryPort = 47821;
+    public const string DiscoveryQuestion = "SWITCHMONITOR?";
+    private const string WebSocketGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+    private const int MaxMessage = 64 * 1024;
+
+    private readonly PhoneStore store;
+    private readonly IRemoteHost host;
+    private readonly ICoreLog log;
+    private readonly int requestedPort;
+    private readonly ConcurrentDictionary<Guid, Client> clients = new();
+    private TcpListener? listener;
+    private UdpClient? discovery;
+    private CancellationTokenSource? stop;
+
+    /// <summary>A connected, paired phone. <see cref="Sending"/> keeps replies and broadcasts from interleaving.</summary>
+    private sealed class Client(WebSocket socket, PairedPhone phone, string token, SemaphoreSlim sending)
+    {
+        public WebSocket Socket { get; } = socket;
+        public PairedPhone Phone { get; } = phone;
+        public string Token { get; } = token;
+        public SemaphoreSlim Sending { get; } = sending;
+    }
+
+    public RemoteServer(PhoneStore store, IRemoteHost host, ICoreLog? log = null, int port = DefaultPort)
+    {
+        this.store = store;
+        this.host = host;
+        this.log = log ?? NullLog.Instance;
+        requestedPort = port;
+        store.Changed += DropRemovedPhones;
+    }
+
+    public bool IsRunning => listener is not null;
+
+    /// <summary>The port in use (the requested one, or the one Windows chose for port 0).</summary>
+    public int Port { get; private set; }
+
+    /// <summary>Paired phones connected now.</summary>
+    public int ConnectedCount => clients.Count;
+    public IReadOnlyList<string> ConnectedPhones => clients.Values.Select(c => c.Phone.Name).ToArray();
+
+    /// <summary>Raised (on a worker thread) when a phone connects or disconnects.</summary>
+    public event Action? ClientsChanged;
+
+    public void Start(bool withDiscovery = true)
+    {
+        if (listener is not null) return;
+        stop = new CancellationTokenSource();
+        var tcp = new TcpListener(IPAddress.IPv6Any, requestedPort);
+        tcp.Server.DualMode = true;
+        tcp.Start();
+        listener = tcp;
+        Port = ((IPEndPoint)tcp.LocalEndpoint).Port;
+        _ = AcceptLoop(tcp, stop.Token);
+        if (withDiscovery)
+        {
+            try
+            {
+                discovery = new UdpClient(new IPEndPoint(IPAddress.Any, DiscoveryPort)) { EnableBroadcast = true };
+                _ = DiscoveryLoop(discovery, stop.Token);
+            }
+            catch (SocketException error) { log.Write(LogLevel.Warning, "Phone: the computer cannot be found automatically (UDP port in use); the phone can still connect by address.", error); }
+        }
+        log.Write(LogLevel.Info, $"Phone access on: port {Port}.");
+    }
+
+    public void Stop()
+    {
+        if (listener is null) return;
+        stop?.Cancel();
+        listener.Stop();
+        listener = null;
+        discovery?.Dispose();
+        discovery = null;
+        foreach (var client in clients.Values) _ = CloseAsync(client, "SwitchMonitor stopped phone access.");
+        clients.Clear();
+        ClientsChanged?.Invoke();
+        log.Write(LogLevel.Info, "Phone access off.");
+    }
+
+    public void Dispose()
+    {
+        store.Changed -= DropRemovedPhones;
+        Stop();
+    }
+
+    /// <summary>Sends the state to every connected phone (called by the app when something changed).</summary>
+    public async Task BroadcastAsync(JsonObject state)
+    {
+        if (clients.IsEmpty) return;
+        string json = Message("state", state);
+        foreach (var client in clients.Values) await SendAsync(client.Socket, client.Sending, json);
+    }
+
+    // ---- Connections ----
+
+    private async Task AcceptLoop(TcpListener tcp, CancellationToken cancel)
+    {
+        while (!cancel.IsCancellationRequested)
+        {
+            TcpClient connection;
+            try { connection = await tcp.AcceptTcpClientAsync(cancel); }
+            catch (Exception error) when (error is OperationCanceledException or ObjectDisposedException or SocketException) { return; }
+            _ = Serve(connection, cancel);
+        }
+    }
+
+    private async Task Serve(TcpClient connection, CancellationToken cancel)
+    {
+        using (connection)
+        {
+            if (connection.Client.RemoteEndPoint is not IPEndPoint remote || !LocalNetwork.IsAllowed(remote.Address))
+            {
+                log.Write(LogLevel.Warning, $"Phone: refused a connection from outside the home network ({connection.Client.RemoteEndPoint}).");
+                return;
+            }
+            try
+            {
+                var stream = connection.GetStream();
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancel);
+                timeout.CancelAfter(TimeSpan.FromSeconds(10));
+                var request = await ReadRequestAsync(stream, timeout.Token);
+                if (request is null) return;
+                var (method, path, headers) = request.Value;
+                if (method != "GET") { await RespondAsync(stream, "405 Method Not Allowed", "text/plain", "Method not allowed"); return; }
+                if (path is "/" or "/index.html") { await RespondAsync(stream, "200 OK", "text/html; charset=utf-8", host.Page); return; }
+                if (path == "/ws" && headers.TryGetValue("upgrade", out var upgrade) && upgrade.Equals("websocket", StringComparison.OrdinalIgnoreCase)
+                    && headers.TryGetValue("sec-websocket-key", out var key))
+                {
+                    string accept = AcceptKey(key);
+                    byte[] head = Encoding.ASCII.GetBytes("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" +
+                        $"Sec-WebSocket-Accept: {accept}\r\n\r\n");
+                    await stream.WriteAsync(head, cancel);
+                    using var socket = WebSocket.CreateFromStream(stream, new WebSocketCreationOptions
+                    {
+                        IsServer = true, KeepAliveInterval = TimeSpan.FromSeconds(20)
+                    });
+                    await TalkAsync(socket, remote, cancel);
+                    return;
+                }
+                await RespondAsync(stream, "404 Not Found", "text/plain", "Not found");
+            }
+            catch (Exception error) when (error is IOException or SocketException or WebSocketException or OperationCanceledException or ObjectDisposedException)
+            {
+                log.Write(LogLevel.Debug, $"Phone: connection from {remote.Address} ended ({error.Message}).");
+            }
+        }
+    }
+
+    /// <summary>The WebSocket conversation: pair or hello first, then commands; the state comes after each change.</summary>
+    private async Task TalkAsync(WebSocket socket, IPEndPoint remote, CancellationToken cancel)
+    {
+        var sending = new SemaphoreSlim(1, 1);
+        Client? client = null;
+        Guid id = Guid.NewGuid();
+        try
+        {
+            while (socket.State == WebSocketState.Open && !cancel.IsCancellationRequested)
+            {
+                string? text = await ReceiveAsync(socket, cancel);
+                if (text is null) break;
+                JsonElement message;
+                string type;
+                try
+                {
+                    using var document = JsonDocument.Parse(text);
+                    message = document.RootElement.Clone();
+                    type = message.TryGetProperty("type", out var t) ? t.GetString() ?? "" : "";
+                }
+                catch (JsonException) { await SendAsync(socket, sending, Error("Not a JSON message.")); continue; }
+
+                if (type == "pair")
+                {
+                    string code = message.TryGetProperty("code", out var c) ? c.GetString() ?? "" : "";
+                    string name = message.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "";
+                    string? token = store.Pair(code, name, DateTimeOffset.Now);
+                    if (token is null)
+                    {
+                        log.Write(LogLevel.Warning, $"Phone: wrong or expired pairing code from {remote.Address}.");
+                        await SendAsync(socket, sending, Error("The code is wrong or expired. Show a new one in SwitchMonitor > Settings > Phone."));
+                        continue;
+                    }
+                    client = Join(id, socket, sending, token);
+                    log.Write(LogLevel.Info, $"Phone \"{client.Phone.Name}\" paired ({remote.Address}).");
+                    await SendAsync(socket, sending, Message("paired", new JsonObject { ["token"] = token, ["computer"] = host.ComputerName }));
+                    await SendAsync(socket, sending, Message("state", await host.StateAsync()));
+                    continue;
+                }
+                if (type == "hello")
+                {
+                    string token = message.TryGetProperty("token", out var t) ? t.GetString() ?? "" : "";
+                    if (store.Find(token) is null)
+                    {
+                        await SendAsync(socket, sending, Error("This phone is not paired (or was removed). Pair it again with a new code.", "unpaired"));
+                        continue;
+                    }
+                    client = Join(id, socket, sending, token);
+                    await SendAsync(socket, sending, Message("welcome", new JsonObject { ["computer"] = host.ComputerName }));
+                    await SendAsync(socket, sending, Message("state", await host.StateAsync()));
+                    continue;
+                }
+                if (client is null || store.Find(client.Token) is null)
+                {
+                    await SendAsync(socket, sending, Error("Pair this phone first.", "unpaired"));
+                    continue;
+                }
+                if (type == "get")
+                {
+                    await SendAsync(socket, sending, Message("state", await host.StateAsync()));
+                    continue;
+                }
+                string? problem = await host.CommandAsync(type, message);
+                if (problem is not null) await SendAsync(socket, sending, Error(problem));
+            }
+        }
+        finally
+        {
+            if (clients.TryRemove(id, out var gone))
+            {
+                log.Write(LogLevel.Info, $"Phone \"{gone.Phone.Name}\" disconnected.");
+                ClientsChanged?.Invoke();
+            }
+        }
+    }
+
+    private Client Join(Guid id, WebSocket socket, SemaphoreSlim sending, string token)
+    {
+        var client = new Client(socket, store.Find(token)!, token, sending);
+        bool isNew = !clients.ContainsKey(id);
+        clients[id] = client;
+        if (isNew) ClientsChanged?.Invoke();
+        return client;
+    }
+
+    /// <summary>A phone removed in Settings is disconnected at once.</summary>
+    private void DropRemovedPhones()
+    {
+        foreach (var (id, client) in clients)
+            if (store.Find(client.Token) is null && clients.TryRemove(id, out _))
+            {
+                _ = CloseAsync(client, "This phone was removed in SwitchMonitor.");
+                ClientsChanged?.Invoke();
+            }
+    }
+
+    private static async Task CloseAsync(Client client, string reason)
+    {
+        try
+        {
+            await SendAsync(client.Socket, client.Sending, Error(reason, "unpaired"));
+            await client.Socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "bye", CancellationToken.None);
+        }
+        catch (Exception error) when (error is WebSocketException or ObjectDisposedException or InvalidOperationException or IOException) { }
+    }
+
+    // ---- Discovery: "SWITCHMONITOR?" on UDP 47821 gets the computer's name and port ----
+
+    private async Task DiscoveryLoop(UdpClient udp, CancellationToken cancel)
+    {
+        while (!cancel.IsCancellationRequested)
+        {
+            UdpReceiveResult received;
+            try { received = await udp.ReceiveAsync(cancel); }
+            catch (Exception error) when (error is OperationCanceledException or ObjectDisposedException or SocketException) { return; }
+            if (!LocalNetwork.IsAllowed(received.RemoteEndPoint.Address)) continue;
+            if (Encoding.ASCII.GetString(received.Buffer).Trim() != DiscoveryQuestion) continue;
+            byte[] answer = Encoding.UTF8.GetBytes(new JsonObject
+            {
+                ["app"] = "SwitchMonitor", ["computer"] = host.ComputerName, ["port"] = Port
+            }.ToJsonString());
+            try { await udp.SendAsync(answer, received.RemoteEndPoint, cancel); }
+            catch (Exception error) when (error is OperationCanceledException or ObjectDisposedException or SocketException) { return; }
+        }
+    }
+
+    // ---- HTTP and WebSocket plumbing ----
+
+    /// <summary>Sec-WebSocket-Accept for a client key (RFC 6455).</summary>
+    public static string AcceptKey(string key) =>
+        Convert.ToBase64String(SHA1.HashData(Encoding.ASCII.GetBytes(key.Trim() + WebSocketGuid)));
+
+    private static async Task<(string Method, string Path, Dictionary<string, string> Headers)?> ReadRequestAsync(Stream stream, CancellationToken cancel)
+    {
+        var buffer = new byte[8192];
+        int length = 0;
+        while (length < buffer.Length)
+        {
+            int read = await stream.ReadAsync(buffer.AsMemory(length), cancel);
+            if (read == 0) return null;
+            length += read;
+            int end = IndexOf(buffer, length, "\r\n\r\n"u8);
+            if (end < 0) continue;
+            string head = Encoding.ASCII.GetString(buffer, 0, end);
+            var lines = head.Split("\r\n");
+            var first = lines[0].Split(' ');
+            if (first.Length < 2) return null;
+            var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (string line in lines.Skip(1))
+            {
+                int colon = line.IndexOf(':');
+                if (colon > 0) headers[line[..colon].Trim()] = line[(colon + 1)..].Trim();
+            }
+            string path = first[1].Split('?')[0];
+            return (first[0], path, headers);
+        }
+        return null;
+    }
+
+    private static int IndexOf(byte[] buffer, int length, ReadOnlySpan<byte> pattern) =>
+        buffer.AsSpan(0, length).IndexOf(pattern);
+
+    private static async Task RespondAsync(Stream stream, string status, string type, string body)
+    {
+        byte[] content = Encoding.UTF8.GetBytes(body);
+        byte[] head = Encoding.ASCII.GetBytes($"HTTP/1.1 {status}\r\nContent-Type: {type}\r\nContent-Length: {content.Length}\r\n" +
+            "Cache-Control: no-store\r\nConnection: close\r\n\r\n");
+        await stream.WriteAsync(head);
+        await stream.WriteAsync(content);
+        await stream.FlushAsync();
+    }
+
+    private static async Task<string?> ReceiveAsync(WebSocket socket, CancellationToken cancel)
+    {
+        var buffer = new byte[4096];
+        using var message = new MemoryStream();
+        while (true)
+        {
+            var result = await socket.ReceiveAsync(buffer, cancel);
+            if (result.MessageType == WebSocketMessageType.Close)
+            {
+                try { await socket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "bye", CancellationToken.None); }
+                catch (Exception error) when (error is WebSocketException or IOException or ObjectDisposedException) { }
+                return null;
+            }
+            message.Write(buffer, 0, result.Count);
+            if (message.Length > MaxMessage) return null;
+            if (result.EndOfMessage) return Encoding.UTF8.GetString(message.ToArray());
+        }
+    }
+
+    private static async Task SendAsync(WebSocket socket, SemaphoreSlim sending, string json)
+    {
+        await sending.WaitAsync();
+        try
+        {
+            if (socket.State == WebSocketState.Open)
+                await socket.SendAsync(Encoding.UTF8.GetBytes(json), WebSocketMessageType.Text, true, CancellationToken.None);
+        }
+        catch (Exception error) when (error is WebSocketException or IOException or ObjectDisposedException) { }
+        finally { sending.Release(); }
+    }
+
+    private static string Message(string type, JsonObject body)
+    {
+        body["type"] = type;
+        return body.ToJsonString();
+    }
+
+    private static string Error(string text, string? code = null)
+    {
+        var body = new JsonObject { ["type"] = "error", ["error"] = text };
+        if (code is not null) body["code"] = code;
+        return body.ToJsonString();
+    }
+}

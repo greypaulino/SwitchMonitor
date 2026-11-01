@@ -353,6 +353,18 @@ public static class Icons
         return Restyle(glyph, PanelStyle) ?? new Mark(glyph, LineFont, FontWeights.Normal);
     }
 
+    /// <summary>
+    /// The library id of a profile's icon ("game", "moon"…), for clients that draw their own icons (the phone app);
+    /// null for a picture or a glyph the library does not know.
+    /// </summary>
+    public static string? ProfileIconId(string name, string? icon)
+    {
+        if (icon is not null && icon.StartsWith("icon:", StringComparison.Ordinal) && icon.Split(':') is [_, _, var id] && byId.ContainsKey(id))
+            return id;
+        string glyph = ForProfile(name, icon);
+        return glyph.Length > 0 && byLine.TryGetValue(glyph[0], out var known) ? known.Id : null;
+    }
+
     /// <summary>The profile's icon in the solid (Fill) style, whatever style it chose: small badges read better filled.</summary>
     public static Mark SolidProfileMark(string name, string? icon)
     {

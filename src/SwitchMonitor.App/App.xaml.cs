@@ -110,6 +110,8 @@ public partial class App : Application
         sunTray = new SunTrayIcon(() => sunPanel.Toggle(), ShowWindow, ExitApp);
         // * alone on the desktop or the taskbar opens the panel too (elsewhere it types a * as usual).
         if (demoScenario is null) desktopStar = new Services.DesktopStarKey(() => sunPanel.ShowPanel());
+        // A phone on the home Wi-Fi (Settings > Phone); not in demo mode, which must not answer the network.
+        if (demoScenario is null && log is not null) model.Phone = new Services.PhoneBridge(model, sunModel, log);
 
         if (demoScenario is not null)
         {
@@ -330,6 +332,7 @@ public partial class App : Application
         tray?.Dispose();
         sunTray?.Dispose();
         desktopStar?.Dispose();
+        model?.Phone?.Dispose();
         sunPanel?.Close();
         model?.Shutdown();
         log?.Write(LogLevel.Info, "SwitchMonitor v2 stopped.");
