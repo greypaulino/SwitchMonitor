@@ -9,11 +9,62 @@ namespace SwitchMonitor.App.Services;
 /// </summary>
 public static class MainDisplay
 {
+    // Asked from Windows each time: the Windows Forms Screen list is cached until the next display message, so right
+    // after a change it still named the old main display ("Windows did not confirm the new main display").
+
     /// <summary>GDI name of the main display ("\\.\DISPLAY1"), or null.</summary>
-    public static string? Current => System.Windows.Forms.Screen.PrimaryScreen?.DeviceName;
+    public static string? Current => DeviceOf(MonitorFromPoint(new NativePoint(), MonitorDefaultToPrimary));
 
     /// <summary>Active displays Windows extends the desktop to, by GDI name.</summary>
-    public static IReadOnlyList<string> Active => System.Windows.Forms.Screen.AllScreens.Select(s => s.DeviceName).ToArray();
+    public static IReadOnlyList<string> Active
+    {
+        get
+        {
+            var names = new List<string>();
+            EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, (monitor, _, _, _) =>
+            {
+                if (DeviceOf(monitor) is { } name) names.Add(name);
+                return true;
+            }, IntPtr.Zero);
+            return names;
+        }
+    }
+
+    private static string? DeviceOf(IntPtr monitor)
+    {
+        if (monitor == IntPtr.Zero) return null;
+        var info = new MonitorInfoEx { Size = Marshal.SizeOf<MonitorInfoEx>() };
+        return GetMonitorInfo(monitor, ref info) ? info.Device : null;
+    }
+
+    private const uint MonitorDefaultToPrimary = 1;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativePoint { public int X, Y; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeRect { public int Left, Top, Right, Bottom; }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct MonitorInfoEx
+    {
+        public int Size;
+        public NativeRect Monitor;
+        public NativeRect Work;
+        public uint Flags;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string Device;
+    }
+
+    private delegate bool MonitorEnumProc(IntPtr monitor, IntPtr hdc, IntPtr rect, IntPtr data);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr MonitorFromPoint(NativePoint point, uint flags);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "GetMonitorInfoW")]
+    private static extern bool GetMonitorInfo(IntPtr monitor, ref MonitorInfoEx info);
+
+    [DllImport("user32.dll")]
+    private static extern bool EnumDisplayMonitors(IntPtr hdc, IntPtr clip, MonitorEnumProc callback, IntPtr data);
 
     /// <summary>The display can become the main one: there are at least two and it is part of the desktop.</summary>
     public static bool CanBeMain(string? gdiName) =>

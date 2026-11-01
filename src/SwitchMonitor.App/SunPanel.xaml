@@ -34,8 +34,14 @@
                             <Ellipse x:Name="Ring" Stroke="{StaticResource FaintBrush}" StrokeThickness="1.2" Fill="Transparent" />
                             <TextBlock x:Name="Letter" Text="M" FontSize="8.5" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center"
                                        Foreground="{StaticResource FaintBrush}" />
+                            <!-- Preferred main display: a small star on the M -->
+                            <TextBlock x:Name="Star" Text="&#xE735;" FontFamily="Segoe MDL2 Assets" FontSize="7.5" Foreground="#FFD166"
+                                       HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,-4,-5,0" Visibility="Collapsed" />
                         </Grid>
                         <ControlTemplate.Triggers>
+                            <DataTrigger Binding="{Binding IsPreferred}" Value="True">
+                                <Setter TargetName="Star" Property="Visibility" Value="Visible" />
+                            </DataTrigger>
                             <DataTrigger Binding="{Binding IsMain}" Value="True">
                                 <Setter TargetName="Ring" Property="Fill" Value="{StaticResource TextBrush}" />
                                 <Setter TargetName="Ring" Property="Stroke" Value="{StaticResource TextBrush}" />
@@ -131,22 +137,33 @@
                                 <StackPanel>
                                     <DockPanel>
                                         <TextBlock DockPanel.Dock="Right" Text="{Binding ValueText}" Style="{StaticResource SunValue}" VerticalAlignment="Center" />
-                                        <Button DockPanel.Dock="Right" Style="{StaticResource MainMark}" Command="{Binding MakeMainCommand}" Margin="0,0,10,0"
+                                        <Button DockPanel.Dock="Right" Style="{StaticResource MainMark}" PreviewMouseLeftButtonDown="MainMarkDown" PreviewMouseLeftButtonUp="MainMarkUp" MouseRightButtonUp="MainMarkRightClick" Margin="0,0,10,0"
                                                 IsEnabled="{Binding CanBeMain}" ToolTip="{Binding MainToolTip}" ToolTipService.ShowOnDisabled="True"
                                                 Visibility="{Binding IsOn, Converter={StaticResource BoolToVisibility}}" AutomationProperties.Name="Main display" />
                                         <Ellipse Style="{StaticResource SunDot}" />
                                         <!-- The display icon; on a monitor with inputs it is a button that opens them -->
-                                        <Button x:Name="InputsButton" Click="InputsClick" Focusable="False" Margin="-4,0,4,0" Padding="0"
+                                        <Button x:Name="InputsButton" Click="InputsClick" Focusable="False" Margin="-4,0,6,0" Padding="0"
                                                 IsHitTestVisible="{Binding HasInputs}" ToolTip="Inputs" AutomationProperties.Name="Inputs">
                                             <Button.Template>
                                                 <ControlTemplate TargetType="Button">
-                                                    <Border x:Name="Box" CornerRadius="6" Padding="4,2" Background="Transparent">
-                                                        <TextBlock Text="{Binding Glyph}" Style="{StaticResource Glyph}" FontSize="13" Margin="0,1,0,0"
+                                                    <Border x:Name="Box" CornerRadius="7" Padding="5,2" Background="Transparent"
+                                                            BorderBrush="Transparent" BorderThickness="1">
+                                                        <TextBlock x:Name="Icon" Text="{Binding Glyph}" Style="{StaticResource Glyph}" FontSize="13" Margin="0,1,0,0"
                                                                    Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" />
                                                     </Border>
                                                     <ControlTemplate.Triggers>
+                                                        <!-- A monitor with inputs: drawn as a small button (a laptop keeps a plain icon) -->
+                                                        <DataTrigger Binding="{Binding HasInputs}" Value="True">
+                                                            <Setter TargetName="Box" Property="Background" Value="#14FFFFFF" />
+                                                            <Setter TargetName="Box" Property="BorderBrush" Value="#26FFFFFF" />
+                                                            <Setter TargetName="Icon" Property="Foreground" Value="{StaticResource TextBrush}" />
+                                                        </DataTrigger>
                                                         <Trigger Property="IsMouseOver" Value="True">
-                                                            <Setter TargetName="Box" Property="Background" Value="#1FFFFFFF" />
+                                                            <Setter TargetName="Box" Property="Background" Value="#2AFFFFFF" />
+                                                            <Setter TargetName="Box" Property="BorderBrush" Value="#40FFFFFF" />
+                                                        </Trigger>
+                                                        <Trigger Property="IsPressed" Value="True">
+                                                            <Setter TargetName="Box" Property="Background" Value="#38FFFFFF" />
                                                         </Trigger>
                                                     </ControlTemplate.Triggers>
                                                 </ControlTemplate>
@@ -187,7 +204,7 @@
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate DataType="{x:Type vm:SunRow}">
                                         <DockPanel Margin="0,1,0,3">
-                                            <Button DockPanel.Dock="Right" Style="{StaticResource MainMark}" Command="{Binding MakeMainCommand}" Margin="0,0,10,0"
+                                            <Button DockPanel.Dock="Right" Style="{StaticResource MainMark}" PreviewMouseLeftButtonDown="MainMarkDown" PreviewMouseLeftButtonUp="MainMarkUp" MouseRightButtonUp="MainMarkRightClick" Margin="0,0,10,0"
                                                     IsEnabled="{Binding CanBeMain}" ToolTip="{Binding MainToolTip}" ToolTipService.ShowOnDisabled="True"
                                                     AutomationProperties.Name="Main display" />
                                             <Ellipse Style="{StaticResource SunDot}" />

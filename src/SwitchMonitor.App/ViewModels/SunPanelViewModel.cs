@@ -46,9 +46,15 @@ public sealed class SunRow : ObservableObject
 
     /// <summary>Windows main display (circled M, filled).</summary>
     public bool IsMain { get => isMain; set => Set(ref isMain, value); }
+    /// <summary>The preferred main display (small star on the M; right-click the M to change it).</summary>
+    public bool IsPreferred => Monitor.IsPreferredMain;
+    internal void RaisePreferred() { Raise(nameof(IsPreferred)); Raise(nameof(MainToolTip)); }
+
     public bool CanBeMain => owner.HasSeveral && MainDisplay.CanBeMain(Monitor.Device.Identity.GdiName);
-    public string MainToolTip => IsMain ? "Main display of Windows"
-        : CanBeMain ? "Make this the main display of Windows" : "Cannot be the main display in the current mode";
+    public string MainToolTip => (IsMain ? "Main display of Windows"
+        : CanBeMain ? "Make this the main display of Windows" : "Cannot be the main display in the current mode")
+        + (IsPreferred ? "\nPreferred: it becomes the main display whenever it is connected. Hold (or right-click) to stop preferring it."
+            : "\nHold half a second (or right-click): prefer it as the main display whenever it is connected.");
     internal void RaiseMain() { Raise(nameof(CanBeMain)); Raise(nameof(MainToolTip)); }
 
     private string? typed;
@@ -151,6 +157,7 @@ public sealed class SunPanelViewModel : ObservableObject
         main.Monitors.CollectionChanged += (_, _) => Rebuild();
         main.Scenes.CollectionChanged += (_, _) => WatchScenes();
         main.PropertyChanged += (_, e) => { if (e.PropertyName == nameof(MainViewModel.Selected)) SyncSelection(); };
+        main.PreferredChanged += () => { foreach (var row in Rows) row.RaisePreferred(); RefreshMain(); };
         WatchScenes();
         Rebuild();
     }
@@ -425,6 +432,9 @@ public sealed class SunPanelViewModel : ObservableObject
 
     // ---- Main display ----
 
+    /// <summary>Right-click on the M: the display becomes (or stops being) the preferred main display.</summary>
+    public void TogglePreferred(SunRow row) => main.TogglePreferred(row.Monitor);
+
     public void MakeMain(SunRow row)
     {
         string? name = row.Monitor.Device.Identity.GdiName;
@@ -432,6 +442,7 @@ public sealed class SunPanelViewModel : ObservableObject
         try
         {
             MainDisplay.Set(name);
+            main.MainDisplayChanged();
             main.Report($"{row.Monitor.Name} is now the main display.", true);
         }
         catch (InvalidOperationException error) { main.Report($"Main display: {error.Message}", false); }

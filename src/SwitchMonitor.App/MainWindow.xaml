@@ -487,6 +487,10 @@
                                 <TextBlock Text="Learn settings" />
                             </StackPanel>
                         </Button>
+                        <!-- Preferred main display: whenever it is connected, it becomes the main display -->
+                        <ToggleButton DockPanel.Dock="Right" Style="{StaticResource IconToggle}" Content="&#xE734;" VerticalAlignment="Center"
+                                      Margin="0,0,4,0" IsChecked="{Binding PreferredSwitch, Mode=TwoWay}" ToolTip="{Binding PreferredToolTip}"
+                                      AutomationProperties.Name="Preferred main display" />
                         <Button DockPanel.Dock="Right" Style="{StaticResource IconButton}" Content="&#xE72C;" VerticalAlignment="Center"
                                 Command="{Binding DataContext.ReloadValuesCommand, RelativeSource={RelativeSource AncestorType=Window}}"
                                 ToolTip="Read every value again (after changing something on the monitor's own menu)"
@@ -851,6 +855,8 @@
                             <Separator />
                             <MenuItem Header="+ Add New Profile" Command="{Binding NewProfileCommand}"
                                       ToolTip="A new profile that starts from the current values of the display" />
+                            <MenuItem Header="Import from a file…" Command="{Binding ImportCommand}"
+                                      ToolTip="Add a profile someone exported (.smprofile)" />
                         </ContextMenu>
                     </Button.ContextMenu>
                 </Button>
@@ -861,6 +867,26 @@
                     <ListBox.ItemTemplate>
                         <DataTemplate DataType="{x:Type vm:ProfileListItem}">
                             <DockPanel ToolTip="{Binding Name}">
+                                <!-- ⋯ : Export, Delete, Restore (saved profiles only) -->
+                                <Button x:Name="ProfileMore" DockPanel.Dock="Right" Style="{StaticResource IconButton}" Content="&#xE712;" FontSize="12"
+                                        Width="28" Height="28" MinHeight="0" Margin="6,0,-4,0" Padding="0" Click="ProfileOptions"
+                                        ToolTip="Export, delete or restore this profile" AutomationProperties.Name="Profile options">
+                                    <Button.ContextMenu>
+                                        <ContextMenu>
+                                            <MenuItem Header="Export…" Command="{Binding ExportCommand}"
+                                                      ToolTip="Save this profile as a file to share or keep (not its shortcut)">
+                                                <MenuItem.Icon><TextBlock Text="&#xEDE1;" /></MenuItem.Icon>
+                                            </MenuItem>
+                                            <MenuItem Header="Restore" Command="{Binding RevertCommand}" ToolTip="Discard the changes not saved yet">
+                                                <MenuItem.Icon><TextBlock Text="&#xE7A7;" /></MenuItem.Icon>
+                                            </MenuItem>
+                                            <Separator />
+                                            <MenuItem Header="Delete…" Command="{Binding DeleteAskCommand}">
+                                                <MenuItem.Icon><TextBlock Text="&#xE74D;" /></MenuItem.Icon>
+                                            </MenuItem>
+                                        </ContextMenu>
+                                    </Button.ContextMenu>
+                                </Button>
                                 <app:ProfileBadge Width="34" Height="34" CornerRadius="11" Margin="0,0,12,0" GlyphSize="15"
                                                   Fill="{Binding ColorBrush}" Glyph="{Binding Mark.Text}" GlyphFont="{Binding Mark.Font}"
                                                       GlyphWeight="{Binding Mark.Weight}" Secondary="{Binding Mark.Secondary}" Image="{Binding IconImage}" />
@@ -868,6 +894,11 @@
                                            VerticalAlignment="Center" Margin="8,0,0,0" />
                                 <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
                             </DockPanel>
+                            <DataTemplate.Triggers>
+                                <DataTrigger Binding="{Binding IsCustom}" Value="True">
+                                    <Setter TargetName="ProfileMore" Property="Visibility" Value="Collapsed" />
+                                </DataTrigger>
+                            </DataTemplate.Triggers>
                         </DataTemplate>
                     </ListBox.ItemTemplate>
                 </ListBox>
@@ -1203,9 +1234,6 @@
             <Border Grid.Row="1" Grid.ColumnSpan="2" Style="{StaticResource Card}" Margin="22,0,22,16" Padding="18,12">
                 <DockPanel>
                     <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
-                        <Button Content="{Binding DeleteLabel}" Command="{Binding DeleteCommand}" Style="{StaticResource DangerButton}" Margin="0,0,6,0" />
-                        <Button Content="Revert" Command="{Binding RevertCommand}" Style="{StaticResource QuietButton}" Margin="0,0,6,0"
-                                ToolTip="Discard the changes not saved yet" />
                         <Button Content="Capture current" Command="{Binding CaptureCommand}" Margin="0,0,6,0"
                                 ToolTip="Copy what the display shows now into every line" />
                         <Button Content="Try" Command="{Binding TryCommand}" Margin="0,0,6,0" ToolTip="Apply the profile as it is here, without saving">
@@ -1219,8 +1247,9 @@
                                 </Style>
                             </Button.Style>
                         </Button>
+                        <!-- Save only when there is something to keep (Export, Delete and Restore are in each profile's ⋯ menu) -->
                         <Button Content="{Binding SaveLabel}" Command="{Binding SaveCommand}" Style="{StaticResource PrimaryButton}"
-                                ToolTip="{Binding SaveToolTip}" />
+                                ToolTip="{Binding SaveToolTip}" Visibility="{Binding ShowsSave, Converter={StaticResource BoolToVisibility}}" />
                     </StackPanel>
                     <TextBlock Text="{Binding Message}" TextWrapping="Wrap" VerticalAlignment="Center" Margin="4,0,16,0">
                         <TextBlock.Style>
@@ -1584,6 +1613,75 @@
                                     <TextBlock Text="Linked apps switch profiles" FontWeight="SemiBold" FontSize="14" />
                                     <TextBlock Style="{StaticResource Hint}" Margin="0,3,0,0"
                                                Text="A profile turns on while one of its linked programs is in front. Off: profiles change only by hand." />
+                                </StackPanel>
+                            </DockPanel>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- Startup and backup: saved at once (not part of Save / Discard) -->
+                    <Border Style="{StaticResource Card}" DataContext="{Binding DataContext, RelativeSource={RelativeSource AncestorType=Window}}">
+                        <StackPanel>
+                        <Border Style="{StaticResource CardHeader}">
+                            <DockPanel>
+                                <Border Style="{StaticResource IconTile}">
+                                    <TextBlock Text="&#xE7E8;" Style="{StaticResource Glyph}" HorizontalAlignment="Center" />
+                                </Border>
+                                <TextBlock Text="Startup and backup" Style="{StaticResource CardTitle}" />
+                            </DockPanel>
+                        </Border>
+                            <DockPanel>
+                                <ToggleButton DockPanel.Dock="Right" Style="{StaticResource Switch}" IsChecked="{Binding StartWithWindows, Mode=TwoWay}"
+                                              VerticalAlignment="Center" AutomationProperties.Name="Start with Windows" />
+                                <StackPanel Margin="0,0,16,0">
+                                    <TextBlock Text="Start with Windows" FontWeight="SemiBold" FontSize="14" />
+                                    <TextBlock Style="{StaticResource Hint}" Margin="0,3,0,0" Text="{Binding StartWithWindowsHint}" TextWrapping="Wrap" />
+                                </StackPanel>
+                            </DockPanel>
+                            <Border Height="1" Background="{StaticResource LineBrush}" Margin="0,14,0,14" />
+                            <DockPanel>
+                                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                                    <Button Content="Export…" Command="{Binding ExportBackupCommand}" Margin="0,0,6,0" />
+                                    <Button Content="Import…" Command="{Binding ImportBackupCommand}" />
+                                </StackPanel>
+                                <StackPanel Margin="0,0,16,0">
+                                    <TextBlock Text="Backup" FontWeight="SemiBold" FontSize="14" />
+                                    <TextBlock Style="{StaticResource Hint}" Margin="0,3,0,0" TextWrapping="Wrap"
+                                               Text="One file with profiles, shortcuts, appearance and learned settings. Importing keeps the current ones in a backups folder first." />
+                                </StackPanel>
+                            </DockPanel>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- Shared monitor settings: the project's database, and files of learned settings -->
+                    <Border Style="{StaticResource Card}" DataContext="{Binding DataContext, RelativeSource={RelativeSource AncestorType=Window}}">
+                        <StackPanel>
+                        <Border Style="{StaticResource CardHeader}">
+                            <DockPanel>
+                                <Border Style="{StaticResource IconTile}">
+                                    <TextBlock Text="&#xE753;" Style="{StaticResource Glyph}" HorizontalAlignment="Center" />
+                                </Border>
+                                <TextBlock Text="Shared monitor settings" Style="{StaticResource CardTitle}" />
+                            </DockPanel>
+                        </Border>
+                            <DockPanel>
+                                <Button DockPanel.Dock="Right" Content="Download" Command="{Binding UpdateDatabaseCommand}" VerticalAlignment="Center"
+                                        ToolTip="Download the monitor settings shared in the project (checked with SHA-256)" />
+                                <StackPanel Margin="0,0,16,0">
+                                    <TextBlock Text="Monitor database" FontWeight="SemiBold" FontSize="14" />
+                                    <TextBlock Style="{StaticResource Hint}" Margin="0,3,0,0" Text="{Binding DatabaseStatus}" TextWrapping="Wrap" />
+                                </StackPanel>
+                            </DockPanel>
+                            <Border Height="1" Background="{StaticResource LineBrush}" Margin="0,14,0,14" />
+                            <DockPanel>
+                                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                                    <Button Content="Export…" Command="{Binding ExportLearnedCommand}" Margin="0,0,6,0"
+                                            ToolTip="Save what was learned for the selected display's model, to keep or to send to the project" />
+                                    <Button Content="Import…" Command="{Binding ImportLearnedCommand}" ToolTip="Add the learned settings of a .smmonitor file" />
+                                </StackPanel>
+                                <StackPanel Margin="0,0,16,0">
+                                    <TextBlock Text="Learned settings" FontWeight="SemiBold" FontSize="14" />
+                                    <TextBlock Style="{StaticResource Hint}" Margin="0,3,0,0" TextWrapping="Wrap"
+                                               Text="Share what Learn settings found on a monitor model, or add what someone else found." />
                                 </StackPanel>
                             </DockPanel>
                         </StackPanel>

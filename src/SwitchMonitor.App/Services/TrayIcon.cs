@@ -30,6 +30,7 @@ public sealed class TrayIcon : IDisposable
         menu.Items.Add("Shortcuts…", null, (_, _) => actions.Shortcuts());
         menu.Items.Add("Exit", null, (_, _) => actions.Exit());
         menu.Opening += (_, _) => Opening?.Invoke();
+        TrayMenuLook.Apply(menu);
 
         string iconPath = Path.Combine(AppContext.BaseDirectory, "monitor-switch.ico");
         icon = new Forms.NotifyIcon

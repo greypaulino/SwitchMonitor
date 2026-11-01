@@ -133,9 +133,13 @@
             <Setter Property="Cursor" Value="Hand" />
             <Setter Property="FocusVisualStyle" Value="{StaticResource FocusRing}" />
             <Setter Property="RenderTransformOrigin" Value="0.5,0.5" />
+            <!-- Hovered: lights up and grows a touch; pressed: a little smaller (two scales, so they never fight) -->
             <Setter Property="RenderTransform">
                 <Setter.Value>
-                    <ScaleTransform />
+                    <TransformGroup>
+                        <ScaleTransform />
+                        <ScaleTransform />
+                    </TransformGroup>
                 </Setter.Value>
             </Setter>
             <Setter Property="Template">
@@ -153,8 +157,12 @@
                                 <Trigger.EnterActions>
                                     <BeginStoryboard>
                                         <Storyboard>
-                                            <DoubleAnimation Storyboard.TargetName="Overlay" Storyboard.TargetProperty="Opacity" To="0.07"
-                                                             Duration="{StaticResource Quick}" EasingFunction="{StaticResource Ease}" />
+                                            <DoubleAnimation Storyboard.TargetName="Overlay" Storyboard.TargetProperty="Opacity" To="0.13"
+                                                             Duration="0:0:0.22" EasingFunction="{StaticResource Ease}" />
+                                            <DoubleAnimation Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[1].(ScaleTransform.ScaleX)" To="1.025"
+                                                             Duration="0:0:0.22" EasingFunction="{StaticResource Ease}" />
+                                            <DoubleAnimation Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[1].(ScaleTransform.ScaleY)" To="1.025"
+                                                             Duration="0:0:0.22" EasingFunction="{StaticResource Ease}" />
                                         </Storyboard>
                                     </BeginStoryboard>
                                 </Trigger.EnterActions>
@@ -162,7 +170,11 @@
                                     <BeginStoryboard>
                                         <Storyboard>
                                             <DoubleAnimation Storyboard.TargetName="Overlay" Storyboard.TargetProperty="Opacity" To="0"
-                                                             Duration="{StaticResource Quick}" EasingFunction="{StaticResource Ease}" />
+                                                             Duration="0:0:0.22" EasingFunction="{StaticResource Ease}" />
+                                            <DoubleAnimation Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[1].(ScaleTransform.ScaleX)" To="1"
+                                                             Duration="0:0:0.22" EasingFunction="{StaticResource Ease}" />
+                                            <DoubleAnimation Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[1].(ScaleTransform.ScaleY)" To="1"
+                                                             Duration="0:0:0.22" EasingFunction="{StaticResource Ease}" />
                                         </Storyboard>
                                     </BeginStoryboard>
                                 </Trigger.ExitActions>
@@ -171,9 +183,9 @@
                                 <Trigger.EnterActions>
                                     <BeginStoryboard>
                                         <Storyboard>
-                                            <DoubleAnimation Storyboard.TargetProperty="RenderTransform.ScaleX" To="0.97" Duration="0:0:0.1"
+                                            <DoubleAnimation Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleX)" To="0.97" Duration="0:0:0.1"
                                                              EasingFunction="{StaticResource Ease}" />
-                                            <DoubleAnimation Storyboard.TargetProperty="RenderTransform.ScaleY" To="0.97" Duration="0:0:0.1"
+                                            <DoubleAnimation Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleY)" To="0.97" Duration="0:0:0.1"
                                                              EasingFunction="{StaticResource Ease}" />
                                         </Storyboard>
                                     </BeginStoryboard>
@@ -181,9 +193,9 @@
                                 <Trigger.ExitActions>
                                     <BeginStoryboard>
                                         <Storyboard>
-                                            <DoubleAnimation Storyboard.TargetProperty="RenderTransform.ScaleX" To="1" Duration="0:0:0.15"
+                                            <DoubleAnimation Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleX)" To="1" Duration="0:0:0.15"
                                                              EasingFunction="{StaticResource Ease}" />
-                                            <DoubleAnimation Storyboard.TargetProperty="RenderTransform.ScaleY" To="1" Duration="0:0:0.15"
+                                            <DoubleAnimation Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleY)" To="1" Duration="0:0:0.15"
                                                              EasingFunction="{StaticResource Ease}" />
                                         </Storyboard>
                                     </BeginStoryboard>

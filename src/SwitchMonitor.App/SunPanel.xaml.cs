@@ -37,6 +37,19 @@ public partial class SunPanel : Window
         starTimer.Tick += (_, _) => { starTimer.Stop(); starHeld = true; Model.Linked = !Model.Linked; };
         mainTimer.Tick += (_, _) => { mainTimer.Stop(); mainHeld = true; Model.SwitchMain(); Place(); };
         Deactivated += (_, _) => HidePanel();
+        outsideClicks = new Services.OutsideClicks(PanelWindows, HidePanel);
+        Closed += (_, _) => outsideClicks.Dispose();
+        // A click in the panel itself closes the side panels (except on the buttons that open them).
+        Card.PreviewMouseLeftButtonDown += (_, e) =>
+        {
+            if (!ModesPopup.IsOpen && !InputsPopup.IsOpen) return;
+            // The side panels sit in the panel's element tree, so their clicks come through here too: a click inside a
+            // side panel is its own (pick a mode, switch an input), not a click in the panel.
+            if (ModesCard.IsMouseOver || InputsCard.IsMouseOver || InsideSidePanel(e.OriginalSource as DependencyObject)) return;
+            if (OpensSidePanel(e.OriginalSource as DependencyObject)) return;
+            ModesPopup.IsOpen = false;
+            InputsPopup.IsOpen = false;
+        };
         MouseEnter += (_, _) => idle.Stop();
         MouseLeave += (_, _) => RestartIdle();
         PreviewMouseDown += (_, _) => RestartIdle();
@@ -45,10 +58,11 @@ public partial class SunPanel : Window
         ModesPopup.CustomPopupPlacementCallback = PlaceModes;
         ModesPopup.Opened += (_, _) => FitPopupLook(ModesCard);
         InputsPopup.Opened += (_, _) => FitPopupLook(InputsCard);
-        InputsPopup.CustomPopupPlacementCallback = PlaceModes;   // beside the panel, like the picture modes
+        InputsPopup.CustomPopupPlacementCallback = PlaceInputs;   // beside the panel, like the picture modes
         // Its list grows once it is shown: place it again so the bottoms stay lined up.
         InputsPopup.Opened += (_, _) => Dispatcher.BeginInvoke(() => Reposition(InputsPopup), DispatcherPriority.Background);
         ModesPopup.Opened += (_, _) => Dispatcher.BeginInvoke(() => Reposition(ModesPopup), DispatcherPriority.Background);
+        markTimer.Tick += (_, _) => MainMarkHeld();
         hoverTimer.Tick += (_, _) =>
         {
             hoverTimer.Stop();
@@ -77,7 +91,60 @@ public partial class SunPanel : Window
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern bool SetForegroundWindow(IntPtr window);
 
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr window, IntPtr processId);
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+    private static extern uint GetCurrentThreadId();
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool AttachThreadInput(uint attach, uint attachTo, bool join);
+
+    /// <summary>
+    /// Brings the panel to the front with the keyboard. Opened by the * key on the desktop, Windows would refuse a plain
+    /// SetForegroundWindow: joining the input of the window in front for a moment lets it through.
+    /// </summary>
+    private static void TakeForeground(IntPtr handle)
+    {
+        if (SetForegroundWindow(handle) && GetForegroundWindow() == handle) return;
+        uint front = GetWindowThreadProcessId(GetForegroundWindow(), IntPtr.Zero), mine = GetCurrentThreadId();
+        if (front == 0 || front == mine) return;
+        AttachThreadInput(mine, front, true);
+        try { SetForegroundWindow(handle); }
+        finally { AttachThreadInput(mine, front, false); }
+    }
+
     private bool closing;
+    private readonly Services.OutsideClicks outsideClicks;
+
+    /// <summary>The panel and its open side panels, as window handles (clicks inside them are not "outside").</summary>
+    private IEnumerable<IntPtr> PanelWindows()
+    {
+        yield return new System.Windows.Interop.WindowInteropHelper(this).Handle;
+        foreach (var card in new Visual[] { ModesCard, InputsCard })
+            if (PresentationSource.FromVisual(card) is System.Windows.Interop.HwndSource source) yield return source.Handle;
+    }
+
+    private bool InsideSidePanel(DependencyObject? element)
+    {
+        for (; element is not null; element = element is Visual ? VisualTreeHelper.GetParent(element) : LogicalTreeHelper.GetParent(element))
+            if (ReferenceEquals(element, ModesCard) || ReferenceEquals(element, InputsCard)) return true;
+        return false;
+    }
+
+    /// <summary>True for a click on the monitor icon (inputs) or on Custom in use (picture modes): those toggle themselves.</summary>
+    private static bool OpensSidePanel(DependencyObject? element)
+    {
+        for (; element is not null; element = element is Visual or System.Windows.Media.Media3D.Visual3D ? VisualTreeHelper.GetParent(element) : LogicalTreeHelper.GetParent(element))
+        {
+            if (element is FrameworkElement { Name: "InputsButton" }) return true;
+            if (element is FrameworkElement { Name: "Pill", DataContext: SceneViewModel { IsCustom: true, IsActive: true } }) return true;
+        }
+        return false;
+    }
 
     /// <summary>Sun icon clicked: open, or close when open. A click that just closed it (by taking focus) does not reopen it.</summary>
     public void Toggle()
@@ -119,13 +186,14 @@ public partial class SunPanel : Window
         {
             Activate();
             // The tray click gives this app the right to take the foreground: take it, so the keys reach the panel.
-            SetForegroundWindow(new System.Windows.Interop.WindowInteropHelper(this).Handle);
+            TakeForeground(new System.Windows.Interop.WindowInteropHelper(this).Handle);
             Focus();
         }
         Slide.BeginAnimation(System.Windows.Media.TranslateTransform.YProperty,
             new DoubleAnimation(14, 0, TimeSpan.FromMilliseconds(200)) { EasingFunction = Ease });
         BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(170)));
         RestartIdle();
+        outsideClicks.Start();
         _ = Model.RefreshAsync();
         Dispatcher.BeginInvoke(() => MoveHighlight(animate: false), DispatcherPriority.Loaded);
     }
@@ -135,6 +203,7 @@ public partial class SunPanel : Window
     {
         if (!IsVisible || closing) return;
         closing = true;
+        outsideClicks.Stop();
         ModesPopup.IsOpen = false;
         InputsPopup.IsOpen = false;
         hoverTimer.Stop();
@@ -293,6 +362,47 @@ public partial class SunPanel : Window
         hovered = null;
     }
 
+    // ---- M: click makes the display the main one; held half a second it becomes the Preferred main display ----
+
+    private readonly DispatcherTimer markTimer = new() { Interval = TimeSpan.FromMilliseconds(500) };
+    private SunRow? markRow;
+
+    private void MainMarkDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not FrameworkElement { DataContext: SunRow row } mark) return;
+        markRow = row;
+        markTimer.Stop();
+        markTimer.Start();
+        mark.CaptureMouse();
+        e.Handled = true;
+    }
+
+    private void MainMarkUp(object sender, MouseButtonEventArgs e)
+    {
+        (sender as FrameworkElement)?.ReleaseMouseCapture();
+        e.Handled = true;
+        if (!markTimer.IsEnabled) return;   // held: already made Preferred
+        markTimer.Stop();
+        if (markRow is { } row && sender is FrameworkElement { IsMouseOver: true }) row.MakeMainCommand.Execute(null);
+        markRow = null;
+    }
+
+    private void MainMarkHeld()
+    {
+        markTimer.Stop();
+        if (markRow is { } row) Model.TogglePreferred(row);
+        markRow = null;
+        RestartIdle();
+    }
+
+    private void MainMarkRightClick(object sender, MouseButtonEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.DataContext is not SunRow row) return;
+        Model.TogglePreferred(row);
+        RestartIdle();
+        e.Handled = true;
+    }
+
     // ---- Inputs of a monitor ----
 
     /// <summary>The inputs button of a row: opens that monitor's inputs under it (or closes them).</summary>
@@ -376,11 +486,38 @@ public partial class SunPanel : Window
         PointerLight.BeginAnimation(OpacityProperty, new DoubleAnimation(1, TimeSpan.FromMilliseconds(200)));
     }
 
-    /// <summary>Left of the panel with a small gap, bottoms lined up (the panel sits above the taskbar). Sizes are in pixels.</summary>
-    private System.Windows.Controls.Primitives.CustomPopupPlacement[] PlaceModes(Size popup, Size target, Point offset)
+    /// <summary>
+    /// Left of the panel with a small gap. The inputs: tops lined up when their display is in the upper half of the
+    /// panel, bottoms lined up when it is in the lower half. Sizes are in pixels.
+    /// </summary>
+    private System.Windows.Controls.Primitives.CustomPopupPlacement[] PlaceBeside(Size popup, Size target, SunRow? row)
     {
-        double gap = 10 * VisualTreeHelper.GetDpi(this).DpiScaleX;
-        return [new(new Point(-popup.Width - gap, target.Height - popup.Height), System.Windows.Controls.Primitives.PopupPrimaryAxis.Horizontal)];
+        var dpi = VisualTreeHelper.GetDpi(this);
+        double gap = 10 * dpi.DpiScaleX;
+        double y = InUpperHalf(row) ? 0 : target.Height - popup.Height;
+        // Never over the taskbar: the side panel ends at the bottom of the work area at the lowest.
+        if (PresentationSource.FromVisual(Card) is not null)
+        {
+            double cardTop = Card.PointToScreen(new Point(0, 0)).Y;
+            double bottom = SystemParameters.WorkArea.Bottom * dpi.DpiScaleY;
+            y = Math.Min(y, bottom - cardTop - popup.Height);
+        }
+        return [new(new Point(-popup.Width - gap, y), System.Windows.Controls.Primitives.PopupPrimaryAxis.Horizontal)];
+    }
+
+    /// <summary>The picture modes: bottoms lined up with the panel, above the taskbar.</summary>
+    private System.Windows.Controls.Primitives.CustomPopupPlacement[] PlaceModes(Size popup, Size target, Point offset) =>
+        PlaceBeside(popup, target, null);
+
+    private System.Windows.Controls.Primitives.CustomPopupPlacement[] PlaceInputs(Size popup, Size target, Point offset) =>
+        PlaceBeside(popup, target, InputsPopup.DataContext as SunRow);
+
+    private bool InUpperHalf(SunRow? row)
+    {
+        if (row is null || Card.ActualHeight <= 0 || RowList.ItemContainerGenerator.ContainerFromItem(row) is not FrameworkElement box
+            || !box.IsVisible) return false;
+        double middle = box.TranslatePoint(new Point(0, box.ActualHeight / 2), Card).Y;
+        return middle < Card.ActualHeight / 2;
     }
 
     private void RowHover(object sender, MouseEventArgs e)

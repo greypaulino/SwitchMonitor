@@ -45,12 +45,55 @@ public sealed class MonitorViewModel : ObservableObject
         set { if (Set(ref panel, value)) Raise(nameof(Subtitle)); }
     }
 
+    /// <summary>The Windows main display now (asked from Windows; the identity only says what it was when listed).</summary>
+    public bool IsMainDisplay
+    {
+        get
+        {
+            string gdi = Device.Identity.GdiName;
+            try
+            {
+                if (!string.IsNullOrEmpty(gdi) && Services.MainDisplay.Active.Contains(gdi, StringComparer.OrdinalIgnoreCase))
+                    return Services.MainDisplay.IsMain(gdi);
+            }
+            catch (Exception error) when (error is System.ComponentModel.Win32Exception or InvalidOperationException) { }
+            return Device.Identity.IsPrimary;   // demo displays and displays Windows is not using
+        }
+    }
+
+    /// <summary>The main display moved: the subtitles say so again.</summary>
+    public void RaiseMainDisplay() => Raise(nameof(Subtitle));
+
+    private bool isPreferredMain;
+
+    /// <summary>The preferred main display (star): made the main display whenever it is connected.</summary>
+    public bool IsPreferredMain
+    {
+        get => isPreferredMain;
+        set { if (Set(ref isPreferredMain, value)) { Raise(nameof(Subtitle)); Raise(nameof(PreferredToolTip)); } Raise(nameof(PreferredSwitch)); }
+    }
+
+    /// <summary>Set by the main view model: what the star does.</summary>
+    internal Action<MonitorViewModel>? TogglePreferred { get; set; }
+
+    /// <summary>The star button (two-way): clicking asks the main view model, which sets <see cref="IsPreferredMain"/>.</summary>
+    public bool PreferredSwitch
+    {
+        get => IsPreferredMain;
+        set { if (value != IsPreferredMain) TogglePreferred?.Invoke(this); Raise(); }
+    }
+
+    public string PreferredToolTip => IsPreferredMain
+        ? "Preferred main display: it becomes the main display whenever it is connected. Click to stop preferring it."
+        : "Prefer this display as the main display: whenever it is connected, it becomes the main display.";
+
     public string Subtitle => !Device.IsActive ? "Off — Windows is not using this display"
         : !Device.IsControllable ? "No control path on this computer"
         : string.Join(" · ", new[]
           {
-              Device.Identity.IsPrimary ? "Main display" : null,
-              Device.Identity.IsBuiltIn ? "Built-in" : Device.Identity.IsPrimary ? null : "External",
+              IsMainDisplay ? "Main display" : null,
+              IsPreferredMain ? "Preferred" : null,
+              Device.Identity.IsBuiltIn ? "Built-in" : IsMainDisplay ? null : "External",
               Device.Identity.IsBuiltIn ? Panel : null
           }.Where(p => !string.IsNullOrEmpty(p)));
 

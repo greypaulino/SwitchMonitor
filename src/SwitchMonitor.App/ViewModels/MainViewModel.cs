@@ -61,7 +61,7 @@ public sealed class SceneViewModel : ObservableObject
 
 public enum AppTab { Displays, Advanced, Profiles, Shortcuts, Settings, Learn }
 
-public sealed class MainViewModel : ObservableObject, IInputCoordinator
+public sealed partial class MainViewModel : ObservableObject, IInputCoordinator
 {
     private readonly ICoreLog log;
     private readonly InputHistory history;
@@ -107,6 +107,7 @@ public sealed class MainViewModel : ObservableObject, IInputCoordinator
         brightnessSteps = new BrightnessSteps(settings.BrightnessStep);
         RefreshCommand = new RelayCommand(_ => _ = RefreshAsync(), _ => !IsBusy);
         ReloadValuesCommand = new RelayCommand(() => _ = Selected?.ReloadValuesAsync() ?? Task.CompletedTask);
+        TogglePreferredCommand = new RelayCommand(p => { if (p is MonitorViewModel monitor) TogglePreferred(monitor); });
         LearnCommand = new RelayCommand(_ => OpenLearn(), _ => Selected is { IsControllable: true } && !IsBusy);
         // Writes factory values to the monitor: the first click only arms it, as Delete does on the Profiles tab.
         resetTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(4) };
@@ -159,6 +160,69 @@ public sealed class MainViewModel : ObservableObject, IInputCoordinator
     public IReadOnlyList<SceneProfile> SceneProfiles { get; private set; } = [];
     public ICommand RefreshCommand { get; }
     public ICommand ReloadValuesCommand { get; }
+
+    // ---- Preferred main display ----
+
+    /// <summary>Marks a display as the preferred main display, or clears the mark when it already is.</summary>
+    public ICommand TogglePreferredCommand { get; }
+
+    public void TogglePreferred(MonitorViewModel monitor)
+    {
+        bool clear = string.Equals(Settings.PreferredMain, monitor.Key, StringComparison.OrdinalIgnoreCase);
+        UpdateSettings(Settings with { PreferredMain = clear ? null : monitor.Key }, shortcutsChanged: false);
+        MarkPreferred();
+        if (clear)
+        {
+            Report($"{monitor.Name} is no longer the preferred main display.", true);
+            return;
+        }
+        Report($"{monitor.Name} is the preferred main display: it becomes the main display whenever it is connected.", true);
+        ApplyPreferredMain();
+    }
+
+    /// <summary>Shows which display is preferred (star in the window and the brightness panel).</summary>
+    public void MarkPreferred()
+    {
+        foreach (var monitor in Monitors)
+            monitor.IsPreferredMain = string.Equals(Settings.PreferredMain, monitor.Key, StringComparison.OrdinalIgnoreCase);
+        PreferredChanged?.Invoke();
+    }
+
+    public event Action? PreferredChanged;
+
+    /// <summary>After the main display moved (here or from the brightness panel): subtitles and panel marks follow.</summary>
+    public void MainDisplayChanged()
+    {
+        foreach (var monitor in Monitors) monitor.RaiseMainDisplay();
+        PreferredChanged?.Invoke();
+    }
+
+    /// <summary>
+    /// Moves the main display to the preferred one when it is connected, in use and not the main display yet.
+    /// True when it moved.
+    /// </summary>
+    public bool ApplyPreferredMain()
+    {
+        var seats = Monitors.Select(m => new Core.Displays.DisplaySeat(m.Key, m.Device.Identity.GdiName, m.IsActive)).ToArray();
+        // Windows' own list of displays in the desktop is the reference for "in use".
+        var active = Services.MainDisplay.Active;
+        seats = seats.Select(s => s with { IsActive = s.IsActive && active.Contains(s.GdiName ?? "", StringComparer.OrdinalIgnoreCase) }).ToArray();
+        if (Core.Displays.PreferredMain.Target(Settings.PreferredMain, seats, Services.MainDisplay.Current) is not { } target) return false;
+        var monitor = Monitors.First(m => string.Equals(m.Device.Identity.GdiName, target, StringComparison.OrdinalIgnoreCase));
+        try
+        {
+            Services.MainDisplay.Set(target);
+            MainDisplayChanged();
+            Report($"{monitor.Name} is the main display again (preferred).", true);
+            log.Write(LogLevel.Info, $"Preferred main display: moved the main display to {monitor.Name}.");
+            return true;
+        }
+        catch (InvalidOperationException error)
+        {
+            Report($"Preferred main display: {error.Message}", false);
+            return false;
+        }
+    }
     public ICommand ResetAllCommand { get; }
     public ICommand RetryShortcutsCommand { get; }
     public ICommand OpenShortcutsCommand { get; }
@@ -388,7 +452,7 @@ public sealed class MainViewModel : ObservableObject, IInputCoordinator
 
             var devices = await Task.Run(() => DeviceSource?.Invoke() ?? MonitorEnumerator.Enumerate(CoreOptions.FromDataDirectory(), log: log));
             foreach (var device in devices.OrderByDescending(d => d.IsControllable).ThenByDescending(d => d.Identity.IsPrimary))
-                Monitors.Add(new MonitorViewModel(device, Report, this));
+                Monitors.Add(new MonitorViewModel(device, Report, this) { TogglePreferred = TogglePreferred });
             // Panel names from the EDID for built-in screens (Windows display configuration, quick and read-only).
             var summaries = await Task.Run(() => BuiltInProbe.Displays());
             foreach (var monitor in Monitors.Where(m => m.Device.Identity.IsBuiltIn))
@@ -413,6 +477,7 @@ public sealed class MainViewModel : ObservableObject, IInputCoordinator
             Selected = Monitors.FirstOrDefault(m => m.Device.Key == keep) ?? Monitors.FirstOrDefault(m => m.IsControllable);
             Report(Monitors.Count == 0 ? "No displays found." : $"{Monitors.Count(m => m.IsControllable)} of {Monitors.Count} display(s) can be controlled.", Monitors.Count > 0);
             LoadScenes();
+            MarkPreferred();
             // Load every controllable display in the background so shortcuts respond at once.
             foreach (var monitor in Monitors.Where(m => m.IsControllable)) _ = monitor.EnsureLoadedAsync();
         }

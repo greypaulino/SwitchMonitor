@@ -14,13 +14,16 @@ public partial class App : Application
 {
     private const string InstanceName = "SwitchMonitor.v2.SingleInstance";
     private Mutex? instance;
+    private const string RestartedArgument = "--restarted";
     private EventWaitHandle? activateSignal;
     private FileLog? log;
     private MainViewModel? model;
     private MainWindow? window;
     private TrayIcon? tray;
     private SunTrayIcon? sunTray;
+    private Services.DesktopStarKey? desktopStar;
     private SunPanel? sunPanel;
+    private ViewModels.SunPanelViewModel? sunPanelModel;
     private HotkeyService? hotkeys;
     private bool shortcutsPaused;
     private bool exiting;
@@ -46,6 +49,12 @@ public partial class App : Application
         // One instance: a second launch just brings the first window forward.
         string instanceName = demoScenario is null ? InstanceName : InstanceName + ".Demo";
         instance = new Mutex(true, instanceName, out bool first);
+        // Started again after a backup was restored: wait for the previous instance to finish closing.
+        if (!first && e.Args.Contains(RestartedArgument, StringComparer.OrdinalIgnoreCase))
+        {
+            try { first = instance.WaitOne(TimeSpan.FromSeconds(15)); }
+            catch (AbandonedMutexException) { first = true; }
+        }
         activateSignal = new EventWaitHandle(false, EventResetMode.AutoReset, instanceName + ".Activate");
         if (!first)
         {
@@ -95,10 +104,12 @@ public partial class App : Application
         };
 
         // The sun (1.x "brillo"): always in the notification area, also in demo mode (it only changes demo displays there).
-        var sunModel = new ViewModels.SunPanelViewModel(model);
+        var sunModel = sunPanelModel = new ViewModels.SunPanelViewModel(model);
         sunModel.OpenWindowRequested += () => { sunPanel?.HidePanel(); ShowWindow(); };
         sunPanel = new SunPanel(sunModel);
         sunTray = new SunTrayIcon(() => sunPanel.Toggle(), ShowWindow, ExitApp);
+        // * alone on the desktop or the taskbar opens the panel too (elsewhere it types a * as usual).
+        if (demoScenario is null) desktopStar = new Services.DesktopStarKey(() => sunPanel.ShowPanel());
 
         if (demoScenario is not null)
         {
@@ -118,6 +129,11 @@ public partial class App : Application
         tray.Opening += UpdateTray;
         hotkeys = new HotkeyService();
         model.ShortcutsChanged += RegisterHotkeys;
+        model.RestartRequested += () =>
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(Environment.ProcessPath!, RestartedArgument) { UseShellExecute = false });
+            ExitApp();
+        };
         model.IsShortcutFree = hotkeys.IsFree;
         model.ShortcutsPaused += paused =>
         {
@@ -130,12 +146,62 @@ public partial class App : Application
         Microsoft.Win32.SystemEvents.DisplaySettingsChanged += OnDisplaysChanged;
         Microsoft.Win32.SystemEvents.PowerModeChanged += OnPowerModeChanged;
 
-        if (!settings.StartMinimized) ShowWindow();
+        // Started by Windows at sign-in: stay in the notification area.
+        bool atSignIn = e.Args.Any(a => a.Equals(Services.StartWithWindows.StartupArgument, StringComparison.OrdinalIgnoreCase));
+        if (!settings.StartMinimized && !atSignIn) ShowWindow();
         if (settingsProblem is not null) model.Report(settingsProblem, false);
-        _ = model.RefreshAsync();
+        displaySet = CurrentDisplaySet();
+        _ = StartAsync();
     }
 
-    private void OnDisplaysChanged(object? sender, EventArgs e) => ReapplyColorSoon();
+    private void OnDisplaysChanged(object? sender, EventArgs e)
+    {
+        ReapplyColorSoon();
+        CheckDisplaySetSoon();
+    }
+
+    private string displaySet = "";
+    private System.Windows.Threading.DispatcherTimer? displaySetTimer;
+
+    /// <summary>The displays Windows uses, as one string ("\\.\DISPLAY1|\\.\DISPLAY2").</summary>
+    private static string CurrentDisplaySet() =>
+        string.Join("|", Services.MainDisplay.Active.Order(StringComparer.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// A moment after Windows changes the displays: when one was connected or disconnected (not for a resolution or a
+    /// main-display change), list the displays again and put the main display back on the preferred one.
+    /// </summary>
+    private void CheckDisplaySetSoon()
+    {
+        Dispatcher.BeginInvoke(() =>
+        {
+            displaySetTimer ??= new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
+            displaySetTimer.Stop();
+            displaySetTimer.Tick -= OnDisplaySetTick;
+            displaySetTimer.Tick += OnDisplaySetTick;
+            displaySetTimer.Start();
+        });
+    }
+
+    private async void OnDisplaySetTick(object? sender, EventArgs e)
+    {
+        displaySetTimer?.Stop();
+        if (model is null) return;
+        string now = CurrentDisplaySet();
+        if (now == displaySet) return;
+        displaySet = now;
+        log?.Write(LogLevel.Info, $"Displays in use changed: {now}.");
+        await model.RefreshAsync();
+        if (demoScenario is null && model.ApplyPreferredMain()) sunPanelModel?.RefreshMain();
+    }
+
+    /// <summary>First listing of the displays, then the preferred main display (as when a display is connected).</summary>
+    private async Task StartAsync()
+    {
+        if (model is null) return;
+        await model.RefreshAsync();
+        if (demoScenario is null && model.ApplyPreferredMain()) sunPanelModel?.RefreshMain();
+    }
 
     private void OnPowerModeChanged(object? sender, Microsoft.Win32.PowerModeChangedEventArgs e)
     {
@@ -187,15 +253,8 @@ public partial class App : Application
         foreach (var chord in settings.For(HotkeyAction.BrightnessDown))
             Add("brightness down", chord, () => { model.StepBrightness(-1); sunPanel?.ShowPanel(activate: false); },
                 held => { model.HoldBrightness(-1, held); sunPanel?.ShowPanel(activate: false); });
-        // Tap: next display. Held 1.5 s: the brightness panel opens (once per hold).
-        bool panelShown = false;
-        foreach (var chord in settings.For(HotkeyAction.NextMonitor))
-            Add("next display", chord, () => { panelShown = false; model.NextBrightnessTarget(); }, held =>
-            {
-                if (panelShown || held < TimeSpan.FromSeconds(1.5)) return;
-                panelShown = true;
-                sunPanel?.ShowPanel();
-            });
+        foreach (var chord in settings.For(HotkeyAction.BrightnessPanel))
+            Add("brightness panel", chord, () => sunPanel?.Toggle());
         foreach (var chord in settings.For(HotkeyAction.NextInput))
             Add("next input", chord, () => _ = model.NextInputAsync());
         foreach (var chord in settings.For(HotkeyAction.OpenWindow))
@@ -270,6 +329,7 @@ public partial class App : Application
         hotkeys?.Dispose();
         tray?.Dispose();
         sunTray?.Dispose();
+        desktopStar?.Dispose();
         sunPanel?.Close();
         model?.Shutdown();
         log?.Write(LogLevel.Info, "SwitchMonitor v2 stopped.");
