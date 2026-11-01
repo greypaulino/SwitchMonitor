@@ -58,13 +58,23 @@ public sealed partial class QuirkDatabase
     /// <summary>quirks.user.json in the data directory: mappings learned on this computer.</summary>
     public static string UserFilePath => Path.Combine(AppPaths.DataDirectory, "quirks.user.json");
 
-    /// <summary>Embedded quirks plus this computer's learned mappings (user controls win per VCP code).</summary>
-    public static QuirkDatabase LoadDefault(string? userFile = null)
+    /// <summary>quirks.shared.json in the data directory: the shared database downloaded from the project (newer than the embedded one).</summary>
+    public static string SharedFilePath => Path.Combine(AppPaths.DataDirectory, "quirks.shared.json");
+
+    /// <summary>
+    /// Embedded quirks, then the downloaded shared database, then this computer's learned mappings (each one wins per
+    /// VCP code over the one before). A damaged shared file is skipped: the embedded quirks still work.
+    /// </summary>
+    public static QuirkDatabase LoadDefault(string? userFile = null, string? sharedFile = null)
     {
-        var embedded = LoadEmbedded();
+        var database = LoadEmbedded();
+        sharedFile ??= SharedFilePath;
+        if (File.Exists(sharedFile))
+            try { database = database.Merge(Parse(File.ReadAllText(sharedFile))); }
+            catch (Exception error) when (error is FormatException or System.Text.Json.JsonException or IOException) { }
         userFile ??= UserFilePath;
-        if (!File.Exists(userFile)) return embedded;
-        return embedded.Merge(Parse(File.ReadAllText(userFile)));
+        if (!File.Exists(userFile)) return database;
+        return database.Merge(Parse(File.ReadAllText(userFile)));
     }
 
     /// <summary>Overlays <paramref name="overlay"/>: same id merges controls by code; new ids are added.</summary>

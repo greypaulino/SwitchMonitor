@@ -43,10 +43,26 @@ internal static class SettingsTests
         var settings = new AppSettings();
         Assert.Sequence(["Ctrl+Alt+NumpadAdd", "Ctrl+Alt+Shift+Plus"], settings.For(HotkeyAction.BrightnessUp).Select(c => c.ToString()));
         Assert.Sequence(["Ctrl+Alt+NumpadSubtract", "Ctrl+Alt+Minus"], settings.For(HotkeyAction.BrightnessDown).Select(c => c.ToString()));
-        Assert.Sequence(["Ctrl+Alt+NumpadMultiply", "Ctrl+Alt+Shift+8"], settings.For(HotkeyAction.NextMonitor).Select(c => c.ToString()));
+        Assert.Sequence(["Ctrl+Alt+NumpadMultiply", "Ctrl+Alt+Shift+8"], settings.For(HotkeyAction.BrightnessPanel).Select(c => c.ToString()));
+        Assert.True(!HotkeyAction.All.Contains(HotkeyAction.RetiredNextMonitor), "Next display is * in the panel, not a shortcut");
         Assert.Sequence(["Ctrl+Alt+M"], settings.For(HotkeyAction.NextInput).Select(c => c.ToString()));
         Assert.Sequence(["Ctrl+Alt+Shift+M"], settings.For(HotkeyAction.OpenWindow).Select(c => c.ToString()));
         Assert.Equal(1, settings.BrightnessStep, "one point per tap");
+        Assert.Equal(0, settings.FindConflicts([]).Count);
+    }
+
+    [Test]
+    public static void VersionTwoDropsNextDisplayAndCtrlAltStarOpensThePanel()
+    {
+        var settings = AppSettings.Parse("""
+            { "version": 2, "brightnessStep": 3,
+              "hotkeys": { "nextMonitor": [ "Ctrl+Alt+NumpadMultiply", "Ctrl+Alt+Shift+8", "Ctrl+Alt+N" ] } }
+            """, out bool upgraded);
+        Assert.True(upgraded);
+        Assert.Sequence(["Ctrl+Alt+NumpadMultiply", "Ctrl+Alt+Shift+8"], settings.For(HotkeyAction.BrightnessPanel).Select(c => c.ToString()));
+        Assert.True(settings.Hotkeys.Keys.All(HotkeyAction.All.Contains), "nextMonitor is dropped");
+        Assert.True(!settings.ToJson().Contains("nextMonitor"), "and not written again");
+        Assert.Equal(3, settings.BrightnessStep, "the rest of a version 2 file is kept");
         Assert.Equal(0, settings.FindConflicts([]).Count);
     }
 

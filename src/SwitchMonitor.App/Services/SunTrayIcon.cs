@@ -21,6 +21,7 @@ public sealed class SunTrayIcon : IDisposable
         menu.Items.Add("Open SwitchMonitor", null, (_, _) => open());
         menu.Items.Add(new Forms.ToolStripSeparator());
         menu.Items.Add("Exit", null, (_, _) => exit());
+        TrayMenuLook.Apply(menu);
         icon = new Forms.NotifyIcon { Icon = picture, Text = "SwitchMonitor brightness", ContextMenuStrip = menu, Visible = true };
         icon.MouseClick += (_, e) => { if (e.Button == Forms.MouseButtons.Left) toggle(); };
     }

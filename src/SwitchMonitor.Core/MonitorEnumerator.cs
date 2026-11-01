@@ -38,6 +38,9 @@ public static class AppPaths
 /// <summary>Discovers displays and picks the best transport for each one.</summary>
 public static class MonitorEnumerator
 {
+    /// <summary>Built-in panels seen since the app started: PnP ID → WMI instance name.</summary>
+    private static readonly Dictionary<string, string> KnownBuiltIn = new(StringComparer.OrdinalIgnoreCase);
+
     public static IReadOnlyList<MonitorDevice> Enumerate(CoreOptions? options = null, QuirkDatabase? quirks = null, ICoreLog? log = null)
     {
         options ??= new CoreOptions();
@@ -50,6 +53,14 @@ public static class MonitorEnumerator
         {
             if (QuirkDatabase.ExtractPnpId(instance) is string pnp) wmiByPnp.TryAdd(pnp, instance);
             else wmiUnmatched.Add(instance);
+        }
+        // Right after Windows turns the built-in panel on or off, WMI can report no panel for a moment (the N5050 did:
+        // the laptop came back as a "Generic PnP Monitor" without brightness). A panel found once stays the built-in one.
+        lock (KnownBuiltIn)
+        {
+            foreach (var (pnp, instance) in wmiByPnp) KnownBuiltIn[pnp] = instance;
+            foreach (var (pnp, instance) in KnownBuiltIn)
+                if (wmiByPnp.TryAdd(pnp, instance)) log.Write(LogLevel.Info, $"WMI did not list {instance} this time; it is still the built-in panel.");
         }
 
         var hMonitors = WindowsMonitors();

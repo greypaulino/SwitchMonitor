@@ -9,19 +9,22 @@ public static class HotkeyAction
 {
     public const string BrightnessUp = "brightnessUp";
     public const string BrightnessDown = "brightnessDown";
-    public const string NextMonitor = "nextMonitor";
+    /// <summary>Version 2's "Next display" shortcut; read and dropped (* in the brightness panel does it now).</summary>
+    public const string RetiredNextMonitor = "nextMonitor";
+    /// <summary>Opens (or closes) the brightness panel. On the desktop a bare * does it too.</summary>
+    public const string BrightnessPanel = "brightnessPanel";
     public const string NextInput = "nextInput";
     public const string OpenWindow = "openWindow";
     /// <summary>Back to Custom (the person's own settings), like the Custom button of the profile row.</summary>
     public const string CustomProfile = "customProfile";
 
-    public static IReadOnlyList<string> All { get; } = [BrightnessUp, BrightnessDown, NextMonitor, NextInput, OpenWindow, CustomProfile];
+    public static IReadOnlyList<string> All { get; } = [BrightnessUp, BrightnessDown, BrightnessPanel, NextInput, OpenWindow, CustomProfile];
 
     public static string Describe(string action) => action switch
     {
         BrightnessUp => "Brightness up",
         BrightnessDown => "Brightness down",
-        NextMonitor => "Next display (hold 1.5 s: brightness panel)",
+        BrightnessPanel => "Brightness panel",
         NextInput => "Next input",
         OpenWindow => "Open window",
         CustomProfile => "Custom",
@@ -38,7 +41,8 @@ public sealed record InputShortcut(string MonitorKey, int InputCode, HotkeyChord
 /// </summary>
 public sealed record AppSettings
 {
-    public const int CurrentVersion = 2;
+    /// <summary>3: Ctrl+Alt+* opens the brightness panel; Next display is no longer a shortcut (* in the panel).</summary>
+    public const int CurrentVersion = 3;
 
     /// <summary>The 1.x defaults: keypad keys plus their US main-keyboard equivalents (-, Shift+=, Shift+8).</summary>
     public static IReadOnlyDictionary<string, IReadOnlyList<HotkeyChord>> DefaultHotkeys { get; } =
@@ -46,7 +50,7 @@ public sealed record AppSettings
         {
             [HotkeyAction.BrightnessUp] = [HotkeyChord.Parse("Ctrl+Alt+NumpadAdd"), HotkeyChord.Parse("Ctrl+Alt+Shift+Plus")],
             [HotkeyAction.BrightnessDown] = [HotkeyChord.Parse("Ctrl+Alt+NumpadSubtract"), HotkeyChord.Parse("Ctrl+Alt+Minus")],
-            [HotkeyAction.NextMonitor] = [HotkeyChord.Parse("Ctrl+Alt+NumpadMultiply"), HotkeyChord.Parse("Ctrl+Alt+Shift+8")],
+            [HotkeyAction.BrightnessPanel] = [HotkeyChord.Parse("Ctrl+Alt+NumpadMultiply"), HotkeyChord.Parse("Ctrl+Alt+Shift+8")],
             [HotkeyAction.NextInput] = [HotkeyChord.Parse("Ctrl+Alt+M")],
             [HotkeyAction.OpenWindow] = [HotkeyChord.Parse("Ctrl+Alt+Shift+M")],
             [HotkeyAction.CustomProfile] = []
@@ -76,6 +80,12 @@ public sealed record AppSettings
 
     /// <summary>Sun panel: moving one display's brightness moves the others to the same level (1.x chain button).</summary>
     public bool LinkBrightness { get; init; }
+
+    /// <summary>
+    /// Key of the preferred main display: whenever it is connected and Windows uses it, it is made the main display
+    /// (when it is gone, Windows moves the main display to another one by itself). Null: no preference.
+    /// </summary>
+    public string? PreferredMain { get; init; }
 
     public IReadOnlyList<HotkeyChord> For(string action) =>
         Hotkeys.TryGetValue(action, out var chords) ? chords : [];
@@ -121,14 +131,16 @@ public sealed record AppSettings
         upgraded = version < CurrentVersion;
 
         var hotkeys = new Dictionary<string, IReadOnlyList<HotkeyChord>>(DefaultHotkeys);
-        if (!upgraded && root.TryGetProperty("hotkeys", out var hotkeyObject) && hotkeyObject.ValueKind == JsonValueKind.Object)
+        if (version >= 2 && root.TryGetProperty("hotkeys", out var hotkeyObject) && hotkeyObject.ValueKind == JsonValueKind.Object)
             foreach (var property in hotkeyObject.EnumerateObject())
             {
+                // Version 2 had a Next display shortcut (Ctrl+Alt+* by default). * now does that inside the brightness
+                // panel, and Ctrl+Alt+* opens the panel: the old entry is dropped.
+                if (property.Name == HotkeyAction.RetiredNextMonitor) continue;
                 if (!HotkeyAction.All.Contains(property.Name))
                     throw new FormatException($"settings.json: unknown shortcut action \"{property.Name}\".");
                 hotkeys[property.Name] = ParseChords($"hotkeys.{property.Name}", property.Value);
             }
-
         var inputShortcuts = new List<InputShortcut>();
         if (root.TryGetProperty("inputShortcuts", out var inputs) && inputs.ValueKind == JsonValueKind.Array)
             foreach (var entry in inputs.EnumerateArray())
@@ -151,7 +163,7 @@ public sealed record AppSettings
                     .Distinct().ToArray();
 
         var defaults = new AppSettings();
-        int step = !upgraded && root.TryGetProperty("brightnessStep", out var s) && s.TryGetInt32(out int parsed)
+        int step = version >= 2 && root.TryGetProperty("brightnessStep", out var s) && s.TryGetInt32(out int parsed)
             ? parsed : defaults.BrightnessStep;
         if (step is < 1 or > 50) throw new FormatException("settings.json: brightnessStep must be between 1 and 50.");
 
@@ -165,7 +177,9 @@ public sealed record AppSettings
             BrightnessStep = step,
             StartMinimized = root.TryGetProperty("startMinimized", out var min) && min.ValueKind == JsonValueKind.True,
             ShowAdvanced = root.TryGetProperty("showAdvanced", out var adv) && adv.ValueKind == JsonValueKind.True,
-            LinkBrightness = root.TryGetProperty("linkBrightness", out var link) && link.ValueKind == JsonValueKind.True
+            LinkBrightness = root.TryGetProperty("linkBrightness", out var link) && link.ValueKind == JsonValueKind.True,
+            PreferredMain = root.TryGetProperty("preferredMain", out var preferred) && preferred.ValueKind == JsonValueKind.String
+                && preferred.GetString() is { Length: > 0 } preferredKey ? preferredKey : null
         };
     }
 
@@ -214,7 +228,8 @@ public sealed record AppSettings
             ["brightnessStep"] = BrightnessStep,
             ["startMinimized"] = StartMinimized,
             ["showAdvanced"] = ShowAdvanced,
-            ["linkBrightness"] = LinkBrightness
+            ["linkBrightness"] = LinkBrightness,
+            ["preferredMain"] = PreferredMain
         };
         return root.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
     }

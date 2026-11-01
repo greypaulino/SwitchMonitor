@@ -455,6 +455,82 @@ public static class SceneStore
         return result;
     }
 
+    // ---- Sharing one profile (.smprofile) ----
+
+    public const string ProfileExtension = ".smprofile";
+
+    /// <summary>
+    /// One profile as a file to share: its settings, color, icon (an imported picture travels inside the file) and
+    /// linked programs. Its shortcut stays here: shortcuts are personal and could clash on another computer.
+    /// </summary>
+    public static string ExportProfile(string json, string name, string iconsDirectory)
+    {
+        var root = System.Text.Json.Nodes.JsonNode.Parse(json, documentOptions: ReadOptions) ?? throw new FormatException("scenes.json is empty.");
+        var scene = FindScene(ScenesArray(root), name)?.DeepClone() as System.Text.Json.Nodes.JsonObject
+            ?? throw new FormatException($"There is no profile called \"{name}\".");
+        scene.Remove("hotkey");
+        var file = new System.Text.Json.Nodes.JsonObject
+        {
+            ["app"] = "SwitchMonitor",
+            ["kind"] = "profile",
+            ["version"] = 1,
+            ["profile"] = scene
+        };
+        if ((string?)scene["icon"] is { } icon && icon.StartsWith("image:", StringComparison.Ordinal))
+        {
+            string picture = Path.Combine(iconsDirectory, icon[6..]);
+            if (File.Exists(picture)) file["image"] = Convert.ToBase64String(File.ReadAllBytes(picture));
+            else scene.Remove("icon");
+        }
+        return file.ToJsonString(WriteOptions);
+    }
+
+    /// <summary>
+    /// Adds a shared profile to <paramref name="json"/>. A name already in use gets " (2)", " (3)"…; the picture is
+    /// saved in <paramref name="iconsDirectory"/>. Returns the new scenes.json text and the name the profile got.
+    /// Throws <see cref="FormatException"/> for a file that is not a SwitchMonitor profile.
+    /// </summary>
+    public static (string Json, string Name) ImportProfile(string json, string profileFile, string iconsDirectory)
+    {
+        var file = System.Text.Json.Nodes.JsonNode.Parse(profileFile, documentOptions: ReadOptions) as System.Text.Json.Nodes.JsonObject;
+        if (file is null || (string?)file["app"] != "SwitchMonitor" || (string?)file["kind"] != "profile" ||
+            file["profile"] is not System.Text.Json.Nodes.JsonObject shared)
+            throw new FormatException("This file is not a SwitchMonitor profile.");
+        var scene = (System.Text.Json.Nodes.JsonObject)shared.DeepClone();
+        scene.Remove("hotkey");
+        string baseName = ((string?)scene["name"])?.Trim() is { Length: > 0 } n ? n : "Imported profile";
+        if (string.Equals(baseName, CustomName, StringComparison.OrdinalIgnoreCase)) baseName = "Custom (imported)";
+
+        var root = System.Text.Json.Nodes.JsonNode.Parse(json, documentOptions: ReadOptions) ?? throw new FormatException("scenes.json is empty.");
+        var scenes = ScenesArray(root);
+        string name = baseName;
+        for (int i = 2; FindScene(scenes, name) is not null; i++) name = $"{baseName} ({i})";
+        scene["name"] = name;
+
+        if ((string?)scene["icon"] is { } icon && icon.StartsWith("image:", StringComparison.Ordinal))
+        {
+            if (NormalizeIcon(icon) is null || (string?)file["image"] is not { } data) scene.Remove("icon");
+            else
+            {
+                byte[] bytes;
+                try { bytes = Convert.FromBase64String(data); }
+                catch (FormatException) { throw new FormatException("The profile's picture is damaged."); }
+                Directory.CreateDirectory(iconsDirectory);
+                string picture = icon[6..];
+                string stem = Path.GetFileNameWithoutExtension(picture);
+                for (int i = 2; File.Exists(Path.Combine(iconsDirectory, picture)) &&
+                     !File.ReadAllBytes(Path.Combine(iconsDirectory, picture)).AsSpan().SequenceEqual(bytes); i++)
+                    picture = $"{stem}-{i}.png";
+                File.WriteAllBytes(Path.Combine(iconsDirectory, picture), bytes);
+                scene["icon"] = "image:" + picture;
+            }
+        }
+        scenes.Add(scene);
+        string result = root.ToJsonString(WriteOptions);
+        Parse(result);   // a profile this app cannot read is refused before anything is written
+        return (result, name);
+    }
+
     /// <summary>Reads scenes.json (creating it with the defaults when missing).</summary>
     public static string ReadText(string? path = null)
     {

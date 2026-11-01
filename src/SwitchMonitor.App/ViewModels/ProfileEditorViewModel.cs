@@ -308,6 +308,8 @@ public sealed class ProfileEditorViewModel : ObservableObject
         SaveCommand = new RelayCommand(_ => { if (isCustom) _ = ApplyCustomAsync(); else Save(); },
             _ => isCustom ? Source is not null : IsEditing);
         DeleteCommand = new RelayCommand(_ => Delete(), _ => originalName is not null);
+        ExportCommand = new RelayCommand(_ => Export(), _ => originalName is not null);
+        ImportCommand = new RelayCommand(_ => Import());
         RevertCommand = new RelayCommand(_ => _ = isCustom ? StartCustomAsync() : IsNew ? StartDraftAsync(template) : LoadAsync(), _ => dirty);
 
         source = main.Selected is { IsControllable: true } chosen ? chosen : Sources.FirstOrDefault();
@@ -335,6 +337,12 @@ public sealed class ProfileEditorViewModel : ObservableObject
     public ICommand TryCommand { get; }
     public ICommand SaveCommand { get; }
     public ICommand DeleteCommand { get; }
+
+    /// <summary>Saves the profile as a .smprofile file to share (settings, color, icon and linked programs; not its shortcut).</summary>
+    public ICommand ExportCommand { get; }
+
+    /// <summary>Adds a profile from a .smprofile file.</summary>
+    public ICommand ImportCommand { get; }
     public ICommand RevertCommand { get; }
 
     public ProfileListItem? SelectedProfile
@@ -398,10 +406,34 @@ public sealed class ProfileEditorViewModel : ObservableObject
     public string Message { get => message; private set => Set(ref message, value); }
     public bool MessageIsError { get => messageIsError; private set => Set(ref messageIsError, value); }
 
+    private void SetDirty(bool value)
+    {
+        dirty = value;
+        Raise(nameof(ShowsSave));
+    }
+
+    /// <summary>
+    /// Save (Apply for Custom) shows only when there is something to keep: a new profile, Custom, or a saved profile
+    /// that was changed here. A template added as it is needs no Save.
+    /// </summary>
+    public bool ShowsSave => isCustom || IsNew || dirty;
+
+    /// <summary>The ⋯ menu's Delete: asks once in a dialog (the two-click Delete does not work from a menu).</summary>
+    public ICommand DeleteAskCommand => deleteAsk ??= new RelayCommand(_ =>
+    {
+        if (originalName is null) return;
+        var answer = System.Windows.MessageBox.Show($"Delete the profile \"{originalName}\" and its shortcut?", "Delete profile",
+            System.Windows.MessageBoxButton.OKCancel, System.Windows.MessageBoxImage.Question);
+        if (answer != System.Windows.MessageBoxResult.OK) return;
+        confirmingDelete = true;
+        Delete();
+    }, _ => originalName is not null);
+    private ICommand? deleteAsk;
+
     public void MarkDirty()
     {
         if (building) return;
-        dirty = true;
+        SetDirty(true);
         confirmingDelete = false;
         Raise(nameof(DeleteLabel));
         CommandManager.InvalidateRequerySuggested();
@@ -474,7 +506,7 @@ public sealed class ProfileEditorViewModel : ObservableObject
         await BuildRowsAsync(null, []);
         LoadCurrentValues(allRows);
         RebuildVisibleRows();
-        dirty = false;
+        SetDirty(false);
         RaiseHeader();
         Inform(Source is null
             ? "No display to read settings from."
@@ -511,7 +543,7 @@ public sealed class ProfileEditorViewModel : ObservableObject
         // Settings the template does not mention start as the display has them.
         LoadCurrentValues(allRows.Where(r => !r.Include));
         RebuildVisibleRows();
-        dirty = true;
+        SetDirty(true);
         RaiseHeader();
         Raise(nameof(IsEditing));
         Inform(templateProfile is null
@@ -580,7 +612,7 @@ public sealed class ProfileEditorViewModel : ObservableObject
         RebuildVisibleRows();
         Raise(nameof(IncludeAdvanced));
         Raise(nameof(AdvancedGlyph)); Raise(nameof(AdvancedToolTip));
-        dirty = false;
+        SetDirty(false);
         confirmingDelete = false;
         RaiseHeader();
         Inform(Source is null ? "Saved." : $"Saved. Settings this profile does not set show what {Source.Name} has now (Save would add them to it).");
@@ -592,6 +624,7 @@ public sealed class ProfileEditorViewModel : ObservableObject
         Raise(nameof(IsCustom));
         Raise(nameof(Title));
         Raise(nameof(SaveLabel));
+        Raise(nameof(ShowsSave));
         Raise(nameof(SaveToolTip));
         Raise(nameof(IsEditing));
         Raise(nameof(AdvancedGlyph));
@@ -733,7 +766,7 @@ public sealed class ProfileEditorViewModel : ObservableObject
             string draft = SceneStore.Upsert(SceneStore.DefaultJson, null, scratch, null, Lines());
             var settings = SceneStore.Parse(draft).First().Settings;
             await main.ApplyAsCustomAsync(new SceneProfile(MainViewModel.CustomName, settings), Source);
-            dirty = false;
+            SetDirty(false);
             CommandManager.InvalidateRequerySuggested();
             Inform($"Applied to {Source.Name} as your Custom settings.");
         }
@@ -1146,6 +1179,49 @@ public sealed class ProfileEditorViewModel : ObservableObject
                 .ToArray();
             SceneStore.Write(SceneStore.Upsert(SceneStore.ReadText(), null, name, null, lines, color: template.Color));
             main.Report($"Profile \"{name}\" added from the {template.Name} template.", true);
+            main.ProfilesChanged(name);
+        }
+        catch (Exception error) when (error is FormatException or System.Text.Json.JsonException or IOException or UnauthorizedAccessException)
+        {
+            Inform(error.Message, true);
+        }
+    }
+
+    private void Export()
+    {
+        if (originalName is null) return;
+        var dialog = new Microsoft.Win32.SaveFileDialog
+        {
+            Title = $"Export profile {originalName}",
+            FileName = originalName + SceneStore.ProfileExtension,
+            Filter = $"SwitchMonitor profile (*{SceneStore.ProfileExtension})|*{SceneStore.ProfileExtension}",
+            AddExtension = true
+        };
+        if (dialog.ShowDialog() != true) return;
+        try
+        {
+            File.WriteAllText(dialog.FileName, SceneStore.ExportProfile(SceneStore.ReadText(), originalName, AppPaths.IconsDirectory));
+            main.Report($"Profile \"{originalName}\" exported to {Path.GetFileName(dialog.FileName)}.", true);
+        }
+        catch (Exception error) when (error is FormatException or System.Text.Json.JsonException or IOException or UnauthorizedAccessException)
+        {
+            Inform(error.Message, true);
+        }
+    }
+
+    private void Import()
+    {
+        var dialog = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "Import a profile",
+            Filter = $"SwitchMonitor profile (*{SceneStore.ProfileExtension})|*{SceneStore.ProfileExtension}|All files (*.*)|*.*"
+        };
+        if (dialog.ShowDialog() != true) return;
+        try
+        {
+            var (json, name) = SceneStore.ImportProfile(SceneStore.ReadText(), File.ReadAllText(dialog.FileName), AppPaths.IconsDirectory);
+            SceneStore.Write(json);
+            main.Report($"Profile \"{name}\" imported.", true);
             main.ProfilesChanged(name);
         }
         catch (Exception error) when (error is FormatException or System.Text.Json.JsonException or IOException or UnauthorizedAccessException)

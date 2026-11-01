@@ -89,7 +89,6 @@ public sealed class ShortcutRowViewModel : ObservableObject
         {
             HotkeyAction.BrightnessUp => "\uE706",     // Brightness
             HotkeyAction.BrightnessDown => "\uE708",   // QuietHours: the moon, dimmer
-            HotkeyAction.NextMonitor => Icons.External,
             HotkeyAction.NextInput => Icons.NextInput,
             HotkeyAction.OpenWindow => "\uE8A7",       // OpenInNewWindow
             HotkeyAction.CustomProfile => Icons.ForProfile(SceneStore.CustomName),

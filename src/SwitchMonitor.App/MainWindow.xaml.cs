@@ -18,7 +18,12 @@ public partial class MainWindow : Window
             UseDarkTitleBar();
             FitFrame();
         };
-        StateChanged += (_, _) => FitFrame();
+        StateChanged += (_, _) =>
+        {
+            FitFrame();
+            AnimateState();
+        };
+        Frame.RenderTransform = frameShift;
         Theme.Changed += FitFrame;
         Theme.Changed += FitPointerLight;
         Closed += (_, _) =>
@@ -31,10 +36,49 @@ public partial class MainWindow : Window
 
     // ---- Window buttons drawn in the header (the title bar is part of the interface) ----
 
-    private void MinimizeWindow(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
+    // ---- Minimize, maximize and restore move the window's content: down and out, back up, or a short settle ----
+
+    private readonly System.Windows.Media.TranslateTransform frameShift = new();
+    private WindowState lastState = WindowState.Normal;
+    private bool minimizing;
+
+    private void MinimizeWindow(object sender, RoutedEventArgs e)
+    {
+        if (!Animate || minimizing) { WindowState = WindowState.Minimized; return; }
+        minimizing = true;
+        var drop = new System.Windows.Media.Animation.DoubleAnimation(0, 36, TimeSpan.FromMilliseconds(170))
+        { EasingFunction = new System.Windows.Media.Animation.CubicEase { EasingMode = System.Windows.Media.Animation.EasingMode.EaseIn } };
+        var fade = new System.Windows.Media.Animation.DoubleAnimation(1, 0, TimeSpan.FromMilliseconds(170));
+        fade.Completed += (_, _) =>
+        {
+            minimizing = false;
+            WindowState = WindowState.Minimized;
+        };
+        frameShift.BeginAnimation(System.Windows.Media.TranslateTransform.YProperty, drop);
+        Frame.BeginAnimation(OpacityProperty, fade);
+    }
 
     private void ToggleMaximize(object sender, RoutedEventArgs e) =>
         WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
+
+    /// <summary>Back from the taskbar: the content rises into place; maximized or restored: it settles from a few pixels away.</summary>
+    private void AnimateState()
+    {
+        var previous = lastState;
+        lastState = WindowState;
+        if (WindowState == WindowState.Minimized) return;
+        if (!Animate)
+        {
+            frameShift.BeginAnimation(System.Windows.Media.TranslateTransform.YProperty, null);
+            Frame.BeginAnimation(OpacityProperty, null);
+            return;
+        }
+        double from = previous == WindowState.Minimized ? 36 : 14;
+        frameShift.BeginAnimation(System.Windows.Media.TranslateTransform.YProperty,
+            new System.Windows.Media.Animation.DoubleAnimation(from, 0, TimeSpan.FromMilliseconds(previous == WindowState.Minimized ? 240 : 200)) { EasingFunction = EaseOut });
+        Frame.BeginAnimation(OpacityProperty,
+            new System.Windows.Media.Animation.DoubleAnimation(previous == WindowState.Minimized ? 0 : 0.6, 1, TimeSpan.FromMilliseconds(180)));
+    }
 
     private void CloseWindow(object sender, RoutedEventArgs e) => Close();   // the app keeps running in the tray
 
@@ -108,6 +152,19 @@ public partial class MainWindow : Window
         menu.PlacementTarget = button;
         menu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;
         menu.IsOpen = true;
+    }
+
+    /// <summary>A profile's ⋯ button: selects that profile, then opens its menu (Export, Restore, Delete) for it.</summary>
+    private void ProfileOptions(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { ContextMenu: { } menu, DataContext: ViewModels.ProfileListItem item } button) return;
+        if (DataContext is not MainViewModel { ProfileEditor: { } editor }) return;
+        if (!ReferenceEquals(editor.SelectedProfile, item)) editor.SelectedProfile = item;
+        menu.DataContext = editor;
+        menu.PlacementTarget = button;
+        menu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;
+        menu.IsOpen = true;
+        e.Handled = true;
     }
 
     // ---- Motion: the tab pill slides, views settle in, a soft light follows the pointer ----
@@ -190,7 +247,7 @@ public partial class MainWindow : Window
                 bool sideways = order <= 2 && direction != 0;
                 view.BeginAnimation(OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(200)) { EasingFunction = EaseOut });
                 shift.BeginAnimation(System.Windows.Media.TranslateTransform.XProperty,
-                    new System.Windows.Media.Animation.DoubleAnimation(sideways ? 28 * direction : 0, 0, TimeSpan.FromMilliseconds(260)) { EasingFunction = EaseOut });
+                    new System.Windows.Media.Animation.DoubleAnimation(sideways ? 44 * direction : 0, 0, TimeSpan.FromMilliseconds(300)) { EasingFunction = EaseOut });
                 shift.BeginAnimation(System.Windows.Media.TranslateTransform.YProperty,
                     new System.Windows.Media.Animation.DoubleAnimation(sideways ? 0 : 10, 0, TimeSpan.FromMilliseconds(240)) { EasingFunction = EaseOut });
                 Dispatcher.BeginInvoke(() => StaggerCards(view), System.Windows.Threading.DispatcherPriority.Loaded);
