@@ -80,7 +80,10 @@ object Remote {
             if (host != null) keep(prefs.getString("computer", null) ?: host, host, prefs.getInt("port", DEFAULT_PORT), old)
             prefs.edit().remove("token").apply()
         }
-        _ui.update { it.copy(host = prefs.getString("host", null), computer = prefs.getString("computer", null), paired = pairedList()) }
+        val host = prefs.getString("host", null)
+        // A known computer starts as Connecting, so the first frame is already the control screen (not the search).
+        _ui.update { it.copy(phase = if (host != null) Phase.Connecting else it.phase, host = host, computer = prefs.getString("computer", null), paired = pairedList()) }
+        latest = prefs.getString("lastState", null)?.let { try { parseState(JSONObject(it)) } catch (_: Exception) { null } }
     }
 
     private val savedHost get() = prefs.getString("host", null)
@@ -138,24 +141,100 @@ object Remote {
     /** No longer paired with this computer (from the search screen); the computer keeps it until removed there. */
     fun unpair(pc: Found) = dropToken(pc.name, pc.host)
 
-    // ---- Lifecycle: connected while something is showing the controls ----
+    // ---- Lifecycle: connected while something needs it (the app on screen, the notification, the quick panel, a
+    // widget's tap for a few seconds). Each of them holds the connection by a name and lets it go when done. ----
 
+    private val holders = mutableSetOf<String>()
+
+    /** The app came to the front. */
     fun start() {
-        wanted = true
-        val host = savedHost
-        if (host == null) {
+        if (savedHost == null) {
             _ui.update { it.copy(phase = Phase.Choose) }
             if (_ui.value.found.isEmpty()) search()
-        } else if (socket == null) {
-            open(host, savedPort)
         }
+        hold("app")
     }
 
-    fun stop() {
+    /** The app went to the background. */
+    fun stop() = release("app")
+
+    @Synchronized
+    fun hold(who: String) {
+        holders += who
+        wanted = true
+        val host = savedHost
+        if (host != null && socket == null) open(host, savedPort)
+    }
+
+    @Synchronized
+    fun release(who: String) {
+        holders -= who
+        if (holders.isNotEmpty()) return
         wanted = false
         retry?.cancel()
         socket?.close(1000, null)
         socket = null
+    }
+
+    val isPaired: Boolean get() = savedHost?.let { tokenFor(prefs.getString("computer", null), it) } != null
+
+    // ---- What the widgets, the notification and the tile show: the last state seen, kept across restarts ----
+
+    @Volatile var latest: PcState? = null
+        private set
+    private val listeners = java.util.concurrent.CopyOnWriteArrayList<() -> Unit>()
+    private var notifyJob: Job? = null
+
+    /** Called (at most every 200 ms) when the state, the connection or a widget's own guess changes. */
+    fun onChange(listener: () -> Unit) { listeners += listener }
+
+    fun removeListener(listener: () -> Unit) { listeners -= listener }
+
+    private fun changed() {
+        if (notifyJob?.isActive == true) return
+        notifyJob = scope.launch { delay(200); for (l in listeners) try { l() } catch (_: Exception) { } }
+    }
+
+    val connected: Boolean get() = _ui.value.phase == Phase.Connected && socket != null
+
+    // ---- Commands from outside the app (widgets, notification, tile) ----
+
+    private val queue = java.util.concurrent.ConcurrentLinkedQueue<String>()
+    private var burst: Job? = null
+
+    /** Sends now when connected, else connects, sends once paired-in, and lets the connection go 10 s later. */
+    fun background(message: JSONObject) {
+        if (savedHost == null) return
+        val text = message.toString()
+        val s = socket
+        if (!(_ui.value.phase == Phase.Connected && s != null && s.send(text))) queue.add(text)
+        hold("burst")
+        burst?.cancel()
+        burst = scope.launch { delay(10_000); release("burst") }
+    }
+
+    /** Suspends until the queued commands went out (or 6 s passed): a widget's broadcast waits for it. */
+    suspend fun flushed() {
+        val until = System.currentTimeMillis() + 6000
+        while (queue.isNotEmpty() && System.currentTimeMillis() < until) delay(100)
+    }
+
+    private fun flushQueue() {
+        val s = socket ?: return
+        while (true) { val t = queue.poll() ?: break; s.send(t) }
+    }
+
+    /** A widget shows the new level at once, before the computer answers. */
+    fun guess(display: String, value: Int) {
+        val st = latest ?: return
+        latest = st.copy(displays = st.displays.map { if (it.id == display || (st.linked && it.on)) it.copy(brightness = value) else it })
+        changed()
+    }
+
+    fun guessProfile(name: String) {
+        val st = latest ?: return
+        latest = st.copy(profiles = st.profiles.map { it.copy(active = it.name == name, modified = false) })
+        changed()
     }
 
     // ---- Choosing a computer ----
@@ -188,9 +267,18 @@ object Remote {
 
     /** Back to the search screen. The pairing is kept, so coming back to this computer needs no code. */
     fun forget() {
-        stop()
-        prefs.edit().remove("host").remove("computer").apply()
+        synchronized(this) {
+            holders.retainAll(setOf("notification"))   // the notification follows whichever computer comes next
+            wanted = false
+            retry?.cancel()
+            socket?.close(1000, null)
+            socket = null
+        }
+        prefs.edit().remove("host").remove("computer").remove("lastState").apply()
+        latest = null
+        changed()
         _ui.update { RemoteUi(phase = Phase.Choose, found = it.found, paired = pairedList()) }
+        holders += "app"
         wanted = true
         search()
     }
@@ -221,6 +309,28 @@ object Remote {
         }
     }
 
+    private var pendingVolume: Int? = null
+    private var volumeJob: Job? = null
+
+    /** The computer's Windows volume; slider moves are thinned out like brightness. */
+    fun volume(value: Int) {
+        pendingVolume = value.coerceIn(0, 100)
+        if (volumeJob?.isActive == true) return
+        volumeJob = scope.launch {
+            while (true) {
+                val v = pendingVolume ?: break
+                pendingVolume = null
+                send(JSONObject().put("type", "volume").put("value", v))
+                delay(70)
+            }
+        }
+    }
+
+    fun mute(on: Boolean) {
+        latest?.let { st -> st.volume?.let { latest = st.copy(volume = it.copy(muted = on)); changed() } }
+        send(JSONObject().put("type", "mute").put("on", on))
+    }
+
     fun select(display: String) = send(JSONObject().put("type", "select").put("display", display))
     fun link(on: Boolean) = send(JSONObject().put("type", "link").put("on", on))
     fun profile(name: String) = send(JSONObject().put("type", "profile").put("name", name))
@@ -233,6 +343,9 @@ object Remote {
 
     private fun send(message: JSONObject) {
         val s = socket
+        if (s != null && _ui.value.phase == Phase.Connected && s.send(message.toString())) return
+        // Still connecting (the quick panel just opened, a reconnect): queued and sent as soon as the computer answers.
+        if (savedHost != null && message.optString("type") != "pair") { background(message); return }
         if (s == null || !s.send(message.toString())) show("Not connected to the computer.")
     }
 
@@ -261,15 +374,20 @@ object Remote {
                     prefs.edit().putString("computer", m.optString("computer")).apply()
                     savedHost?.let { keep(m.optString("computer").ifBlank { it }, it, savedPort, m.optString("token")) }
                     _ui.update { it.copy(phase = Phase.Connected, computer = m.optString("computer"), message = null) }
+                    flushQueue()
                 }
                 "welcome" -> {
                     prefs.edit().putString("computer", m.optString("computer")).apply()
                     savedHost?.let { keep(m.optString("computer").ifBlank { it }, it, savedPort, null) }   // its address may have changed
                     _ui.update { it.copy(phase = Phase.Connected, computer = m.optString("computer")) }
+                    flushQueue()
                 }
                 "state" -> {
                     val state = try { parseState(m) } catch (_: Exception) { return }
                     _ui.update { it.copy(state = state, computer = state.computer.ifBlank { it.computer }) }
+                    latest = state
+                    prefs.edit().putString("lastState", text).apply()
+                    changed()
                 }
                 "error" -> {
                     if (m.optString("code") == "unpaired") {
@@ -288,11 +406,14 @@ object Remote {
         private fun lost(webSocket: WebSocket) {
             if (webSocket !== socket) return
             socket = null
+            changed()
             if (!wanted) return
             _ui.update { it.copy(phase = Phase.Offline) }
             retry?.cancel()
+            // Quick retries while something is on screen; slower ones for the notification (away from home, say).
+            val wait = if ("app" in holders || "panel" in holders) 3000L else 20000L
             retry = scope.launch {
-                delay(3000)
+                delay(wait)
                 val host = savedHost
                 if (wanted && socket == null && host != null) open(host, savedPort)
             }

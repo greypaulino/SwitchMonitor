@@ -27,6 +27,10 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.runtime.getValue
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.foundation.layout.height
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
@@ -104,5 +108,27 @@ fun FadingRow(spacing: Dp, selected: Int = -1, content: LazyListScope.() -> Unit
                 }
             }
         }
+    }
+}
+
+/** Loading placeholder: a grey shape the size of what will come, softly pulsing (nothing jumps when it arrives). */
+@Composable
+fun Bone(modifier: Modifier, shape: androidx.compose.ui.graphics.Shape = RoundedCornerShape(6.dp)) {
+    val pulse = androidx.compose.animation.core.rememberInfiniteTransition(label = "bone")
+    val alpha by pulse.animateFloat(
+        initialValue = 0.35f, targetValue = 0.8f, label = "alpha",
+        animationSpec = androidx.compose.animation.core.infiniteRepeatable(
+            androidx.compose.animation.core.tween(850, easing = androidx.compose.animation.core.FastOutSlowInEasing),
+            androidx.compose.animation.core.RepeatMode.Reverse,
+        ),
+    )
+    Box(modifier.graphicsLayer { this.alpha = alpha }.clip(shape).background(Raised))
+}
+
+/** A slider-sized placeholder (36 dp tall, the 6 dp bar centered), for a display whose brightness is not read yet. */
+@Composable
+fun SliderBone(modifier: Modifier = Modifier) {
+    Box(modifier.fillMaxWidth().height(36.dp), contentAlignment = Alignment.Center) {
+        Bone(Modifier.fillMaxWidth().height(6.dp), RoundedCornerShape(3.dp))
     }
 }

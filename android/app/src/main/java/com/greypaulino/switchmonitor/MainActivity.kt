@@ -19,8 +19,13 @@ class MainActivity : ComponentActivity() {
             SwitchMonitorTheme {
                 val ui by Remote.ui.collectAsState()
                 val state = ui.state
-                if (ui.phase == Phase.Connected && state != null) ControlScreen(ui, state)
-                else ConnectScreen(ui)
+                when {
+                    ui.phase == Phase.Connected && state != null -> ControlScreen(ui, state)
+                    // A known computer: the control screen right away (last state kept, or placeholders), live once it answers.
+                    ui.host != null && ui.phase in setOf(Phase.Connecting, Phase.Offline, Phase.Connected) ->
+                        ControlScreen(ui, state ?: Remote.latest, live = false)
+                    else -> ConnectScreen(ui)
+                }
             }
         }
     }
