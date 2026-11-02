@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Nodes;
@@ -11,7 +12,10 @@ public sealed record PairedPhone(string Id, string Name, string TokenHash, DateT
 
 /// <summary>
 /// Phones paired with this computer (phones.json in the data folder). A phone pairs once with the 6-digit code shown in
-/// Settings and gets a random token; only the token's SHA-256 is kept here, so the file alone cannot be used to connect.
+/// Settings and gets a random token. The token never travels again: each connection the phone proves it holds it
+/// (HMAC of fresh random numbers, see <see cref="Verify"/>), and the computer proves the same back. To check those
+/// proofs the computer keeps the token encrypted for the Windows user (DPAPI), so the file alone, copied to another
+/// account or computer, cannot be used to connect. Phones paired by version 1 (hash only) must pair again.
 /// </summary>
 public sealed class PhoneStore
 {
@@ -24,6 +28,7 @@ public sealed class PhoneStore
     private readonly string path;
     private readonly object gate = new();
     private readonly List<PairedPhone> phones = [];
+    private readonly Dictionary<string, byte[]> secrets = [];   // phone id -> token bytes (memory only)
     private string? code;
     private DateTimeOffset codeUntil;
     private int codeTries;
@@ -78,7 +83,9 @@ public sealed class PhoneStore
             token = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
             string name = string.IsNullOrWhiteSpace(phoneName) ? "Phone" : phoneName.Trim();
             if (name.Length > 60) name = name[..60];
-            phones.Add(new PairedPhone(Guid.NewGuid().ToString("N")[..12], name, Hash(token), now));
+            var phone = new PairedPhone(Guid.NewGuid().ToString("N")[..12], name, Hash(token), now);
+            phones.Add(phone);
+            secrets[phone.Id] = Encoding.UTF8.GetBytes(token);
             Save();
         }
         Changed?.Invoke();
@@ -94,11 +101,44 @@ public sealed class PhoneStore
             return phones.FirstOrDefault(p => CryptographicOperations.FixedTimeEquals(Encoding.ASCII.GetBytes(p.TokenHash), Encoding.ASCII.GetBytes(hash)));
     }
 
+    /// <summary>
+    /// The phone whose token made <paramref name="proof"/> = HMAC-SHA256(token, "phone:" + computer nonce + ":" + phone
+    /// nonce), or null. <paramref name="answer"/> is the computer's proof for that phone: HMAC-SHA256(token, "computer:" +
+    /// phone nonce + ":" + computer nonce), so the phone knows it talks to the computer it paired with.
+    /// </summary>
+    public PairedPhone? Verify(string computerNonce, string phoneNonce, string proof, out string? answer)
+    {
+        answer = null;
+        byte[] offered;
+        try { offered = Convert.FromBase64String(proof); }
+        catch (FormatException) { return null; }
+        if (offered.Length != 32 || phoneNonce.Length is < 16 or > 128) return null;
+        lock (gate)
+            foreach (var phone in phones)
+            {
+                if (!secrets.TryGetValue(phone.Id, out var key)) continue;
+                if (!CryptographicOperations.FixedTimeEquals(Proof(key, $"phone:{computerNonce}:{phoneNonce}"), offered)) continue;
+                answer = Convert.ToBase64String(Proof(key, $"computer:{phoneNonce}:{computerNonce}"));
+                return phone;
+            }
+        return null;
+    }
+
+    /// <summary>HMAC-SHA256 of <paramref name="text"/> (UTF-8) with the token as key.</summary>
+    public static byte[] Proof(byte[] token, string text) => HMACSHA256.HashData(token, Encoding.UTF8.GetBytes(text));
+
+    /// <summary>A fresh random value for a challenge (base64 of 32 bytes).</summary>
+    public static string NewNonce() => Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+
+    /// <summary>Whether this phone is still paired (removed in Settings: no).</summary>
+    public bool IsPaired(string id) { lock (gate) return phones.Any(p => p.Id == id); }
+
     public bool Remove(string id)
     {
         bool removed;
         lock (gate)
         {
+            secrets.Remove(id);
             removed = phones.RemoveAll(p => p.Id == id) > 0;
             if (removed) Save();
         }
@@ -115,9 +155,16 @@ public sealed class PhoneStore
         {
             if (JsonNode.Parse(File.ReadAllText(path))?["phones"] is not JsonArray list) return;
             foreach (var item in list.OfType<JsonObject>())
-                if ((string?)item["id"] is { } id && (string?)item["tokenHash"] is { Length: 64 } hash)
-                    phones.Add(new PairedPhone(id, (string?)item["name"] ?? "Phone", hash,
-                        DateTimeOffset.TryParse((string?)item["pairedAt"], out var at) ? at : DateTimeOffset.MinValue));
+            {
+                // Version 1 kept only the hash, which cannot answer the new challenge: those phones pair again.
+                if ((string?)item["id"] is not { } id || (string?)item["tokenHash"] is not { Length: 64 } hash ||
+                    (string?)item["token"] is not { Length: > 0 } sealedToken) continue;
+                byte[]? token = Dpapi.Unprotect(sealedToken);
+                if (token is null || Hash(Encoding.UTF8.GetString(token)) != hash) continue;   // another user or computer
+                phones.Add(new PairedPhone(id, (string?)item["name"] ?? "Phone", hash,
+                    DateTimeOffset.TryParse((string?)item["pairedAt"], out var at) ? at : DateTimeOffset.MinValue));
+                secrets[id] = token;
+            }
         }
         catch (Exception error) when (error is System.Text.Json.JsonException or IOException) { }
     }
@@ -126,12 +173,72 @@ public sealed class PhoneStore
     {
         var list = new JsonArray(phones.Select(p => (JsonNode)new JsonObject
         {
-            ["id"] = p.Id, ["name"] = p.Name, ["tokenHash"] = p.TokenHash, ["pairedAt"] = p.PairedAt.ToString("O")
+            ["id"] = p.Id, ["name"] = p.Name, ["tokenHash"] = p.TokenHash,
+            ["token"] = secrets.TryGetValue(p.Id, out var key) ? Dpapi.Protect(key) : null,
+            ["pairedAt"] = p.PairedAt.ToString("O")
         }).ToArray());
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         string temporary = path + ".tmp";
-        File.WriteAllText(temporary, new JsonObject { ["version"] = 1, ["phones"] = list }.ToJsonString(new() { WriteIndented = true }));
+        File.WriteAllText(temporary, new JsonObject { ["version"] = 2, ["phones"] = list }.ToJsonString(new() { WriteIndented = true }));
         File.Move(temporary, path, overwrite: true);
+    }
+}
+
+/// <summary>Windows data protection (DPAPI) for the current user: what it seals only this Windows account can open.</summary>
+internal static class Dpapi
+{
+    [StructLayout(LayoutKind.Sequential)]
+    private struct Blob { public int Size; public IntPtr Data; }
+
+    [DllImport("crypt32.dll", SetLastError = true)]
+    private static extern bool CryptProtectData(ref Blob input, string? description, IntPtr entropy, IntPtr reserved, IntPtr prompt, int flags, out Blob output);
+
+    [DllImport("crypt32.dll", SetLastError = true)]
+    private static extern bool CryptUnprotectData(ref Blob input, IntPtr description, IntPtr entropy, IntPtr reserved, IntPtr prompt, int flags, out Blob output);
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr LocalFree(IntPtr memory);
+
+    private const int UiForbidden = 0x1;
+    private static readonly byte[] Purpose = Encoding.UTF8.GetBytes("SwitchMonitor phone token");
+
+    public static string Protect(byte[] data) =>
+        Convert.ToBase64String(Run(data, protect: true) ?? throw new CryptographicException("Windows could not protect the phone token."));
+
+    public static byte[]? Unprotect(string text)
+    {
+        try { return Run(Convert.FromBase64String(text), protect: false); }
+        catch (FormatException) { return null; }
+    }
+
+    private static byte[]? Run(byte[] data, bool protect)
+    {
+        var input = new Blob { Size = data.Length, Data = Marshal.AllocHGlobal(Math.Max(1, data.Length)) };
+        var entropy = new Blob { Size = Purpose.Length, Data = Marshal.AllocHGlobal(Purpose.Length) };
+        IntPtr entropyPointer = Marshal.AllocHGlobal(Marshal.SizeOf<Blob>());
+        try
+        {
+            Marshal.Copy(data, 0, input.Data, data.Length);
+            Marshal.Copy(Purpose, 0, entropy.Data, Purpose.Length);
+            Marshal.StructureToPtr(entropy, entropyPointer, false);
+            bool ok = protect
+                ? CryptProtectData(ref input, "SwitchMonitor", entropyPointer, IntPtr.Zero, IntPtr.Zero, UiForbidden, out var output)
+                : CryptUnprotectData(ref input, IntPtr.Zero, entropyPointer, IntPtr.Zero, IntPtr.Zero, UiForbidden, out output);
+            if (!ok) return null;
+            try
+            {
+                var result = new byte[output.Size];
+                Marshal.Copy(output.Data, result, 0, output.Size);
+                return result;
+            }
+            finally { LocalFree(output.Data); }
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(input.Data);
+            Marshal.FreeHGlobal(entropy.Data);
+            Marshal.FreeHGlobal(entropyPointer);
+        }
     }
 }
 
