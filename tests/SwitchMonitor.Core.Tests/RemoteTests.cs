@@ -82,6 +82,7 @@ internal static class RemoteTests
 
             using var socket = new ClientWebSocket();
             await socket.ConnectAsync(new Uri($"ws://127.0.0.1:{server.Port}/ws"), CancellationToken.None);
+            Assert.Equal("challenge", (string?)(await Receive(socket))["type"], "the computer speaks first");
             await Send(socket, new { type = "brightness", value = 40 });
             Assert.Equal("unpaired", (string?)(await Receive(socket))["code"], "commands need pairing");
             Assert.Equal(0, host.Commands.Count);
@@ -102,11 +103,28 @@ internal static class RemoteTests
             Assert.Equal(true, (bool?)(await Receive(socket))["linked"], "changes are pushed");
             await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "bye", CancellationToken.None);
 
-            // Later: the token alone reconnects; a removed phone cannot.
+            // Sending the token itself (version 1) no longer works, nor a made-up proof.
+            using (var old = new ClientWebSocket())
+            {
+                await old.ConnectAsync(new Uri($"ws://127.0.0.1:{server.Port}/ws"), CancellationToken.None);
+                await Receive(old);   // challenge
+                await Send(old, new { type = "hello", token });
+                Assert.Equal("unpaired", (string?)(await Receive(old))["code"], "the token is never accepted as such");
+                await Send(old, new { type = "hello", nonce = PhoneStore.NewNonce(), proof = PhoneStore.NewNonce() });
+                Assert.Equal("unpaired", (string?)(await Receive(old))["code"], "a wrong proof");
+            }
+
+            // Later: the phone answers the challenge with its token (never sent) and checks the computer's answer.
             using var again = new ClientWebSocket();
             await again.ConnectAsync(new Uri($"ws://127.0.0.1:{server.Port}/ws"), CancellationToken.None);
-            await Send(again, new { type = "hello", token });
-            Assert.Equal("welcome", (string?)(await Receive(again))["type"]);
+            string challenge = (string)(await Receive(again))["nonce"]!;
+            string mine = PhoneStore.NewNonce();
+            byte[] key = Encoding.UTF8.GetBytes(token);
+            await Send(again, new { type = "hello", nonce = mine, proof = Convert.ToBase64String(PhoneStore.Proof(key, $"phone:{challenge}:{mine}")) });
+            var welcome = await Receive(again);
+            Assert.Equal("welcome", (string?)welcome["type"]);
+            Assert.Equal(Convert.ToBase64String(PhoneStore.Proof(key, $"computer:{mine}:{challenge}")), (string?)welcome["proof"],
+                "the computer proves it holds the token too");
             await Receive(again);   // state
             store.Remove(store.Find(token)!.Id);
             Assert.Equal("unpaired", (string?)(await Receive(again))["code"], "removed in Settings: told and disconnected");

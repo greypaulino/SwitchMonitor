@@ -40,8 +40,9 @@ internal static class SharingTests
             File.WriteAllBytes(Path.Combine(data, "icons", "Night.png"), [1, 2, 3]);
             Directory.CreateDirectory(Path.Combine(data, "logs"));
             File.WriteAllText(Path.Combine(data, "logs", "switchmonitor.log"), "log");
+            File.WriteAllText(Path.Combine(data, "phones.json"), "mine");
             string file = Path.Combine(elsewhere, "mine" + Backup.Extension);
-            Assert.Equal(2, Backup.Create(data, file, "test"), "logs left out");
+            Assert.Equal(2, Backup.Create(data, file, "test"), "logs and paired phones left out");
 
             File.WriteAllText(Path.Combine(data, "settings.json"), "{\"a\":2}");
             File.WriteAllText(Path.Combine(data, "scenes.json"), "{}");
@@ -51,6 +52,15 @@ internal static class SharingTests
             Assert.Sequence([1, 2, 3], File.ReadAllBytes(Path.Combine(data, "icons", "Night.png")).Select(b => (int)b));
             Assert.True(File.Exists(Path.Combine(data, "logs", "switchmonitor.log")), "logs untouched");
             Assert.True(File.Exists(safety), "the replaced settings are kept");
+            Assert.Equal("mine", File.ReadAllText(Path.Combine(data, "phones.json")), "this computer's phones stay");
+
+            // Someone else's backup that holds their paired phones: those phones are not let in.
+            string theirs = Path.Combine(elsewhere, "theirs" + Backup.Extension);
+            File.Copy(file, theirs);
+            using (var zip = System.IO.Compression.ZipFile.Open(theirs, System.IO.Compression.ZipArchiveMode.Update))
+                using (var writer = new StreamWriter(zip.CreateEntry("phones.json").Open())) writer.Write("theirs");
+            Backup.Restore(theirs, data, "test");
+            Assert.Equal("mine", File.ReadAllText(Path.Combine(data, "phones.json")), "a backup never brings phones");
 
             string notBackup = Path.Combine(elsewhere, "other.zip");
             using (var zip = System.IO.Compression.ZipFile.Open(notBackup, System.IO.Compression.ZipArchiveMode.Create))

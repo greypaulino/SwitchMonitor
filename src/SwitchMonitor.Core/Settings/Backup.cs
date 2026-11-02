@@ -14,6 +14,14 @@ public static class Backup
     private const string ManifestName = "switchmonitor-backup.json";
     private static readonly string[] Skipped = ["logs", "backups"];
 
+    /// <summary>
+    /// Never in a backup and never replaced by one: the phones paired with this computer. Importing someone else's backup
+    /// must not let their phones control this computer (and the tokens only open for this Windows account anyway).
+    /// </summary>
+    private static readonly string[] KeptOut = ["phones.json", "phones.json.tmp"];
+
+    private static bool IsKeptOut(string relative) => KeptOut.Contains(relative.Replace('\\', '/'), StringComparer.OrdinalIgnoreCase);
+
     /// <summary>Earlier settings are kept here before an import replaces them.</summary>
     public static string SafetyDirectory(string dataDirectory) => Path.Combine(dataDirectory, "backups");
 
@@ -56,7 +64,8 @@ public static class Backup
         using (var reader = new StreamReader(manifest.Open()))
             if (JsonNode.Parse(reader.ReadToEnd()) is not JsonObject root || (string?)root["app"] != "SwitchMonitor")
                 throw new FormatException("This file is not a SwitchMonitor backup.");
-        var entries = zip.Entries.Where(e => e.FullName != ManifestName && e.Length >= 0 && !e.FullName.EndsWith('/')).ToArray();
+        var entries = zip.Entries.Where(e => e.FullName != ManifestName && e.Length >= 0 && !e.FullName.EndsWith('/') && !IsKeptOut(e.FullName))
+            .ToArray();
         string target = Path.GetFullPath(dataDirectory);
         foreach (var entry in entries)
         {
@@ -86,6 +95,7 @@ public static class Backup
         Directory.EnumerateFiles(dataDirectory, "*", SearchOption.AllDirectories)
             .Where(path => !Skipped.Contains(Relative(dataDirectory, path).Split('/')[0], StringComparer.OrdinalIgnoreCase))
             .Where(path => !path.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase))
+            .Where(path => !IsKeptOut(Relative(dataDirectory, path)))
             .ToArray();
 
     private static string Relative(string root, string path) => Path.GetRelativePath(root, path).Replace('\\', '/');

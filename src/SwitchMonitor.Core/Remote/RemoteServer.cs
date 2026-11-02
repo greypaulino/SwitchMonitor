@@ -29,7 +29,9 @@ public interface IRemoteHost
 /// <summary>
 /// Lets a phone on the home network control the displays. Plain .NET only: a TCP listener that serves the control page
 /// over HTTP and upgrades "/ws" to a WebSocket (JSON messages both ways), plus a UDP reply so the phone can find the
-/// computer. Only private (home network) addresses may connect, and every command needs a paired phone's token.
+/// computer. Only private (home network) addresses may connect, and every command needs a paired phone. The token
+/// travels only once, when pairing; afterwards each connection starts with a random challenge the phone answers with
+/// an HMAC of its token, and the computer answers the phone's own challenge the same way (see PhoneStore.Verify).
 /// </summary>
 public sealed class RemoteServer : IDisposable
 {
@@ -38,6 +40,14 @@ public sealed class RemoteServer : IDisposable
     public const string DiscoveryQuestion = "SWITCHMONITOR?";
     private const string WebSocketGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
     private const int MaxMessage = 64 * 1024;
+
+    /// <summary>Connections served at once (page loads, phones); more are closed at once (a flood on the network).</summary>
+    public const int MaxConnections = 24;
+
+    /// <summary>A connection must pair or prove it is a paired phone within this time, and within a few tries.</summary>
+    public static readonly TimeSpan SignInTime = TimeSpan.FromSeconds(10);
+    private const int MaxSignInErrors = 5;
+    private int connections;
 
     private readonly PhoneStore store;
     private readonly IRemoteHost host;
@@ -49,11 +59,10 @@ public sealed class RemoteServer : IDisposable
     private CancellationTokenSource? stop;
 
     /// <summary>A connected, paired phone. <see cref="Sending"/> keeps replies and broadcasts from interleaving.</summary>
-    private sealed class Client(WebSocket socket, PairedPhone phone, string token, SemaphoreSlim sending)
+    private sealed class Client(WebSocket socket, PairedPhone phone, SemaphoreSlim sending)
     {
         public WebSocket Socket { get; } = socket;
         public PairedPhone Phone { get; } = phone;
-        public string Token { get; } = token;
         public SemaphoreSlim Sending { get; } = sending;
     }
 
@@ -143,6 +152,18 @@ public sealed class RemoteServer : IDisposable
 
     private async Task Serve(TcpClient connection, CancellationToken cancel)
     {
+        if (Interlocked.Increment(ref connections) > MaxConnections)
+        {
+            Interlocked.Decrement(ref connections);
+            connection.Dispose();
+            return;
+        }
+        try { await ServeOne(connection, cancel); }
+        finally { Interlocked.Decrement(ref connections); }
+    }
+
+    private async Task ServeOne(TcpClient connection, CancellationToken cancel)
+    {
         using (connection)
         {
             if (connection.Client.RemoteEndPoint is not IPEndPoint remote || !LocalNetwork.IsAllowed(remote.Address))
@@ -189,11 +210,18 @@ public sealed class RemoteServer : IDisposable
         var sending = new SemaphoreSlim(1, 1);
         Client? client = null;
         Guid id = Guid.NewGuid();
+        string nonce = PhoneStore.NewNonce();
+        int errors = 0;
+        // Not signed in after a few seconds or a few wrong tries: the connection is closed.
+        using var signIn = CancellationTokenSource.CreateLinkedTokenSource(cancel);
+        signIn.CancelAfter(SignInTime);
         try
         {
+            await SendAsync(socket, sending, Message("challenge", new JsonObject { ["nonce"] = nonce, ["version"] = 2 }));
             while (socket.State == WebSocketState.Open && !cancel.IsCancellationRequested)
             {
-                string? text = await ReceiveAsync(socket, cancel);
+                if (client is null && errors >= MaxSignInErrors) break;
+                string? text = await ReceiveAsync(socket, client is null ? signIn.Token : cancel);
                 if (text is null) break;
                 JsonElement message;
                 string type;
@@ -203,7 +231,7 @@ public sealed class RemoteServer : IDisposable
                     message = document.RootElement.Clone();
                     type = message.TryGetProperty("type", out var t) ? t.GetString() ?? "" : "";
                 }
-                catch (JsonException) { await SendAsync(socket, sending, Error("Not a JSON message.")); continue; }
+                catch (JsonException) { errors++; await SendAsync(socket, sending, Error("Not a JSON message.")); continue; }
 
                 if (type == "pair")
                 {
@@ -212,11 +240,12 @@ public sealed class RemoteServer : IDisposable
                     string? token = store.Pair(code, name, DateTimeOffset.Now);
                     if (token is null)
                     {
+                        errors++;
                         log.Write(LogLevel.Warning, $"Phone: wrong or expired pairing code from {remote.Address}.");
                         await SendAsync(socket, sending, Error("The code is wrong or expired. Show a new one in SwitchMonitor > Settings > Phone."));
                         continue;
                     }
-                    client = Join(id, socket, sending, token);
+                    client = Join(id, socket, sending, store.Find(token)!);
                     log.Write(LogLevel.Info, $"Phone \"{client.Phone.Name}\" paired ({remote.Address}).");
                     await SendAsync(socket, sending, Message("paired", new JsonObject { ["token"] = token, ["computer"] = host.ComputerName }));
                     await SendAsync(socket, sending, Message("state", await host.StateAsync()));
@@ -224,19 +253,25 @@ public sealed class RemoteServer : IDisposable
                 }
                 if (type == "hello")
                 {
-                    string token = message.TryGetProperty("token", out var t) ? t.GetString() ?? "" : "";
-                    if (store.Find(token) is null)
+                    // The phone's answer to our challenge, and its own challenge for us. A phone of version 1 sends its
+                    // token instead: it is told to pair again (that token is not accepted any more).
+                    string phoneNonce = message.TryGetProperty("nonce", out var pn) ? pn.GetString() ?? "" : "";
+                    string proof = message.TryGetProperty("proof", out var pr) ? pr.GetString() ?? "" : "";
+                    if (store.Verify(nonce, phoneNonce, proof, out string? answer) is not { } phone)
                     {
+                        errors++;
+                        log.Write(LogLevel.Warning, $"Phone: a connection from {remote.Address} could not prove it is a paired phone.");
                         await SendAsync(socket, sending, Error("This phone is not paired (or was removed). Pair it again with a new code.", "unpaired"));
                         continue;
                     }
-                    client = Join(id, socket, sending, token);
-                    await SendAsync(socket, sending, Message("welcome", new JsonObject { ["computer"] = host.ComputerName }));
+                    client = Join(id, socket, sending, phone);
+                    await SendAsync(socket, sending, Message("welcome", new JsonObject { ["computer"] = host.ComputerName, ["proof"] = answer }));
                     await SendAsync(socket, sending, Message("state", await host.StateAsync()));
                     continue;
                 }
-                if (client is null || store.Find(client.Token) is null)
+                if (client is null || !store.IsPaired(client.Phone.Id))
                 {
+                    errors++;
                     await SendAsync(socket, sending, Error("Pair this phone first.", "unpaired"));
                     continue;
                 }
@@ -259,9 +294,9 @@ public sealed class RemoteServer : IDisposable
         }
     }
 
-    private Client Join(Guid id, WebSocket socket, SemaphoreSlim sending, string token)
+    private Client Join(Guid id, WebSocket socket, SemaphoreSlim sending, PairedPhone phone)
     {
-        var client = new Client(socket, store.Find(token)!, token, sending);
+        var client = new Client(socket, phone, sending);
         bool isNew = !clients.ContainsKey(id);
         clients[id] = client;
         if (isNew) ClientsChanged?.Invoke();
@@ -272,7 +307,7 @@ public sealed class RemoteServer : IDisposable
     private void DropRemovedPhones()
     {
         foreach (var (id, client) in clients)
-            if (store.Find(client.Token) is null && clients.TryRemove(id, out _))
+            if (!store.IsPaired(client.Phone.Id) && clients.TryRemove(id, out _))
             {
                 _ = CloseAsync(client, "This phone was removed in SwitchMonitor.");
                 ClientsChanged?.Invoke();

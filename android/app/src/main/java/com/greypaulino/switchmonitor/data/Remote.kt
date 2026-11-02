@@ -91,8 +91,18 @@ object Remote {
 
     // ---- Paired computers: name, last address and token of each, so switching computers never needs a new code ----
 
-    private fun pairedJson(): org.json.JSONArray =
-        try { org.json.JSONArray(prefs.getString("computers", "[]")) } catch (_: Exception) { org.json.JSONArray() }
+    /** The paired computers with their tokens, sealed with the Keystore (see Vault); older plain lists are sealed on read. */
+    private fun pairedJson(): org.json.JSONArray {
+        val text = prefs.getString("computersSealed", null)?.let { Vault.open(it) }
+            ?: prefs.getString("computers", null)?.also { plain -> saveComputers(plain) }
+            ?: "[]"
+        return try { org.json.JSONArray(text) } catch (_: Exception) { org.json.JSONArray() }
+    }
+
+    private fun saveComputers(json: String) {
+        val sealed = Vault.seal(json) ?: return
+        prefs.edit().putString("computersSealed", sealed).remove("computers").apply()
+    }
 
     private fun pairedList(): List<Found> {
         val a = pairedJson()
@@ -122,7 +132,7 @@ object Remote {
         val t = token ?: oldToken ?: return
         val list = org.json.JSONArray().put(JSONObject().put("name", name).put("host", host).put("port", port).put("token", t))
         for (i in 0 until rest.length()) list.put(rest.get(i))
-        prefs.edit().putString("computers", list.toString()).apply()
+        saveComputers(list.toString())
         _ui.update { it.copy(paired = pairedList()) }
     }
 
@@ -134,7 +144,7 @@ object Remote {
             if ((name != null && o.optString("name").equals(name, ignoreCase = true)) || o.optString("host") == host) continue
             list.put(o)
         }
-        prefs.edit().putString("computers", list.toString()).apply()
+        saveComputers(list.toString())
         _ui.update { it.copy(paired = pairedList()) }
     }
 
@@ -359,17 +369,28 @@ object Remote {
     }
 
     private class Listener : WebSocketListener() {
+        // The computer's answer to our own challenge, expected in "welcome" (see "challenge" below).
+        @Volatile private var expected: String? = null
+
         override fun onOpen(webSocket: WebSocket, response: Response) {
             if (webSocket !== socket) return
-            val t = savedHost?.let { tokenFor(prefs.getString("computer", null), it) }
-            if (t != null) webSocket.send(JSONObject().put("type", "hello").put("token", t).toString())
-            else _ui.update { it.copy(phase = Phase.NeedCode) }
+            // The computer speaks first with a challenge; without a token for it, the code is needed.
+            if (savedHost?.let { tokenFor(prefs.getString("computer", null), it) } == null) _ui.update { it.copy(phase = Phase.NeedCode) }
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
             if (webSocket !== socket) return
             val m = try { JSONObject(text) } catch (_: Exception) { return }
             when (m.optString("type")) {
+                "challenge" -> {
+                    // Prove we hold the token without sending it, and ask the computer to prove it holds it too, so a
+                    // device pretending to be the computer learns nothing.
+                    val t = savedHost?.let { tokenFor(prefs.getString("computer", null), it) } ?: return
+                    val mine = android.util.Base64.encodeToString(ByteArray(32).also { java.security.SecureRandom().nextBytes(it) }, android.util.Base64.NO_WRAP)
+                    val theirs = m.optString("nonce")
+                    expected = proof(t, "computer:$mine:$theirs")
+                    webSocket.send(JSONObject().put("type", "hello").put("nonce", mine).put("proof", proof(t, "phone:$theirs:$mine")).toString())
+                }
                 "paired" -> {
                     prefs.edit().putString("computer", m.optString("computer")).apply()
                     savedHost?.let { keep(m.optString("computer").ifBlank { it }, it, savedPort, m.optString("token")) }
@@ -377,6 +398,13 @@ object Remote {
                     flushQueue()
                 }
                 "welcome" -> {
+                    val sure = expected
+                    if (sure == null || !java.security.MessageDigest.isEqual(sure.toByteArray(), m.optString("proof").toByteArray())) {
+                        // Not the computer we paired with (or one that lost our pairing): keep the token, say so, hang up.
+                        show("This computer could not prove it is the one you paired with.")
+                        webSocket.close(1000, null)
+                        return
+                    }
                     prefs.edit().putString("computer", m.optString("computer")).apply()
                     savedHost?.let { keep(m.optString("computer").ifBlank { it }, it, savedPort, null) }   // its address may have changed
                     _ui.update { it.copy(phase = Phase.Connected, computer = m.optString("computer")) }
@@ -418,6 +446,13 @@ object Remote {
                 if (wanted && socket == null && host != null) open(host, savedPort)
             }
         }
+    }
+
+    /** HMAC-SHA256 of [text] with the token as key, base64 (same as PhoneStore.Proof on the computer). */
+    private fun proof(token: String, text: String): String {
+        val mac = javax.crypto.Mac.getInstance("HmacSHA256")
+        mac.init(javax.crypto.spec.SecretKeySpec(token.toByteArray(Charsets.UTF_8), "HmacSHA256"))
+        return android.util.Base64.encodeToString(mac.doFinal(text.toByteArray(Charsets.UTF_8)), android.util.Base64.NO_WRAP)
     }
 
     private fun show(text: String) {
