@@ -1,6 +1,6 @@
-# SwitchMonitor v2 (in progress)
+# SwitchMonitor 2 — source
 
-A rewrite of SwitchMonitor in C# / .NET 10 with **no third-party runtime dependencies**: only Windows APIs and the GPU drivers already installed on the computer. The released 1.x (AutoHotkey + NirSoft ControlMyMonitor) stays on `main` until v2 replaces it.
+A rewrite of SwitchMonitor in C# / .NET 10 with **no third-party runtime dependencies**: only Windows APIs and the GPU drivers already installed on the computer. The 1.x edition (AutoHotkey + NirSoft ControlMyMonitor) remains in the repository root.
 
 ## Layout
 

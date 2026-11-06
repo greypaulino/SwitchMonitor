@@ -1,16 +1,38 @@
 # SwitchMonitor
 
-The AutoHotkey application is the active, supported version of SwitchMonitor. An experimental [C# / WPF migration preview](wpf/README.md) remains in `wpf/`, but its development is paused.
+SwitchMonitor 2 controls your monitors from Windows and from your phone: inputs, brightness, picture modes, color, volume and every other setting the monitor offers over DDC/CI, with profiles and keyboard shortcuts. It is open source under the [MIT License](LICENSE) and has no third-party runtime dependencies: only Windows and the display drivers already on the computer.
 
-SwitchMonitor source code is open source under the [MIT License](LICENSE). Third-party tools and runtimes retain their own licenses. The WPF preview uses the Windows monitor APIs and AMD/Intel display drivers available on the user's computer; the released AutoHotkey edition separately uses NirSoft ControlMyMonitor.
+## Download
+
+From the [latest release](https://github.com/greypaulino/SwitchMonitor/releases/latest):
+
+- **Windows 10/11 (x64):** `SwitchMonitor-<version>-win-x64.zip`. Unzip it anywhere and run `SwitchMonitor.exe`; nothing else needs to be installed. It stays in the tray (brightness panel under the sun icon). Settings live in `%LOCALAPPDATA%\SwitchMonitor-v2`.
+- **Android 6.0+:** `SwitchMonitor-<version>.apk`, installed directly (allow installing from this source). In SwitchMonitor on the PC open *Settings → Phone*, turn it on and pair with the 6-digit code. On Xiaomi / HyperOS set the app's battery use to *No restrictions* so the Quick Settings panel and widgets keep their connection.
+
+Each file has its SHA-256 in the release notes. The builds are not code-signed yet, so Windows SmartScreen may warn the first time.
+
+## What it does
+
+- **Displays:** every input with its shortcut, *Next input*, and every control the monitor offers (brightness, contrast, picture mode, color temperature, sharpness, response time, FreeSync, volume…). Unknown monitors can be taught with *Learn settings* and shared.
+- **Profiles:** named sets of settings (Work, Night, Game, Theater…) applied in one click, by shortcut, or automatically while a linked program is in front. A profile changed by hand shows *· custom* with a *Save?* button.
+- **Brightness panel** in the tray, linked or per display, and the main display chosen from it.
+- **Phone:** the Android app and its widgets, Quick Settings tile and panel control brightness, profiles, picture modes, inputs, the main display and the Windows volume over the home Wi-Fi. Pairing uses a one-time code; afterwards the phone and the computer prove to each other who they are without sending the secret again.
+
+The code lives in [`src/`](src/README.md) (Windows) and [`android/`](android/). Build with the .NET 10 SDK (`dotnet build src\SwitchMonitor.App`) and Android Studio.
+
+## Privacy and security
+
+Everything stays on your computer and phone; the only internet access is the optional download of the shared monitor database from this repository. Phone access is off until you turn it on, answers only devices on private (home) networks, and accepts only paired phones. See the [privacy notice](PRIVACY.md).
 
 ## Code signing policy
 
-The WPF preview is currently unsigned. Its [Windows build workflow](.github/workflows/wpf-preview.yml) compiles the public source and publishes an unsigned test artifact; a successful workflow does not mean it is signed. SignPath Foundation declined the project's application because it does not yet have enough public adoption and visibility. The AutoHotkey installer is also unsigned. Neither compiling AutoHotkey to an EXE nor switching programming languages provides a trusted code signature.
+The builds are unsigned. SignPath Foundation declined the project because it does not yet have enough public adoption; a Microsoft Store release is being considered instead. Verify the SHA-256 of what you download and, if in doubt, build from source.
 
-Project author: [@greypaulino](https://github.com/greypaulino). The [privacy notice](PRIVACY.md) covers local settings and connections to GitHub. Until a signed release exists, verify the source and treat downloadable builds as unsigned.
+Project author: [@greypaulino](https://github.com/greypaulino).
 
-The [privacy notice](PRIVACY.md) describes the app's GitHub release checks and locally stored settings.
+## SwitchMonitor 1.x (AutoHotkey)
+
+The previous AutoHotkey edition (last release [v1.10.1](https://github.com/greypaulino/SwitchMonitor/releases/tag/v1.10.1)) is still in this repository. Version 2 does not replace an installed 1.x automatically: download version 2 from the release page. If both run at once their keyboard shortcuts collide, so close 1.x (and remove it from Startup) when you move to version 2. The 1.x notes follow.
 
 SwitchMonitor is a Windows utility for changing monitor inputs with keyboard shortcuts. It supports separate settings for multiple monitors, a shortcut for cycling through connected inputs, and an optional shortcut in the Windows Startup folder. The interface is in English. Pressing the cycle shortcut again within ten seconds returns to the previous input; the monitor tray menu also offers **Return to previous input**. SwitchMonitor remembers the previous input across restarts. When the monitor stops reporting its current input after switching to another PC, the shortcut uses that saved origin for one return attempt. On the tested Intel HD Graphics 3000 and LG 29WK600 setup, the driver rejects DDC/CI writes while the other PC's input is displayed, so returning requires control from that PC or the monitor joystick.
 

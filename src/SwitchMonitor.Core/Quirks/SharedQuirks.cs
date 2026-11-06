@@ -11,7 +11,7 @@ namespace SwitchMonitor.Core.Quirks;
 public static class SharedQuirks
 {
     /// <summary>Where the project publishes the database (the v2 branch until v2 becomes the main branch).</summary>
-    public const string DatabaseUrl = "https://raw.githubusercontent.com/greypaulino/SwitchMonitor/v2-rewrite/database/quirks.json";
+    public const string DatabaseUrl = "https://raw.githubusercontent.com/greypaulino/SwitchMonitor/main/database/quirks.json";
     public const string HashUrl = DatabaseUrl + ".sha256";
     public const string MonitorExtension = ".smmonitor";
 
