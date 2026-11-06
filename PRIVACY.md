@@ -1,9 +1,15 @@
 # Privacy notice
 
-SwitchMonitor stores monitor choices, keyboard shortcuts, brightness preferences and startup settings on your computer. The WPF preview stores its profile in `%LOCALAPPDATA%\SwitchMonitor-Wpf`; the AutoHotkey edition uses `%LOCALAPPDATA%\SwitchMonitor`. Neither profile is uploaded by the application.
+## SwitchMonitor 2
 
-By default, the application checks `api.github.com/repos/greypaulino/SwitchMonitor/releases/latest` for updates at startup, periodically and when you choose **Check for updates**. If you choose to install an update, it downloads release files from GitHub and checks their published SHA-256 hash. These connections disclose ordinary request metadata, such as your IP address, to GitHub under [GitHub's privacy statement](https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement). SwitchMonitor does not send monitor names, brightness values or shortcut settings to GitHub.
+SwitchMonitor 2 stores its settings, profiles, learned monitor settings, paired phones and logs on your computer in `%LOCALAPPDATA%\SwitchMonitor-v2`. Nothing is uploaded by the application.
 
-In the WPF edition, you can turn off automatic release checks in Settings or deselect **Check GitHub for updates automatically** during installation. A manual check still connects to GitHub when you request it.
+The only internet connection is the optional download of the shared monitor database (**Download** in Settings), which reads `raw.githubusercontent.com/greypaulino/SwitchMonitor/main/database/quirks.json` and its SHA-256. That request discloses ordinary metadata, such as your IP address, to GitHub under [GitHub's privacy statement](https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement). Version 2 does not check for application updates on its own.
 
-Startup shortcuts are created only when you enable **Start with Windows**. You can remove the app using its uninstaller, and delete the local profile folder if you also want to remove saved preferences. The portable WPF preview can be removed by deleting its extracted folder.
+**Phone access** is off until you turn it on in *Settings → Phone*. While it is on, the computer listens on TCP port 47820 and answers discovery on UDP port 47821, only for devices on private (home) network addresses. Only phones paired with a one-time code can control the displays. The pairing secret is kept encrypted for your Windows account (and with the Android Keystore on the phone) and is not sent again after pairing. The phone receives the display names, brightness, profiles, picture modes, inputs and the Windows volume; it is not sent anything else, and the Android app sends nothing outside your network. Removing a phone in Settings disconnects it immediately.
+
+Startup shortcuts are created only when you enable **Start with Windows**. To remove SwitchMonitor 2, delete its folder and, if you also want to remove its settings, `%LOCALAPPDATA%\SwitchMonitor-v2`. On Android, uninstall the app.
+
+## SwitchMonitor 1.x (AutoHotkey)
+
+The AutoHotkey edition stores its settings in `%LOCALAPPDATA%\SwitchMonitor`. By default it checks `api.github.com/repos/greypaulino/SwitchMonitor/releases/latest` for updates at startup, periodically and when you choose **Check for updates**. If you choose to install an update, it downloads release files from GitHub and checks their published SHA-256 hash. It does not send monitor names, brightness values or shortcut settings to GitHub. You can remove it with its uninstaller.
