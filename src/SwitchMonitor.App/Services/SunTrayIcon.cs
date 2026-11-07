@@ -5,7 +5,7 @@ using Forms = System.Windows.Forms;
 namespace SwitchMonitor.App.Services;
 
 /// <summary>
-/// The sun in the notification area (1.x "brillo"): a click opens the brightness panel, the menu opens the window.
+/// The sun in the notification area (1.x "brillo"): a click opens the brightness panel, a right click opens its menu card.
 /// The icon is drawn at run time from the brightness glyph, in white, so it reads on the dark taskbar.
 /// </summary>
 public sealed class SunTrayIcon : IDisposable
@@ -13,17 +13,15 @@ public sealed class SunTrayIcon : IDisposable
     private readonly Forms.NotifyIcon icon;
     private readonly Icon picture;
 
-    public SunTrayIcon(Action toggle, Action open, Action exit)
+    public SunTrayIcon(Action toggle, Action menu)
     {
         picture = DrawSun();
-        var menu = new Forms.ContextMenuStrip();
-        menu.Items.Add("Brightness", null, (_, _) => toggle());
-        menu.Items.Add("Open SwitchMonitor", null, (_, _) => open());
-        menu.Items.Add(new Forms.ToolStripSeparator());
-        menu.Items.Add("Exit", null, (_, _) => exit());
-        TrayMenuLook.Apply(menu);
-        icon = new Forms.NotifyIcon { Icon = picture, Text = "SwitchMonitor brightness", ContextMenuStrip = menu, Visible = true };
-        icon.MouseClick += (_, e) => { if (e.Button == Forms.MouseButtons.Left) toggle(); };
+        icon = new Forms.NotifyIcon { Icon = picture, Text = "SwitchMonitor brightness", Visible = true };
+        icon.MouseClick += (_, e) =>
+        {
+            if (e.Button == Forms.MouseButtons.Left) toggle();
+            else if (e.Button == Forms.MouseButtons.Right) menu();
+        };
     }
 
     /// <summary>

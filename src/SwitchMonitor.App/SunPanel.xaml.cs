@@ -47,13 +47,13 @@ public partial class SunPanel : Window
             // side panel is its own (pick a mode, switch an input), not a click in the panel.
             if (ModesCard.IsMouseOver || InputsCard.IsMouseOver || InsideSidePanel(e.OriginalSource as DependencyObject)) return;
             if (OpensSidePanel(e.OriginalSource as DependencyObject)) return;
-            ModesPopup.IsOpen = false;
-            InputsPopup.IsOpen = false;
+            CloseModes();
+            CloseInputs();
         };
         MouseEnter += (_, _) => idle.Stop();
         MouseLeave += (_, _) => RestartIdle();
         PreviewMouseDown += (_, _) => RestartIdle();
-        SizeChanged += (_, _) => { Place(); MoveHighlight(animate: false); };
+        SizeChanged += (_, _) => { Place(); MoveHighlight(animate: false); Theme.RoundWindow(this, Theme.PanelCornerRadius(Translucent), Translucent); };
         PreviewKeyDown += OnKeyDown;
         ModesPopup.CustomPopupPlacementCallback = PlaceModes;
         ModesPopup.Opened += (_, _) => FitPopupLook(ModesCard);
@@ -80,7 +80,8 @@ public partial class SunPanel : Window
         };
         model.PropertyChanged += (_, e) =>
         {
-            if (e.PropertyName == nameof(SunPanelViewModel.ShowsModes) && !Model.ShowsModes) ModesPopup.IsOpen = false;
+            // The picture modes only open by a click (or half a second of hover) on Custom in use; never by themselves.
+            if (e.PropertyName == nameof(SunPanelViewModel.ShowsModes) && !Model.ShowsModes) CloseModes();
         };
         PreviewKeyUp += OnKeyUp;
         model.SelectionMoved += () => Dispatcher.BeginInvoke(() => MoveHighlight(animate: true), DispatcherPriority.Loaded);
@@ -204,8 +205,8 @@ public partial class SunPanel : Window
         if (!IsVisible || closing) return;
         closing = true;
         outsideClicks.Stop();
-        ModesPopup.IsOpen = false;
-        InputsPopup.IsOpen = false;
+        CloseModes();
+        CloseInputs();
         hoverTimer.Stop();
         idle.Stop();
         starTimer.Stop();
@@ -324,20 +325,22 @@ public partial class SunPanel : Window
     {
         if ((sender as FrameworkElement)?.DataContext is not SceneViewModel scene) return;
         hoverTimer.Stop();
-        InputsPopup.IsOpen = false;
+        CloseInputs();
         if (scene.IsCustom && scene.IsActive && Model.ShowsModes)
         {
-            if (ModesPopup.IsOpen) ModesPopup.IsOpen = false;
+            if (ModesPopup.IsOpen && !modesClosing) CloseModes();
             else OpenModes();
             return;
         }
-        ModesPopup.IsOpen = false;
+        CloseModes();
         scene.ApplyCommand.Execute(null);
     }
 
     private void OpenModes()
     {
-        InputsPopup.IsOpen = false;
+        CloseInputs();
+        modesCloseSeq++;   // a close still running is cancelled
+        modesClosing = false;
         ModesPopup.IsOpen = true;
         ModesSlide.BeginAnimation(System.Windows.Media.TranslateTransform.XProperty,
             new DoubleAnimation(16, 0, TimeSpan.FromMilliseconds(180)) { EasingFunction = Ease });
@@ -409,10 +412,17 @@ public partial class SunPanel : Window
     private void InputsClick(object sender, RoutedEventArgs e)
     {
         if (sender is not FrameworkElement { DataContext: SunRow { HasInputs: true } row }) return;
-        bool same = InputsPopup.IsOpen && ReferenceEquals(InputsPopup.DataContext, row);
+        bool same = InputsPopup.IsOpen && !inputsClosing && ReferenceEquals(InputsPopup.DataContext, row);
+        if (same) { CloseInputs(); return; }
+        ShowInputs(row);
+    }
+
+    private void ShowInputs(SunRow row)
+    {
+        CloseModes();
+        inputsCloseSeq++;   // a close still running is cancelled
+        inputsClosing = false;
         InputsPopup.IsOpen = false;
-        if (same) return;
-        ModesPopup.IsOpen = false;
         InputsPopup.DataContext = row;
         InputsPopup.IsOpen = true;
         InputsSlide.BeginAnimation(TranslateTransform.XProperty, new DoubleAnimation(16, 0, TimeSpan.FromMilliseconds(180)) { EasingFunction = Ease });
@@ -429,7 +439,36 @@ public partial class SunPanel : Window
         popup.VerticalOffset = offset;
     }
 
-    private void InputsClose(object sender, RoutedEventArgs e) => InputsPopup.IsOpen = false;
+    // ---- Leaving: both side panels fade and slide out the same way and at the same speed (the click outside is the way out) ----
+
+    private static readonly TimeSpan SideExit = TimeSpan.FromMilliseconds(150);
+    private int modesCloseSeq, inputsCloseSeq;
+    private bool modesClosing, inputsClosing;
+
+    private void CloseModes()
+    {
+        if (!ModesPopup.IsOpen || modesClosing) return;
+        modesClosing = true;
+        int seq = ++modesCloseSeq;
+        FadeOutSide(ModesCard, ModesSlide, () => { if (seq == modesCloseSeq) { ModesPopup.IsOpen = false; modesClosing = false; } });
+    }
+
+    private void CloseInputs()
+    {
+        if (!InputsPopup.IsOpen || inputsClosing) return;
+        inputsClosing = true;
+        int seq = ++inputsCloseSeq;
+        FadeOutSide(InputsCard, InputsSlide, () => { if (seq == inputsCloseSeq) { InputsPopup.IsOpen = false; inputsClosing = false; } });
+    }
+
+    private static void FadeOutSide(UIElement card, TranslateTransform slide, Action done)
+    {
+        var ease = new CubicEase { EasingMode = EasingMode.EaseIn };
+        var fade = new DoubleAnimation(card.Opacity, 0, SideExit) { EasingFunction = ease };
+        fade.Completed += (_, _) => done();
+        slide.BeginAnimation(TranslateTransform.XProperty, new DoubleAnimation(slide.X, 12, SideExit) { EasingFunction = ease });
+        card.BeginAnimation(OpacityProperty, fade);
+    }
 
     private void ModeClick(object sender, RoutedEventArgs e)
     {
@@ -437,7 +476,14 @@ public partial class SunPanel : Window
         RestartIdle();
     }
 
-    private void ModesClose(object sender, RoutedEventArgs e) => ModesPopup.IsOpen = false;
+
+    /// <summary>Pointer on a monitor's icon: its inputs open beside the panel (a click toggles them, as before).</summary>
+    private void MonitorIconEnter(object sender, MouseEventArgs e)
+    {
+        if (sender is not FrameworkElement { DataContext: SunRow { HasInputs: true } row }) return;
+        if (InputsPopup.IsOpen && ReferenceEquals(InputsPopup.DataContext, row)) return;   // already showing this monitor's inputs
+        ShowInputs(row);
+    }
 
     private void ModesEnter(object sender, MouseEventArgs e) => idle.Stop();
 
@@ -457,6 +503,11 @@ public partial class SunPanel : Window
             : System.Windows.Media.Color.FromArgb(0x30, 0xFF, 0xFF, 0xFF));
         Card.BorderBrush = ModesCard.BorderBrush = InputsCard.BorderBrush = edge;
         Theme.FitWindow(this, translucent);
+        // Windows 10 cannot round the blur: in Translucent the panels are square there (Theme.PanelCornerRadius).
+        double radius = Theme.PanelCornerRadius(translucent);
+        Card.CornerRadius = ModesCard.CornerRadius = InputsCard.CornerRadius = new CornerRadius(radius);
+        GlowRect.RadiusX = GlowRect.RadiusY = PointerLight.RadiusX = PointerLight.RadiusY = Math.Max(0, radius - 1);
+        Theme.RoundWindow(this, radius, translucent);
         // Windows' own fade when a window is shown, on top of the panel's: the panel seemed to come out twice.
         Theme.NoShowAnimation(new System.Windows.Interop.WindowInteropHelper(this).Handle);
         if (!Theme.Current.PointerLight)
@@ -468,10 +519,15 @@ public partial class SunPanel : Window
         if (IsVisible) Place();
     }
 
-    private static void FitPopupLook(Visual card)
+    private static readonly HashSet<FrameworkElement> roundedCards = [];
+
+    private static void FitPopupLook(FrameworkElement card)
     {
         if (System.Windows.PresentationSource.FromVisual(card) is not System.Windows.Interop.HwndSource source) return;
         Theme.FitWindow(source.Handle, Translucent);
+        void Round() => Theme.RoundHandle(source.Handle, card, card.ActualWidth, card.ActualHeight, Theme.PanelCornerRadius(Translucent), Translucent);
+        Round();
+        if (roundedCards.Add(card)) card.SizeChanged += (_, _) => { if (System.Windows.PresentationSource.FromVisual(card) is System.Windows.Interop.HwndSource now) Theme.RoundHandle(now.Handle, card, card.ActualWidth, card.ActualHeight, Theme.PanelCornerRadius(Translucent), Translucent); };
         Theme.NoShowAnimation(source.Handle);
     }
 

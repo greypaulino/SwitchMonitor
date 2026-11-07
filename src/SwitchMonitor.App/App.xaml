@@ -51,6 +51,8 @@
 
         <!-- Motion: feedback only. Strong ease-out, 100-150 ms; nothing on screen performs an entrance. -->
         <CubicEase x:Key="Ease" EasingMode="EaseOut" />
+        <!-- Buttons (hover, press, selected) all use one curve: ease-in-out, 200 ms -->
+        <CubicEase x:Key="EaseInOut" EasingMode="EaseInOut" />
         <Duration x:Key="Quick">0:0:0.12</Duration>
 
         <!-- Keyboard focus: one ring, in the accent, drawn outside the control -->
@@ -180,6 +182,7 @@
                         <Grid>
                             <Border x:Name="Surface" Background="{TemplateBinding Background}" CornerRadius="17"
                                     BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" />
+                            <Border x:Name="Selection" Background="{StaticResource PillOnBrush}" CornerRadius="17" Opacity="0" IsHitTestVisible="False" />
                             <Border x:Name="Overlay" Background="{StaticResource OverlayBrush}" CornerRadius="17" Opacity="0" />
                             <ContentPresenter Margin="{TemplateBinding Padding}" HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
                                               VerticalAlignment="Center" RecognizesAccessKey="True" />
@@ -190,11 +193,11 @@
                                     <BeginStoryboard>
                                         <Storyboard>
                                             <DoubleAnimation Storyboard.TargetName="Overlay" Storyboard.TargetProperty="Opacity" To="0.13"
-                                                             Duration="0:0:0.22" EasingFunction="{StaticResource Ease}" />
+                                                             Duration="0:0:0.22" EasingFunction="{StaticResource EaseInOut}" />
                                             <DoubleAnimation Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[1].(ScaleTransform.ScaleX)" To="1.025"
-                                                             Duration="0:0:0.22" EasingFunction="{StaticResource Ease}" />
+                                                             Duration="0:0:0.22" EasingFunction="{StaticResource EaseInOut}" />
                                             <DoubleAnimation Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[1].(ScaleTransform.ScaleY)" To="1.025"
-                                                             Duration="0:0:0.22" EasingFunction="{StaticResource Ease}" />
+                                                             Duration="0:0:0.22" EasingFunction="{StaticResource EaseInOut}" />
                                         </Storyboard>
                                     </BeginStoryboard>
                                 </Trigger.EnterActions>
@@ -202,11 +205,11 @@
                                     <BeginStoryboard>
                                         <Storyboard>
                                             <DoubleAnimation Storyboard.TargetName="Overlay" Storyboard.TargetProperty="Opacity" To="0"
-                                                             Duration="0:0:0.22" EasingFunction="{StaticResource Ease}" />
+                                                             Duration="0:0:0.22" EasingFunction="{StaticResource EaseInOut}" />
                                             <DoubleAnimation Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[1].(ScaleTransform.ScaleX)" To="1"
-                                                             Duration="0:0:0.22" EasingFunction="{StaticResource Ease}" />
+                                                             Duration="0:0:0.22" EasingFunction="{StaticResource EaseInOut}" />
                                             <DoubleAnimation Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[1].(ScaleTransform.ScaleY)" To="1"
-                                                             Duration="0:0:0.22" EasingFunction="{StaticResource Ease}" />
+                                                             Duration="0:0:0.22" EasingFunction="{StaticResource EaseInOut}" />
                                         </Storyboard>
                                     </BeginStoryboard>
                                 </Trigger.ExitActions>
@@ -216,9 +219,9 @@
                                     <BeginStoryboard>
                                         <Storyboard>
                                             <DoubleAnimation Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleX)" To="0.97" Duration="0:0:0.1"
-                                                             EasingFunction="{StaticResource Ease}" />
+                                                             EasingFunction="{StaticResource EaseInOut}" />
                                             <DoubleAnimation Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleY)" To="0.97" Duration="0:0:0.1"
-                                                             EasingFunction="{StaticResource Ease}" />
+                                                             EasingFunction="{StaticResource EaseInOut}" />
                                         </Storyboard>
                                     </BeginStoryboard>
                                 </Trigger.EnterActions>
@@ -226,9 +229,27 @@
                                     <BeginStoryboard>
                                         <Storyboard>
                                             <DoubleAnimation Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleX)" To="1" Duration="0:0:0.15"
-                                                             EasingFunction="{StaticResource Ease}" />
+                                                             EasingFunction="{StaticResource EaseInOut}" />
                                             <DoubleAnimation Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleY)" To="1" Duration="0:0:0.15"
-                                                             EasingFunction="{StaticResource Ease}" />
+                                                             EasingFunction="{StaticResource EaseInOut}" />
+                                        </Storyboard>
+                                    </BeginStoryboard>
+                                </Trigger.ExitActions>
+                            </Trigger>
+                            <Trigger Property="app:ButtonMotion.IsSelected" Value="True">
+                                <Trigger.EnterActions>
+                                    <BeginStoryboard>
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetName="Selection" Storyboard.TargetProperty="Opacity" To="1"
+                                                             Duration="0:0:0.2" EasingFunction="{StaticResource EaseInOut}" />
+                                        </Storyboard>
+                                    </BeginStoryboard>
+                                </Trigger.EnterActions>
+                                <Trigger.ExitActions>
+                                    <BeginStoryboard>
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetName="Selection" Storyboard.TargetProperty="Opacity" To="0"
+                                                             Duration="0:0:0.2" EasingFunction="{StaticResource EaseInOut}" />
                                         </Storyboard>
                                     </BeginStoryboard>
                                 </Trigger.ExitActions>
@@ -286,6 +307,95 @@
             <Setter Property="BorderBrush" Value="Transparent" />
             <Setter Property="HorizontalContentAlignment" Value="Center" />
         </Style>
+
+        <!-- A choice in a list (picture mode, input): same motion as the buttons above. Hover lights it and grows it a touch,
+             pressed shrinks it, the current one fades a raised surface in (app:ButtonMotion.IsSelected), disabled dims. -->
+        <ControlTemplate x:Key="ItemButtonTemplate" TargetType="Button">
+            <Grid x:Name="Root" RenderTransformOrigin="0.5,0.5" Background="Transparent">
+                <Grid.RenderTransform>
+                    <TransformGroup>
+                        <ScaleTransform />
+                        <ScaleTransform />
+                    </TransformGroup>
+                </Grid.RenderTransform>
+                <Border x:Name="Selection" Background="{StaticResource RaisedBrush}" CornerRadius="9" Opacity="0" IsHitTestVisible="False" />
+                <Border x:Name="Overlay" Background="{StaticResource OverlayBrush}" CornerRadius="9" Opacity="0" IsHitTestVisible="False" />
+                <ContentPresenter Margin="{TemplateBinding Padding}" HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                  VerticalAlignment="Center" />
+            </Grid>
+            <ControlTemplate.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Trigger.EnterActions>
+                        <BeginStoryboard>
+                            <Storyboard>
+                                <DoubleAnimation Storyboard.TargetName="Overlay" Storyboard.TargetProperty="Opacity" To="0.09"
+                                                 Duration="0:0:0.2" EasingFunction="{StaticResource EaseInOut}" />
+                                <DoubleAnimation Storyboard.TargetName="Root" Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[1].(ScaleTransform.ScaleX)" To="1.015"
+                                                 Duration="0:0:0.2" EasingFunction="{StaticResource EaseInOut}" />
+                                <DoubleAnimation Storyboard.TargetName="Root" Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[1].(ScaleTransform.ScaleY)" To="1.015"
+                                                 Duration="0:0:0.2" EasingFunction="{StaticResource EaseInOut}" />
+                            </Storyboard>
+                        </BeginStoryboard>
+                    </Trigger.EnterActions>
+                    <Trigger.ExitActions>
+                        <BeginStoryboard>
+                            <Storyboard>
+                                <DoubleAnimation Storyboard.TargetName="Overlay" Storyboard.TargetProperty="Opacity" To="0"
+                                                 Duration="0:0:0.2" EasingFunction="{StaticResource EaseInOut}" />
+                                <DoubleAnimation Storyboard.TargetName="Root" Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[1].(ScaleTransform.ScaleX)" To="1"
+                                                 Duration="0:0:0.2" EasingFunction="{StaticResource EaseInOut}" />
+                                <DoubleAnimation Storyboard.TargetName="Root" Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[1].(ScaleTransform.ScaleY)" To="1"
+                                                 Duration="0:0:0.2" EasingFunction="{StaticResource EaseInOut}" />
+                            </Storyboard>
+                        </BeginStoryboard>
+                    </Trigger.ExitActions>
+                </Trigger>
+                <Trigger Property="IsPressed" Value="True">
+                    <Trigger.EnterActions>
+                        <BeginStoryboard>
+                            <Storyboard>
+                                <DoubleAnimation Storyboard.TargetName="Root" Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleX)" To="0.97"
+                                                 Duration="0:0:0.1" EasingFunction="{StaticResource EaseInOut}" />
+                                <DoubleAnimation Storyboard.TargetName="Root" Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleY)" To="0.97"
+                                                 Duration="0:0:0.1" EasingFunction="{StaticResource EaseInOut}" />
+                            </Storyboard>
+                        </BeginStoryboard>
+                    </Trigger.EnterActions>
+                    <Trigger.ExitActions>
+                        <BeginStoryboard>
+                            <Storyboard>
+                                <DoubleAnimation Storyboard.TargetName="Root" Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleX)" To="1"
+                                                 Duration="0:0:0.15" EasingFunction="{StaticResource EaseInOut}" />
+                                <DoubleAnimation Storyboard.TargetName="Root" Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleY)" To="1"
+                                                 Duration="0:0:0.15" EasingFunction="{StaticResource EaseInOut}" />
+                            </Storyboard>
+                        </BeginStoryboard>
+                    </Trigger.ExitActions>
+                </Trigger>
+                <Trigger Property="app:ButtonMotion.IsSelected" Value="True">
+                    <Trigger.EnterActions>
+                        <BeginStoryboard>
+                            <Storyboard>
+                                <DoubleAnimation Storyboard.TargetName="Selection" Storyboard.TargetProperty="Opacity" To="1"
+                                                 Duration="0:0:0.2" EasingFunction="{StaticResource EaseInOut}" />
+                            </Storyboard>
+                        </BeginStoryboard>
+                    </Trigger.EnterActions>
+                    <Trigger.ExitActions>
+                        <BeginStoryboard>
+                            <Storyboard>
+                                <DoubleAnimation Storyboard.TargetName="Selection" Storyboard.TargetProperty="Opacity" To="0"
+                                                 Duration="0:0:0.2" EasingFunction="{StaticResource EaseInOut}" />
+                            </Storyboard>
+                        </BeginStoryboard>
+                    </Trigger.ExitActions>
+                </Trigger>
+                <Trigger Property="IsEnabled" Value="False">
+                    <Setter Property="Opacity" Value="0.45" />
+                    <Setter Property="Cursor" Value="Arrow" />
+                </Trigger>
+            </ControlTemplate.Triggers>
+        </ControlTemplate>
 
         <!-- Dark drop-down -->
         <ControlTemplate x:Key="ComboToggle" TargetType="ToggleButton">

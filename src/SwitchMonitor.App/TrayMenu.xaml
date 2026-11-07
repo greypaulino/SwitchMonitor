@@ -1,0 +1,36 @@
+<Window x:Class="SwitchMonitor.App.TrayMenu"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:app="clr-namespace:SwitchMonitor.App"
+        Title="SwitchMonitor menu" SizeToContent="WidthAndHeight"
+        WindowStyle="None" AllowsTransparency="True" Background="Transparent" ResizeMode="NoResize"
+        ShowInTaskbar="False" Topmost="True" ShowActivated="True"
+        Foreground="{StaticResource TextBrush}" FontFamily="Segoe UI" FontSize="13">
+    <!-- The notification-area menu: a card like the brightness panel, in the same corner above the taskbar -->
+    <Border x:Name="Card" Margin="8" CornerRadius="16" MinWidth="230" Background="{DynamicResource BackdropBrush}"
+            BorderBrush="#30FFFFFF" BorderThickness="1">
+        <Border.RenderTransform>
+            <TranslateTransform x:Name="Slide" />
+        </Border.RenderTransform>
+        <Grid>
+            <Rectangle x:Name="GlowRect" Fill="{DynamicResource GlowBrush}" IsHitTestVisible="False" RadiusX="15" RadiusY="15" />
+            <ItemsControl x:Name="List" Margin="8">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate DataType="{x:Type app:TrayMenuItem}">
+                        <Button Click="ItemClick" Template="{StaticResource ItemButtonTemplate}" Padding="10,9" Margin="0,1" Focusable="False"
+                                Cursor="Hand" HorizontalContentAlignment="Stretch" AutomationProperties.Name="{Binding Label}">
+                            <DockPanel>
+                                <!-- A setting that is on or off shows its switch (it follows the click) -->
+                                <ToggleButton DockPanel.Dock="Right" Style="{StaticResource Switch}" IsChecked="{Binding On, Mode=OneWay}"
+                                              IsHitTestVisible="False" Focusable="False" Margin="24,0,0,0" VerticalAlignment="Center"
+                                              Visibility="{Binding HasSwitch, Converter={StaticResource BoolToVisibility}}" />
+                                <TextBlock Text="{Binding Glyph}" Style="{StaticResource Glyph}" FontSize="15" Width="28" VerticalAlignment="Center" />
+                                <TextBlock Text="{Binding Label}" VerticalAlignment="Center" />
+                            </DockPanel>
+                        </Button>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </Grid>
+    </Border>
+</Window>

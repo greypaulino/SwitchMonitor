@@ -4,6 +4,7 @@ using System.Windows.Input;
 using System.Windows.Threading;
 using SwitchMonitor.App.Services;
 using SwitchMonitor.Core.Inputs;
+using SwitchMonitor.Core.Settings;
 
 namespace SwitchMonitor.App.ViewModels;
 
@@ -26,6 +27,10 @@ public sealed class SunRow : ObservableObject
     public MonitorViewModel Monitor { get; }
     public string Name => Monitor.Name;
     public string Glyph => Monitor.DisplayGlyph;
+
+    /// <summary>The inputs popup's DataContext is this row: it shows the panel's "Next Input: shortcut" line.</summary>
+    public string NextInputText => owner.NextInputText;
+    internal void RaiseNextInput() => Raise(nameof(NextInputText));
 
     /// <summary>Windows is not using the display (or it cannot be controlled): a compact OFF row, skipped by selection.</summary>
     public bool IsOff => !Monitor.IsControllable;
@@ -156,11 +161,24 @@ public sealed class SunPanelViewModel : ObservableObject
         modeTimer.Tick += (_, _) => CommitMode();
         main.Monitors.CollectionChanged += (_, _) => Rebuild();
         main.Scenes.CollectionChanged += (_, _) => WatchScenes();
-        main.PropertyChanged += (_, e) => { if (e.PropertyName == nameof(MainViewModel.Selected)) SyncSelection(); };
+        main.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(MainViewModel.Selected)) SyncSelection();
+            else if (e.PropertyName == nameof(MainViewModel.NextInputKeys))
+            {
+                Raise(nameof(NextInputText));
+                foreach (var row in Rows) row.RaiseNextInput();
+            }
+        };
         main.PreferredChanged += () => { foreach (var row in Rows) row.RaisePreferred(); RefreshMain(); };
         WatchScenes();
         Rebuild();
     }
+
+    /// <summary>The line under the inputs list: the Next input shortcut as it is assigned now ("Next Input: Ctrl+Alt+M").</summary>
+    public string NextInputText => main.Settings.For(HotkeyAction.NextInput) is [var first, ..]
+        ? $"Next Input: {first}"
+        : "Next Input: Not assigned";
 
     public ObservableCollection<SunRow> Rows { get; } = [];
     public ObservableCollection<SceneViewModel> Scenes => main.Scenes;

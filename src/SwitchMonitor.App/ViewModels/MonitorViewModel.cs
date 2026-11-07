@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using SwitchMonitor.Core;
+using SwitchMonitor.Core.Scenes;
 using SwitchMonitor.Core.Vcp;
 
 namespace SwitchMonitor.App.ViewModels;
@@ -457,8 +458,33 @@ public sealed class MonitorViewModel : ObservableObject
     public Task<bool> RunByHandAsync(string what, Func<MonitorDevice, WriteOutcome> action, byte? code = null)
     {
         inputs.SettingChangedByHand(this, code);
+        // FreeSync re-syncs the link and the screen goes black for a moment: cover it, write, wait for the display, uncover.
+        if (code is byte c && TransitionSource?.Invoke() is { } hooks &&
+            Device.Features.FirstOrDefault(f => f.Code == c) is { } feature && SceneApplier.IsDisruptive(feature.Name))
+            return RunAsync(what, device => WithCover(hooks, device, c, action));
         return RunAsync(what, action);
     }
+
+    /// <summary>A gradual change wrote a level to this display: the matching slider follows it (nothing is written back).</summary>
+    public void FollowLevel(byte code, uint raw) =>
+        AllControls.OfType<SliderControlViewModel>().FirstOrDefault(c => c.Feature.Code == code)?.Follow(raw);
+
+    /// <summary>The cover for a change made by hand (the same hooks a profile uses); the cover always comes off.</summary>
+    private static WriteOutcome WithCover(TransitionHooks hooks, MonitorDevice device, byte code, Func<MonitorDevice, WriteOutcome> action)
+    {
+        hooks.BeforeDisruptive?.Invoke();
+        try
+        {
+            var outcome = action(device);
+            SceneApplier.WaitUntilAnswering(device, code, Core.Reliability.ThreadDelay.Instance, hooks.StableWithin);
+            Thread.Sleep(1200);   // the picture is back and steady: a margin before uncovering
+            return outcome;
+        }
+        finally { hooks.AfterDisruptive?.Invoke(); }
+    }
+
+    /// <summary>The cover to use for a change that blacks the screen out (set by the app); null: none (demo displays).</summary>
+    public Func<TransitionHooks?>? TransitionSource { get; init; }
 
     /// <summary>Runs one write and reports the outcome in the status bar. Returns false when it failed.</summary>
     public async Task<bool> RunAsync(string what, Func<MonitorDevice, WriteOutcome> action)

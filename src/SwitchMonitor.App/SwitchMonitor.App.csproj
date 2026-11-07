@@ -25,7 +25,9 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Content Include="..\..\monitor-switch.ico" Link="monitor-switch.ico" CopyToOutputDirectory="PreserveNewest" />
+    <!-- Inside the program itself (not as a loose file beside the exe: a Content copy with the same name would make the
+         pack URI point at that file, and the single-file publish has none). The window and the tray read it from here. -->
+    <Resource Include="..\..\monitor-switch.ico" Link="monitor-switch.ico" />
   </ItemGroup>
 
   <!-- Phosphor icons (MIT, see Fonts\PHOSPHOR-LICENSE.txt): the Fill and Duotone icon styles -->

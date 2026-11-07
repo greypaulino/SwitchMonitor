@@ -146,6 +146,40 @@ public sealed partial class MainViewModel : ObservableObject, IInputCoordinator
     /// <summary>Where displays come from: Windows by default, in-memory ones in demo mode (--demo).</summary>
     public Func<IReadOnlyList<MonitorDevice>>? DeviceSource { get; init; }
 
+    /// <summary>
+    /// How a profile change that toggles FreeSync hides the black-out (set by the app: a black cover over the screens).
+    /// Null, or with demo displays (nothing really blacks out): the profile is applied as always.
+    /// </summary>
+    public TransitionHooks? Transition { get; set; }
+
+    /// <summary>Only for the flow self-test: use the cover with the in-memory demo displays too.</summary>
+    public bool CoverInDemo { get; set; }
+
+    private readonly SemaphoreSlim applyGate = new(1, 1);   // one profile change at a time: displays never see two interleaved
+    private int applySeq;                                    // the newest request; older ones waiting behind a running change are dropped
+
+    /// <summary>
+    /// What a profile change carries: the black cover for FreeSync (not with demo displays) and the progress of the levels,
+    /// so the sliders move with the real, gradual change.
+    /// </summary>
+    private TransitionHooks HooksForProfile()
+    {
+        var cover = DeviceSource is null || CoverInDemo ? Transition : null;
+        return new TransitionHooks
+        {
+            BeforeDisruptive = cover?.BeforeDisruptive,
+            AfterDisruptive = cover?.AfterDisruptive,
+            StableWithin = cover?.StableWithin ?? TimeSpan.FromSeconds(8),
+            LevelMoved = FollowLevel
+        };
+    }
+
+    private void FollowLevel(MonitorDevice device, byte code, uint raw)
+    {
+        if (System.Windows.Application.Current?.Dispatcher is not { } dispatcher) return;
+        dispatcher.BeginInvoke(() => Monitors.FirstOrDefault(m => ReferenceEquals(m.Device, device))?.FollowLevel(code, raw));
+    }
+
     /// <summary>Linked-programs switch (automation.json).</summary>
     public AutomationStore Automation { get; }
 
@@ -266,6 +300,7 @@ public sealed partial class MainViewModel : ObservableObject, IInputCoordinator
             if (tab == value) return;
             var previous = tab;
             tab = value;
+            if (previous == AppTab.Profiles) ProfileEditor?.CancelHotkeyCapture();
             if (previous == AppTab.Shortcuts)
             {
                 ShortcutEditor?.CancelCapture();
@@ -335,6 +370,13 @@ public sealed partial class MainViewModel : ObservableObject, IInputCoordinator
 
     /// <summary>The Settings view: interface color, appearance, linked apps.</summary>
     public InterfaceViewModel Interface => interfaceSettings ??= new(Theme.Current, this);
+
+    /// <summary>Updates (Settings > Updates, the banner and the tray notice).</summary>
+    public UpdateViewModel Updates => updates ??= new(this);
+    private UpdateViewModel? updates;
+
+    /// <summary>A profile change is running (an update must not start in the middle of one).</summary>
+    public bool IsApplyingProfile => applyGate.CurrentCount == 0;
 
     /// <summary>The display list on the left serves the Displays and Advanced tabs.</summary>
     public bool ShowsMonitorList => tab is AppTab.Displays or AppTab.Advanced;
@@ -474,7 +516,7 @@ public sealed partial class MainViewModel : ObservableObject, IInputCoordinator
 
             var devices = await Task.Run(() => DeviceSource?.Invoke() ?? MonitorEnumerator.Enumerate(CoreOptions.FromDataDirectory(), log: log));
             foreach (var device in devices.OrderByDescending(d => d.IsControllable).ThenByDescending(d => d.Identity.IsPrimary))
-                Monitors.Add(new MonitorViewModel(device, Report, this) { TogglePreferred = TogglePreferred });
+                Monitors.Add(new MonitorViewModel(device, Report, this) { TogglePreferred = TogglePreferred, TransitionSource = () => DeviceSource is null || CoverInDemo ? Transition : null });
             Raise(nameof(ShowsSearchSkeleton));
             // Panel names from the EDID for built-in screens (Windows display configuration, quick and read-only).
             var summaries = await Task.Run(() => BuiltInProbe.Displays());
@@ -520,6 +562,23 @@ public sealed partial class MainViewModel : ObservableObject, IInputCoordinator
         Monitors.Where(m => m.Inputs.Count > 0)
             .Select(m => new DisplayInputs(m.Key, m.Name, m.Inputs.Select(i => (i.Code, i.Label)).ToArray()))
             .ToArray();
+
+    /// <summary>Pauses (or resumes) the global shortcuts while a shortcut is being recorded outside the Shortcuts tab.</summary>
+    public void SetShortcutsPaused(bool paused) => ShortcutsPaused?.Invoke(paused);
+
+    /// <summary>
+    /// What already uses <paramref name="chord"/>: an app action, an input shortcut or another profile (the profile named
+    /// <paramref name="exceptProfile"/> is the one being edited and does not count). Null when it is free of SwitchMonitor's own.
+    /// </summary>
+    public string? ShortcutOwner(Core.Hotkeys.HotkeyChord chord, string? exceptProfile)
+    {
+        foreach (var (action, chords) in Settings.Hotkeys)
+            if (chords.Contains(chord)) return Core.Settings.HotkeyAction.Describe(action);
+        if (Settings.InputShortcuts.FirstOrDefault(i => i.Chord == chord) is { } input) return DescribeInputShortcut(input);
+        if (SceneProfiles.FirstOrDefault(s => s.Hotkey == chord && !string.Equals(s.Name, exceptProfile, StringComparison.OrdinalIgnoreCase)) is { } scene)
+            return $"profile {scene.Name}";
+        return null;
+    }
 
     /// <summary>Saves edited shortcuts: settings.json for actions and inputs, scenes.json for scene shortcuts.</summary>
     public void SaveShortcuts(AppSettings updated, IReadOnlyDictionary<string, Core.Hotkeys.HotkeyChord?> sceneHotkeys)
@@ -712,12 +771,20 @@ public sealed partial class MainViewModel : ObservableObject, IInputCoordinator
             .Where(entry => entry.Monitor is { IsControllable: true })
             .Select(async entry =>
             {
-                var steps = await Task.Run(() => SceneApplier.Apply(new SceneProfile(CustomName, entry.Lines), [entry.Monitor!.Device], log, fade: fade));
+                var steps = await Task.Run(() => SceneApplier.Apply(new SceneProfile(CustomName, entry.Lines), [entry.Monitor!.Device], log, fade: fade > TimeSpan.Zero ? fade : SceneApplier.ProfileFade, hooks: HooksForProfile()));
                 entry.Monitor!.ShowApplied(steps);
                 return steps.Count(s => s.Status is SceneStepStatus.Failed or SceneStepStatus.Mismatch);
             });
-        int failed = (await Task.WhenAll(work)).Sum();
-        Report(failed == 0 ? "Custom: your settings are back." : $"Custom: your settings are back, {failed} could not be set.", failed == 0);
+        // One profile change at a time (a quick Theater then Custom used to write over each other): the last asked wins.
+        int mine = Interlocked.Increment(ref applySeq);
+        await applyGate.WaitAsync();
+        try
+        {
+            if (mine != Volatile.Read(ref applySeq)) return;
+            int failed = (await Task.WhenAll(work)).Sum();
+            Report(failed == 0 ? "Custom: your settings are back." : $"Custom: your settings are back, {failed} could not be set.", failed == 0);
+        }
+        finally { applyGate.Release(); }
     }
 
     /// <summary>
@@ -730,10 +797,17 @@ public sealed partial class MainViewModel : ObservableObject, IInputCoordinator
         customSnapshot = null;
         MarkActiveProfile();
         Report($"Applying your Custom settings to {monitor.Name}…", true);
-        var steps = await Task.Run(() => SceneApplier.Apply(settings, [monitor.Device], log));
-        int failed = steps.Count(s => s.Status is SceneStepStatus.Failed or SceneStepStatus.Mismatch);
-        Report("Custom: " + Summary(steps), failed == 0);
-        monitor.ShowApplied(steps);
+        int mine = Interlocked.Increment(ref applySeq);
+        await applyGate.WaitAsync();
+        try
+        {
+            if (mine != Volatile.Read(ref applySeq)) return;
+            var steps = await Task.Run(() => SceneApplier.Apply(settings, [monitor.Device], log, fade: SceneApplier.ProfileFade, hooks: HooksForProfile()));
+            int failed = steps.Count(s => s.Status is SceneStepStatus.Failed or SceneStepStatus.Mismatch);
+            Report("Custom: " + Summary(steps), failed == 0);
+            monitor.ShowApplied(steps);
+        }
+        finally { applyGate.Release(); }
     }
 
     /// <param name="fade">Gradual change of the levels (linked programs); zero = at once.</param>
@@ -748,10 +822,20 @@ public sealed partial class MainViewModel : ObservableObject, IInputCoordinator
         var targets = Monitors.Where(m => m.IsControllable && scene.AppliesTo(m.Device)).ToArray();
         var devices = targets.Select(m => m.Device).ToArray();
         Report($"Applying profile {scene.Name}…", true);
-        var steps = await Task.Run(() => SceneApplier.Apply(scene, devices, log, fade: fade));
-        int failed = steps.Count(s => s.Status is SceneStepStatus.Failed or SceneStepStatus.Mismatch);
-        Report($"{scene.Name}: " + Summary(steps), failed == 0);
-        foreach (var monitor in Monitors) monitor.ShowApplied(steps);
+        int mine = Interlocked.Increment(ref applySeq);
+        await applyGate.WaitAsync();
+        try
+        {
+            // A profile asked while another change was running (a quick double press): only the last one is applied, after
+            // the running one finished, so the displays are never left half-way between two profiles.
+            if (mine != Volatile.Read(ref applySeq)) return;
+            var hooks = HooksForProfile();
+            var steps = await Task.Run(() => SceneApplier.Apply(scene, devices, log, fade: fade > TimeSpan.Zero ? fade : SceneApplier.ProfileFade, hooks: hooks));
+            int failed = steps.Count(s => s.Status is SceneStepStatus.Failed or SceneStepStatus.Mismatch);
+            Report($"{scene.Name}: " + Summary(steps), failed == 0);
+            foreach (var monitor in Monitors) monitor.ShowApplied(steps);
+        }
+        finally { applyGate.Release(); }
     }
 
     /// <summary>

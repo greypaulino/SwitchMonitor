@@ -33,6 +33,56 @@ public partial class App : Application
     {
         base.OnStartup(e);
 
+        // Cover self-test (--test-cover [folder]): only the black cover, photographed; no window, no monitor.
+        int coverAt = Array.FindIndex(e.Args, a => a.Equals("--test-cover", StringComparison.OrdinalIgnoreCase));
+        if (coverAt >= 0)
+        {
+            string folder = e.Args.ElementAtOrDefault(coverAt + 1) is { Length: > 0 } given && !given.StartsWith("--") ? given : Path.GetTempPath();
+            Services.CoverSelfTest.Run(Dispatcher, folder, () => Shutdown());
+            return;
+        }
+
+        // Icon self-test (--test-icon [folder]): the program finds its own icon without a loose .ico beside it.
+        int iconAt = Array.FindIndex(e.Args, x => x.Equals("--test-icon", StringComparison.OrdinalIgnoreCase));
+        if (iconAt >= 0)
+        {
+            string folder = e.Args.ElementAtOrDefault(iconAt + 1) is { Length: > 0 } given && !given.StartsWith("--") ? given : Path.GetTempPath();
+            Services.CoverSelfTest.IconCheck(folder, () => Shutdown());
+            return;
+        }
+
+        // Corner self-test (--test-corner [folder]): the main window's rounded corner against the desktop behind it.
+        int cornerAt = Array.FindIndex(e.Args, x => x.Equals("--test-corner", StringComparison.OrdinalIgnoreCase));
+        if (cornerAt >= 0)
+        {
+            string folder = e.Args.ElementAtOrDefault(cornerAt + 1) is { Length: > 0 } given && !given.StartsWith("--") ? given : Path.GetTempPath();
+            Theme.Apply(Core.Settings.InterfaceSettings.Load());
+            Services.CoverSelfTest.Corner(Dispatcher, folder, () => Shutdown());
+            return;
+        }
+
+        // Menu self-test (--test-menu [folder]): the tray menu cards, photographed.
+        int menuAt = Array.FindIndex(e.Args, x => x.Equals("--test-menu", StringComparison.OrdinalIgnoreCase));
+        if (menuAt >= 0)
+        {
+            string folder = e.Args.ElementAtOrDefault(menuAt + 1) is { Length: > 0 } given && !given.StartsWith("--") ? given : Path.GetTempPath();
+            Theme.Apply(Core.Settings.InterfaceSettings.Load());
+            Services.CoverSelfTest.Menu(Dispatcher, folder, () => Shutdown());
+            return;
+        }
+
+        // Flow self-test (--test-flow [folder]): the real profile pipeline on the in-memory demo monitor.
+        int flowAt = Array.FindIndex(e.Args, x => x.Equals("--test-flow", StringComparison.OrdinalIgnoreCase));
+        if (flowAt >= 0)
+        {
+            string folder = e.Args.ElementAtOrDefault(flowAt + 1) is { Length: > 0 } given && !given.StartsWith("--") ? given : Path.GetTempPath();
+            string data = Path.Combine(Path.GetTempPath(), "SwitchMonitor-v2-flowtest");
+            Directory.CreateDirectory(data);
+            Environment.SetEnvironmentVariable("SWITCHMONITOR_DATA_DIR", data);
+            Services.FlowSelfTest.Run(Dispatcher, folder, () => Shutdown());
+            return;
+        }
+
         // Demo mode (--demo [demo|worst|empty]): in-memory displays and a throwaway data folder, for looking at the
         // interface without touching a monitor or the real settings. It runs beside the normal instance.
         int demoAt = Array.FindIndex(e.Args, a => a.Equals("--demo", StringComparison.OrdinalIgnoreCase));
@@ -92,6 +142,8 @@ public partial class App : Application
         {
             DeviceSource = demoScenario is { } scenario ? () => DemoMonitors.Create(scenario, log) : null
         };
+        // FreeSync changes in a profile black the screen out: cover it (and fade) instead of letting it flash.
+        model.Transition = new Services.BlackoutOverlay(Dispatcher, text => log?.Write(LogLevel.Info, text)).CreateHooks();
         window = new MainWindow { DataContext = model };
         if (demoScenario is not null) window.Title += $" — demo data ({demoScenario})";
         window.Closing += (_, args) =>
@@ -100,14 +152,15 @@ public partial class App : Application
             if (demoScenario is not null) { ExitApp(); return; }   // demo: no tray icon, closing ends it
             args.Cancel = true;   // closing the window keeps the app in the tray
             model.IsDisplaysTab = true;   // leaving the Shortcuts tab resumes global shortcuts
-            window.Hide();
+            window.HideAnimated();   // fades and shrinks first, then goes to the tray
         };
 
         // The sun (1.x "brillo"): always in the notification area, also in demo mode (it only changes demo displays there).
         var sunModel = sunPanelModel = new ViewModels.SunPanelViewModel(model);
         sunModel.OpenWindowRequested += () => { sunPanel?.HidePanel(); ShowWindow(); };
         sunPanel = new SunPanel(sunModel);
-        sunTray = new SunTrayIcon(() => sunPanel.Toggle(), ShowWindow, ExitApp);
+        trayMenu = new TrayMenu();
+        sunTray = new SunTrayIcon(() => sunPanel.Toggle(), () => trayMenu.Toggle(SunMenu()));
         // * alone on the desktop or the taskbar opens the panel too (elsewhere it types a * as usual).
         if (demoScenario is null) desktopStar = new Services.DesktopStarKey(() => sunPanel.ShowPanel());
         // A phone on the home Wi-Fi (Settings > Phone); not in demo mode, which must not answer the network.
@@ -117,18 +170,14 @@ public partial class App : Application
         {
             // No tray icon and no global shortcuts: the normal instance owns them.
             model.IsShortcutFree = _ => true;
+            model.Updates.Enabled = false;   // demo: nothing is asked of the network
             ShowWindow();
             _ = model.RefreshAsync();
             return;
         }
 
-        tray = new TrayIcon(new TrayActions(
-            Open: ShowWindow,
-            NextInput: () => _ = model.NextInputAsync(),
-            ReturnToPrevious: () => _ = model.ReturnToPreviousInputAsync(),
-            Shortcuts: OpenShortcuts,
-            Exit: ExitApp));
-        tray.Opening += UpdateTray;
+        tray = new TrayIcon(ShowWindow, () => trayMenu.Toggle(MainMenu()));
+        StartUpdates();
         hotkeys = new HotkeyService();
         model.ShortcutsChanged += RegisterHotkeys;
         model.RestartRequested += () =>
@@ -222,12 +271,49 @@ public partial class App : Application
         Dispatcher.BeginInvoke(timer.Start);
     }
 
-    private void UpdateTray()
+    private TrayMenu? trayMenu;
+
+    /// <summary>
+    /// Updates: a check 5 seconds after start and every 6 hours (and when the window opens after that long), a notice above
+    /// the tray the first time a version is found, and the installer's "updated" note. Nothing installs without a click.
+    /// </summary>
+    private void StartUpdates()
     {
-        if (model is null || tray is null) return;
-        tray.Update(model.Settings.For(HotkeyAction.NextInput).Select(c => c.ToString()).FirstOrDefault(),
-            model.CanReturnToPreviousInput ? model.PreviousInputLabel : null,
-            model.SceneProfiles, scene => _ = model.ApplySceneAsync(scene));
+        if (model is null) return;
+        var updates = model.Updates;
+        updates.UpdateFound += text => tray?.Balloon("SwitchMonitor update", text, () => { ShowWindow(); model.IsSettingsTab = true; });
+        updates.InstallStarted += ExitApp;
+        updates.AnnounceCompletedUpdate();
+        var first = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
+        first.Tick += (_, _) => { first.Stop(); if (updates.IsDue) _ = updates.CheckAsync(silent: true); };
+        first.Start();
+        var every = new System.Windows.Threading.DispatcherTimer { Interval = Core.Updates.UpdateEditions.Detect() == Core.Updates.UpdateEdition.Packaged ? TimeSpan.FromDays(30) : ViewModels.UpdateViewModel.CheckEvery };
+        every.Tick += (_, _) => { if (updates.IsDue) _ = updates.CheckAsync(silent: true); };
+        every.Start();
+    }
+
+    /// <summary>The sun icon's menu: Exit and Start With Windows (nothing else).</summary>
+    private IReadOnlyList<TrayMenuItem> SunMenu() =>
+    [
+        new("Exit", "\uE711", ExitApp),
+        new("Start With Windows", "\uE71D", () => { if (model is not null) model.StartWithWindows = !model.StartWithWindows; },
+            () => model?.StartWithWindows ?? false)
+    ];
+
+    /// <summary>The SwitchMonitor icon's menu: Exit, Shortcuts, Edit a Profile, Open (nothing else).</summary>
+    private IReadOnlyList<TrayMenuItem> MainMenu() =>
+    [
+        new("Exit", "\uE711", ExitApp),
+        new("Shortcuts", Icons.Shortcuts, OpenShortcuts),
+        new("Edit a Profile", Icons.Profiles, EditProfile),
+        new("Open", "\uE8A7", ShowWindow)
+    ];
+
+    /// <summary>Shows the window on its Profiles tab (tray menu).</summary>
+    private void EditProfile()
+    {
+        ShowWindow();
+        if (model is not null) model.IsProfilesTab = true;
     }
 
     /// <summary>Shows the window on its Shortcuts tab (tray menu).</summary>
@@ -316,9 +402,8 @@ public partial class App : Application
     private void ShowWindow()
     {
         if (window is null) return;
-        window.Show();
-        if (window.WindowState == WindowState.Minimized) window.WindowState = WindowState.Normal;
-        window.Activate();
+        window.ShowAnimated();
+        if (model?.Updates is { IsDue: true } due) _ = due.CheckAsync(silent: true);   // opened after a long time: look again
     }
 
     private void ExitApp()
@@ -331,6 +416,7 @@ public partial class App : Application
         hotkeys?.Dispose();
         tray?.Dispose();
         sunTray?.Dispose();
+        trayMenu?.Close();
         desktopStar?.Dispose();
         model?.Phone?.Dispose();
         sunPanel?.Close();
