@@ -64,29 +64,119 @@ public static class SceneApplier
     /// Gradual change: levels (brightness, contrast, volume, colors) move there in small steps over this time instead of
     /// at once. Modes and presets cannot be gradual and are set first, as usual. Zero = at once.
     /// </param>
+    /// <param name="hooks">
+    /// When the profile changes FreeSync (which blacks the screen), the levels fade first, the app is asked to cover the
+    /// screens, FreeSync is written last, the display is awaited, and the cover is lifted. Null: as always.
+    /// </param>
     public static IReadOnlyList<SceneStep> Apply(SceneProfile scene, IEnumerable<MonitorDevice> monitors, ICoreLog? log = null,
-        IDelay? delay = null, TimeSpan fade = default)
+        IDelay? delay = null, TimeSpan fade = default, TransitionHooks? hooks = null)
     {
         log ??= NullLog.Instance;
         bool realTime = delay is null;
         delay ??= ThreadDelay.Instance;
         var targets = monitors.Where(m => scene.AppliesTo(m) && m.IsControllable).ToArray();
-        var perMonitor = new IReadOnlyList<SceneStep>[targets.Length];
-        if (realTime && targets.Length > 1)
-            Parallel.For(0, targets.Length, i => perMonitor[i] = ApplyTo(scene, targets[i], delay, fade));
-        else
-            for (int i = 0; i < targets.Length; i++) perMonitor[i] = ApplyTo(scene, targets[i], delay, fade);
-        var steps = perMonitor.SelectMany(s => s).ToList();
+
+        IReadOnlyList<SceneStep> Run(SceneProfile part, TimeSpan partFade)
+        {
+            var perMonitor = new IReadOnlyList<SceneStep>[targets.Length];
+            if (realTime && targets.Length > 1)
+                Parallel.For(0, targets.Length, i => perMonitor[i] = ApplyTo(part, targets[i], delay, partFade, hooks, log));
+            else
+                for (int i = 0; i < targets.Length; i++) perMonitor[i] = ApplyTo(part, targets[i], delay, partFade, hooks, log);
+            return perMonitor.SelectMany(s => s).ToList();
+        }
+
+        var disruptive = hooks is null ? [] : scene.Settings.Where(IsDisruptive).ToArray();
+        List<SceneStep> steps;
+        if (hooks?.BeforeDisruptive is not null && disruptive.Length > 0 && targets.Any(m => WillChange(m, scene, disruptive)))
+        {
+            // The whole profile (modes, levels, FreeSync) is applied under the cover, at once and unseen, while the screen is
+            // black anyway: when the cover lifts the new look is already there and nothing is noticed.
+            hooks.BeforeDisruptive?.Invoke();
+            try
+            {
+                steps = Run(scene, TimeSpan.Zero).ToList();
+                WaitStable(targets, disruptive, delay, hooks.StableWithin);
+            }
+            finally { hooks.AfterDisruptive?.Invoke(); }
+        }
+        else steps = Run(scene, fade).ToList();
+
         foreach (var step in steps)
             log.Write(step.Status is SceneStepStatus.Failed or SceneStepStatus.Mismatch ? LogLevel.Warning : LogLevel.Info,
                 $"Scene {scene.Name}: {step}");
         return steps;
     }
 
+    /// <summary>Settings that can black the screen out while the link re-syncs (FreeSync / adaptive sync).</summary>
+    public static bool IsDisruptive(SceneSetting setting) => IsDisruptive(setting.Feature.Name);
+
+    public static bool IsDisruptive(string featureName) =>
+        featureName.Contains("freesync", StringComparison.OrdinalIgnoreCase) ||
+        featureName.Contains("adaptive sync", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>True when applying the scene would really change a disruptive setting on the monitor (nothing is sent).</summary>
+    private static bool WillChange(MonitorDevice monitor, SceneProfile scene, IReadOnlyList<SceneSetting> disruptive)
+    {
+        var features = monitor.Features;
+        // The picture mode (and other choices) the scene sets first can unlock FreeSync: judge it as it will be then.
+        var planned = new Dictionary<byte, uint>();
+        foreach (var other in scene.Settings.Where(s => !IsDisruptive(s) && s.Percent is null))
+            if (Choose(features, other) is { Reason: null } chosen && chosen.Setting.Value is uint value)
+                planned[chosen.Setting.Feature.Code] = value;
+        foreach (var requested in disruptive)
+        {
+            var (setting, reason) = Choose(features, requested);
+            if (reason is not null || Match(features, setting) is not { } feature) continue;
+            if (LockedBy(monitor, features, feature, planned) is not null) continue;
+            try { if (!AlreadyHas(monitor, feature, setting)) return true; }
+            catch (Exception error) when (error is not OutOfMemoryException) { return true; }   // unreadable: assume it changes
+        }
+        return false;
+    }
+
+    /// <summary>After the change: waits (in short steps, never longer than <paramref name="limit"/>) until each display answers a read again.</summary>
+    private static void WaitStable(IEnumerable<MonitorDevice> monitors, IReadOnlyList<SceneSetting> disruptive, IDelay delay, TimeSpan limit)
+    {
+        foreach (var monitor in monitors)
+            if (disruptive.Select(s => Match(monitor.Features, s)).FirstOrDefault(f => f is not null) is { } feature)
+                WaitUntilAnswering(monitor, feature.Code, delay, limit);
+        delay.Wait(TimeSpan.FromMilliseconds(1200));   // the picture is back and steady: a margin before uncovering
+    }
+
+    /// <summary>Waits (in short steps, never longer than <paramref name="limit"/>) until the display answers a read of <paramref name="code"/> again.</summary>
+    public static void WaitUntilAnswering(MonitorDevice monitor, byte code, IDelay delay, TimeSpan limit)
+    {
+        var step = TimeSpan.FromMilliseconds(300);
+        int attempts = Math.Max(1, (int)(limit / step));
+        for (int i = 0; i < attempts; i++)
+        {
+            try
+            {
+                // Two answers in a row, a step apart: the first one can come while the link is still settling.
+                monitor.CurrentValue(code);
+                delay.Wait(step);
+                monitor.CurrentValue(code);
+                return;
+            }
+            catch (Exception error) when (error is not OutOfMemoryException) { delay.Wait(step); }
+        }
+    }
+
     /// <summary>Time between two steps of a fade (a DDC write takes about 50-100 ms).</summary>
     public static TimeSpan FadeStep { get; } = TimeSpan.FromMilliseconds(150);
 
-    private static IReadOnlyList<SceneStep> ApplyTo(SceneProfile scene, MonitorDevice monitor, IDelay delay, TimeSpan fade)
+    /// <summary>Smallest pause between two rounds of writes in a real-time fade (the display gets a breather).</summary>
+    public static TimeSpan MinFadeGap { get; } = TimeSpan.FromMilliseconds(30);
+
+    /// <summary>The longest a gradual change may take when the display is slow (one write per 150-500 ms).</summary>
+    public static TimeSpan MaxFade { get; } = TimeSpan.FromMilliseconds(3500);
+
+    /// <summary>How long brightness, contrast, volume and colors take to reach the next profile (ease in-out).</summary>
+    public static TimeSpan ProfileFade { get; } = TimeSpan.FromMilliseconds(1500);
+
+    private static IReadOnlyList<SceneStep> ApplyTo(SceneProfile scene, MonitorDevice monitor, IDelay delay, TimeSpan fade,
+        TransitionHooks? hooks = null, ICoreLog? log = null)
     {
         var features = monitor.Features;
         // The picture mode first, then the other choices (color preset, response time, FreeSync...), levels last.
@@ -109,7 +199,7 @@ public static class SceneApplier
             {
                 // All the levels move together, one small step at a time, from what the (new) mode loaded; the final
                 // values are then written and checked by ApplyOne as usual.
-                Fade(monitor, features, ordered.Where(s => s.Percent is not null), planned, delay, fade);
+                Fade(monitor, features, ordered.Where(s => s.Percent is not null), planned, delay, fade, hooks, log);
                 faded = true;
             }
             var step = ApplyOne(monitor, features, setting, planned);
@@ -128,7 +218,7 @@ public static class SceneApplier
 
     /// <summary>Moves every level of the scene from its current value toward the target in steps (not the last one).</summary>
     private static void Fade(MonitorDevice monitor, IReadOnlyList<MonitorFeature> features, IEnumerable<SceneSetting> levels,
-        IReadOnlyDictionary<byte, uint> planned, IDelay delay, TimeSpan fade)
+        IReadOnlyDictionary<byte, uint> planned, IDelay delay, TimeSpan fade, TransitionHooks? hooks = null, ICoreLog? log = null)
     {
         var ramps = new List<Ramp>();
         foreach (var requested in levels)
@@ -148,6 +238,43 @@ public static class SceneApplier
             catch (Exception error) when (error is not OutOfMemoryException) { }   // unreadable: set directly at the end
         }
         if (ramps.Count == 0) return;
+        if (delay is ThreadDelay)
+        {
+            // Real time: the levels follow an ease-in-out curve over the whole duration, written as fast as the display
+            // takes them (a DDC write is about 50-100 ms), never twice the same value, never closer than MinFadeGap.
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            var current = ramps.ToDictionary(r => r.Code, r => r.From);
+            int writes = 0;
+            var duration = fade;
+            bool tuned = false;
+            while (clock.Elapsed < duration)
+            {
+                var round = System.Diagnostics.Stopwatch.StartNew();
+                double u = clock.Elapsed / duration;
+                u = u * u * (3 - 2 * u);   // ease in and out: no visible start or stop
+                foreach (var ramp in ramps)
+                {
+                    uint value = monitor.Snap(ramp.Code, (uint)Math.Round(ramp.From + (ramp.To - (double)ramp.From) * u));
+                    if (value == current[ramp.Code] || value == ramp.To) continue;   // the target is left to the final, checked write
+                    try { monitor.Write(ramp.Code, value, quiet: true); current[ramp.Code] = value; writes++; hooks?.LevelMoved?.Invoke(monitor, ramp.Code, value); }
+                    catch (Exception error) when (error is not OutOfMemoryException) { return; }   // the final write reports it
+                }
+                if (!tuned)
+                {
+                    // A real display takes ~150-500 ms per write, so a short fade has only a few steps and the levels visibly
+                    // jump. After the first round we know the pace: give each level up to 14 steps (about 1 unit each for
+                    // small changes), within MaxFade, so the movement stays smooth instead of stepping.
+                    tuned = true;
+                    int rounds = (int)Math.Clamp(ramps.Max(r => Math.Abs((long)r.To - r.From)), 1, 14);
+                    var wanted = TimeSpan.FromMilliseconds(rounds * (round.ElapsedMilliseconds + MinFadeGap.TotalMilliseconds));
+                    duration = wanted < fade ? fade : wanted > MaxFade ? MaxFade : wanted;
+                }
+                delay.Wait(MinFadeGap);
+            }
+            log?.Write(LogLevel.Info, $"Fade {monitor.Name}: {string.Join(", ", ramps.Select(r => $"0x{r.Code:X2} {r.From}->{r.To}"))} " +
+                $"in {clock.ElapsedMilliseconds} ms, {writes} writes ({(writes == 0 ? 0 : clock.ElapsedMilliseconds / writes)} ms each).");
+            return;
+        }
         int largest = Math.Max(2, ramps.Max(r => (int)Math.Abs((long)r.To - r.From)));   // never more steps than values
         int steps = (int)Math.Clamp(fade / (FadeStep * ramps.Count), 2, largest);
         var last = ramps.ToDictionary(r => r.Code, r => r.From);
@@ -160,7 +287,7 @@ public static class SceneApplier
                 uint value = monitor.Snap(ramp.Code, (uint)Math.Round(ramp.From + (ramp.To - (double)ramp.From) * t));
                 // The target itself is left to the final write, which checks it and reports the line as changed.
                 if (value == last[ramp.Code] || value == ramp.To) continue;
-                try { monitor.Write(ramp.Code, value, quiet: true); last[ramp.Code] = value; }
+                try { monitor.Write(ramp.Code, value, quiet: true); last[ramp.Code] = value; hooks?.LevelMoved?.Invoke(monitor, ramp.Code, value); }
                 catch (Exception error) when (error is not OutOfMemoryException) { return; }   // the final write reports it
             }
             delay.Wait(FadeStep);
