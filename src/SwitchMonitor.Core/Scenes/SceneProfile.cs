@@ -28,9 +28,26 @@ public sealed record SceneSetting(FeatureDefinition Feature, double? Percent, ui
 public sealed record SceneProfile(string Name, IReadOnlyList<SceneSetting> Settings, string? MonitorFilter = null,
     Hotkeys.HotkeyChord? Hotkey = null)
 {
-    /// <summary>True when the scene applies to a monitor (no filter, or the name contains the filter).</summary>
-    public bool AppliesTo(MonitorDevice monitor) =>
-        string.IsNullOrWhiteSpace(MonitorFilter) || monitor.Name.Contains(MonitorFilter, StringComparison.OrdinalIgnoreCase);
+    /// <summary>
+    /// Stable id of the display the profile is for (<see cref="MonitorIdentity.Key"/>: Windows device id + index), or null.
+    /// When set it decides on its own, so two identical monitors are told apart; the name filter then only labels the
+    /// profile. Profiles saved before this existed have no key and keep matching by name.
+    /// </summary>
+    public string? MonitorKey { get; init; }
+
+    /// <summary>True when the profile is tied to one display (by key or by name) rather than to every display.</summary>
+    public bool IsDisplaySpecific => !string.IsNullOrWhiteSpace(MonitorKey) || !string.IsNullOrWhiteSpace(MonitorFilter);
+
+    /// <summary>
+    /// True when the scene applies to a monitor: no restriction, the same display key, or (without a key) a name that
+    /// contains the filter.
+    /// </summary>
+    public bool AppliesTo(MonitorDevice monitor)
+    {
+        if (!string.IsNullOrWhiteSpace(MonitorKey))
+            return string.Equals(MonitorKey, monitor.Key, StringComparison.OrdinalIgnoreCase);
+        return string.IsNullOrWhiteSpace(MonitorFilter) || monitor.Name.Contains(MonitorFilter, StringComparison.OrdinalIgnoreCase);
+    }
 
     /// <summary>Color that identifies the profile in the app ("#4C8DFF"), or null for the default of its name.</summary>
     public string? Color { get; init; }
@@ -241,7 +258,9 @@ public static class SceneStore
                 ? colorText.ToUpperInvariant() : null;
             string? icon = scene.TryGetProperty("icon", out var i) && i.ValueKind == JsonValueKind.String && i.GetString() is { } iconText
                 && NormalizeIcon(iconText) is { } validIcon ? validIcon : null;
-            result.Add(new SceneProfile(name, parsed, filter, hotkey) { Apps = apps, Color = color, Icon = icon });
+            string? monitorKey = scene.TryGetProperty("monitorKey", out var mk) && mk.ValueKind == JsonValueKind.String
+                && mk.GetString() is { Length: > 0 } keyText ? keyText : null;
+            result.Add(new SceneProfile(name, parsed, filter, hotkey) { Apps = apps, Color = color, Icon = icon, MonitorKey = monitorKey });
         }
         return result;
     }
@@ -359,9 +378,10 @@ public static class SceneStore
     /// <param name="apps">Linked programs; null keeps what the file has.</param>
     /// <param name="color">"#RRGGBB" identifying the profile; null keeps what the file has, "" removes it.</param>
     /// <param name="icon">"glyph:E7FC" or "image:name.png"; null keeps what the file has, "" removes it.</param>
+    /// <param name="monitorKey">Stable display key the profile is tied to; null keeps what the file has, "" removes it.</param>
     public static string Upsert(string json, string? originalName, string name, string? monitor,
         IReadOnlyList<KeyValuePair<string, System.Text.Json.Nodes.JsonNode>> settings, IReadOnlyList<string>? apps = null,
-        string? color = null, string? icon = null)
+        string? color = null, string? icon = null, string? monitorKey = null)
     {
         name = name.Trim();
         if (name.Length == 0) throw new FormatException("A profile needs a name.");
@@ -378,6 +398,11 @@ public static class SceneStore
         scene["name"] = name;
         if (string.IsNullOrWhiteSpace(monitor)) scene.Remove("monitor");
         else scene["monitor"] = monitor.Trim();
+        if (monitorKey is not null)
+        {
+            if (string.IsNullOrWhiteSpace(monitorKey) || string.IsNullOrWhiteSpace(monitor)) scene.Remove("monitorKey");
+            else scene["monitorKey"] = monitorKey.Trim();
+        }
         var values = new System.Text.Json.Nodes.JsonObject();
         foreach (var (key, node) in settings) values[key] = node.DeepClone();
         scene["settings"] = values;
@@ -469,6 +494,7 @@ public static class SceneStore
         var scene = FindScene(ScenesArray(root), name)?.DeepClone() as System.Text.Json.Nodes.JsonObject
             ?? throw new FormatException($"There is no profile called \"{name}\".");
         scene.Remove("hotkey");
+        scene.Remove("monitorKey");   // the id of a display on this computer means nothing on another
         var file = new System.Text.Json.Nodes.JsonObject
         {
             ["app"] = "SwitchMonitor",
@@ -498,6 +524,7 @@ public static class SceneStore
             throw new FormatException("This file is not a SwitchMonitor profile.");
         var scene = (System.Text.Json.Nodes.JsonObject)shared.DeepClone();
         scene.Remove("hotkey");
+        scene.Remove("monitorKey");
         string baseName = ((string?)scene["name"])?.Trim() is { Length: > 0 } n ? n : "Imported profile";
         if (string.Equals(baseName, CustomName, StringComparison.OrdinalIgnoreCase)) baseName = "Custom (imported)";
 
