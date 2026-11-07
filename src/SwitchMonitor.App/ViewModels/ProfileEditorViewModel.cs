@@ -3,7 +3,9 @@ using System.Text.Json.Nodes;
 using System.Windows.Input;
 using SwitchMonitor.Core;
 using SwitchMonitor.App.Automation;
+using SwitchMonitor.Core.Hotkeys;
 using SwitchMonitor.Core.Scenes;
+using SwitchMonitor.Core.Settings;
 using SwitchMonitor.Core.Vcp;
 
 namespace SwitchMonitor.App.ViewModels;
@@ -288,6 +290,7 @@ public sealed class ProfileEditorViewModel : ObservableObject
     private string name = "";
     private bool onlyThisDisplay;
     private string? monitorFilter;
+    private string? monitorKey;      // stable id of the display the profile is tied to (scenes.json "monitorKey"), if it has one
     private bool dirty;
     private bool confirmingDelete;
     private string message = "";
@@ -302,13 +305,20 @@ public sealed class ProfileEditorViewModel : ObservableObject
         this.main = main;
         foreach (var monitor in main.Monitors.Where(m => m.IsControllable)) Sources.Add(monitor);
         Profiles.Add(new ProfileListItem(MainViewModel.CustomName, "", "Your own current settings", IsCustom: true));
+        // Only the profiles of the active display: the ones for every display and the ones tied to this one. Profiles of
+        // other displays are not deleted or changed, just not listed (a profile just saved or asked for is always listed).
+        var listed = main.Selected is { IsControllable: true } active ? active : Sources.FirstOrDefault();
         foreach (var scene in main.SceneProfiles)
+        {
+            bool shown = listed is null || scene.AppliesTo(listed.Device) || string.Equals(scene.Name, select, StringComparison.OrdinalIgnoreCase);
+            if (!shown) { HiddenProfiles++; continue; }
             Profiles.Add(new ProfileListItem(scene.Name, scene.Hotkey?.ToString() ?? "",
                 string.Join(" · ", scene.Settings.Take(4).Select(s => s.ToString())) + (scene.Settings.Count > 4 ? " …" : ""))
             {
                 Color = Icons.ColorForProfile(scene.Name, scene.Color),
                 Icon = scene.Icon
             });
+        }
         foreach (string hex in Icons.ProfileColors) ColorChoices.Add(new ColorChoice(hex, this));
         foreach (var (key, styleName, description) in Icons.IconStyles) IconStyles.Add(new IconStyleChoice(key, styleName, description, this));
         libraryStyle = Icons.PanelStyle;
@@ -336,6 +346,13 @@ public sealed class ProfileEditorViewModel : ObservableObject
     }
 
     public ObservableCollection<ProfileListItem> Profiles { get; } = [];
+
+    /// <summary>Saved profiles tied to other displays: kept as they are, not listed here.</summary>
+    public int HiddenProfiles { get; private set; }
+    public bool HasHiddenProfiles => HiddenProfiles > 0;
+    public string HiddenProfilesText => HiddenProfiles == 1
+        ? "1 profile for another display is not listed. Pick that display on the Displays tab to see it."
+        : $"{HiddenProfiles} profiles for other displays are not listed. Pick those displays on the Displays tab to see them.";
     public ObservableCollection<MonitorViewModel> Sources { get; } = [];
     /// <summary>Normal settings, always part of the profile.</summary>
     public ObservableCollection<ProfileSettingRowViewModel> Rows { get; } = [];
@@ -421,7 +438,7 @@ public sealed class ProfileEditorViewModel : ObservableObject
     public bool IsCustom => isCustom;
     public string Title => isCustom ? "Custom · your current settings"
         : IsNew ? (template is null ? "New profile" : $"New profile · {template} template")
-        : "Edit profile";
+        : name.Trim().Length > 0 ? name.Trim() : "Profile";   // editing: the profile's own name, live as it is typed
     public string SaveLabel => isCustom ? "Apply" : "Save";
     public string SaveToolTip => isCustom
         ? "Set these values on the display as your own settings (Custom)"
@@ -433,7 +450,7 @@ public sealed class ProfileEditorViewModel : ObservableObject
         set
         {
             if (isCustom) value = MainViewModel.CustomName;   // the name of Custom never changes
-            if (Set(ref name, value)) { MarkDirty(); Raise(nameof(IsEditing)); Raise(nameof(ProfileMark)); }
+            if (Set(ref name, value)) { MarkDirty(); Raise(nameof(IsEditing)); Raise(nameof(ProfileMark)); Raise(nameof(Title)); }
         }
     }
 
@@ -445,8 +462,105 @@ public sealed class ProfileEditorViewModel : ObservableObject
 
     public string OnlyThisDisplayLabel => $"Only for {monitorFilter ?? Source?.Name ?? "this display"}";
 
-    public string Hotkey => originalName is null ? "" : main.SceneProfiles.FirstOrDefault(s => s.Name == originalName)?.Hotkey?.ToString() ?? "";
-    public string HotkeyText => Hotkey.Length > 0 ? $"Shortcut: {Hotkey} (change it on the Shortcuts tab)" : "No shortcut (add one on the Shortcuts tab after saving)";
+    // ---- The profile's shortcut, set right here (kept with the profile on Save; the Shortcuts tab shows it too) ----
+    private HotkeyChord? hotkeyDraft;       // what Save will keep
+    private HotkeyChord? hotkeySaved;       // what scenes.json has now
+    private bool capturingHotkey;
+    private string hotkeyMessage = "";
+    private bool hotkeyMessageIsError;
+
+    public string Hotkey => hotkeyDraft?.ToString() ?? "";
+    /// <summary>One keycap per key (Ctrl · Alt · 1).</summary>
+    public IReadOnlyList<string> HotkeyKeys => hotkeyDraft is { } chord ? chord.ToString().Split('+') : [];
+    public bool HasHotkey => hotkeyDraft is not null;
+    /// <summary>Custom keeps its shortcut on the Shortcuts tab; every other profile sets it here.</summary>
+    public bool CanSetHotkey => !isCustom;
+    public bool CanEditHotkey => CanSetHotkey && !IsLocked;
+    public bool IsCapturingHotkey { get => capturingHotkey; private set { if (Set(ref capturingHotkey, value)) { Raise(nameof(HotkeyButtonLabel)); Raise(nameof(HotkeyText)); } } }
+    public string HotkeyButtonLabel => IsCapturingHotkey ? "Press keys…" : HasHotkey ? "Change" : "+ Add";
+    public string HotkeyMessage { get => hotkeyMessage; private set => Set(ref hotkeyMessage, value); }
+    public bool HotkeyMessageIsError { get => hotkeyMessageIsError; private set => Set(ref hotkeyMessageIsError, value); }
+    public bool HasHotkeyMessage => hotkeyMessage.Length > 0;
+
+    public string HotkeyText => isCustom
+        ? (main.Settings.For(HotkeyAction.CustomProfile) is [var chord, ..] ? $"Shortcut: {chord} (change it on the Shortcuts tab)" : "No shortcut (set one on the Shortcuts tab)")
+        : IsCapturingHotkey ? "Press the keys for this profile. Esc cancels."
+        : HasHotkey ? "Shortcut" : "No shortcut";
+
+    public ICommand CaptureHotkeyCommand => captureHotkey ??= new RelayCommand(_ => BeginHotkeyCapture(), _ => CanEditHotkey);
+    public ICommand ClearHotkeyCommand => clearHotkey ??= new RelayCommand(_ => ClearHotkey(), _ => CanEditHotkey && HasHotkey);
+    private ICommand? captureHotkey, clearHotkey;
+
+    private void SetHotkeyDraft(HotkeyChord? chord, bool fromSaved = false)
+    {
+        hotkeyDraft = chord;
+        if (fromSaved) hotkeySaved = chord;
+        Raise(nameof(Hotkey)); Raise(nameof(HotkeyKeys)); Raise(nameof(HasHotkey)); Raise(nameof(HotkeyButtonLabel)); Raise(nameof(HotkeyText));
+        CommandManager.InvalidateRequerySuggested();
+    }
+
+    private void InformHotkey(string text, bool error = false)
+    {
+        HotkeyMessage = text;
+        HotkeyMessageIsError = error;
+        Raise(nameof(HasHotkeyMessage));
+    }
+
+    private void BeginHotkeyCapture()
+    {
+        IsCapturingHotkey = true;
+        main.SetShortcutsPaused(true);   // pressing a profile's own shortcut must record it, not apply it
+        InformHotkey("Ctrl, Alt or Win must be part of every shortcut.");
+    }
+
+    public void CancelHotkeyCapture()
+    {
+        if (!IsCapturingHotkey) return;
+        IsCapturingHotkey = false;
+        main.SetShortcutsPaused(false);
+        InformHotkey("");
+    }
+
+    /// <summary>Modifiers held so far while recording.</summary>
+    public void ShowPendingHotkey(HotkeyModifiers modifiers) =>
+        InformHotkey(modifiers == HotkeyModifiers.None ? "" : modifiers.ToString().Replace(", ", " + ") + " + …");
+
+    /// <summary>A recorded combination: checked first (allowed keys, used by another shortcut or program), then kept as the draft.</summary>
+    public void CaptureHotkey(HotkeyChord chord)
+    {
+        if (!IsCapturingHotkey) return;
+        if (!chord.IsAllowed)
+        {
+            InformHotkey($"{chord} would block normal typing: include Ctrl, Alt or Win. Try again or press Esc.", true);
+            return;
+        }
+        if (chord != hotkeyDraft && main.ShortcutOwner(chord, originalName) is { } owner)
+        {
+            InformHotkey($"{chord} is already used by {owner}. Press another combination or Esc.", true);
+            return;
+        }
+        IsCapturingHotkey = false;
+        main.SetShortcutsPaused(false);
+        if (chord != hotkeyDraft) { SetHotkeyDraft(chord); MarkDirty(); }
+        bool free = main.IsShortcutFree(chord);
+        InformHotkey(free ? $"{chord} will be kept when you Save." : $"{chord} is taken by Windows or another program and may not work.", !free);
+    }
+
+    private void ClearHotkey()
+    {
+        if (hotkeyDraft is null) return;
+        SetHotkeyDraft(null);
+        MarkDirty();
+        InformHotkey("Shortcut removed when you Save.");
+    }
+
+    /// <summary>On Save: writes the shortcut when it changed (the profile is already in scenes.json under <paramref name="savedName"/>).</summary>
+    private void SaveHotkey(string savedName)
+    {
+        if (isCustom || hotkeyDraft == hotkeySaved) return;
+        SceneStore.SaveHotkeys(new Dictionary<string, HotkeyChord?> { [savedName] = hotkeyDraft });
+        hotkeySaved = hotkeyDraft;
+    }
 
     public string DeleteLabel => confirmingDelete ? "Click again to delete" : "Delete";
 
@@ -540,8 +654,10 @@ public sealed class ProfileEditorViewModel : ObservableObject
     /// </summary>
     private async Task StartCustomAsync()
     {
+        CancelHotkeyCapture();
         originalName = null;
-        monitorFilter = null;
+        SetHotkeyDraft(null, fromSaved: true);
+        monitorFilter = null; monitorKey = null;
         template = null;
         building = true;
         try
@@ -577,8 +693,10 @@ public sealed class ProfileEditorViewModel : ObservableObject
     {
         var templateProfile = templateName is null ? null : SceneTemplates.Find(templateName);
         string typed = keepName ? Name : templateProfile is null ? "" : UniqueName(templateProfile.Name);
+        CancelHotkeyCapture();
         originalName = null;
-        monitorFilter = null;
+        if (!keepName) SetHotkeyDraft(null, fromSaved: true);   // a new profile starts without a shortcut (a display change keeps the one typed)
+        monitorFilter = null; monitorKey = null;
         template = templateProfile?.Name;
         LoadColor(templateProfile?.Color ?? Icons.ColorForProfile(typed, null));
         LoadIcon(null);
@@ -653,6 +771,8 @@ public sealed class ProfileEditorViewModel : ObservableObject
             LoadColor(Icons.ColorForProfile(profile.Name, profile.Color));
             LoadIcon(profile.Icon);
             monitorFilter = profile.MonitorFilter;
+            monitorKey = profile.MonitorKey;
+            SetHotkeyDraft(profile.Hotkey, fromSaved: true);
             Name = profile.Name;
             OnlyThisDisplay = !string.IsNullOrWhiteSpace(profile.MonitorFilter);
         }
@@ -690,6 +810,7 @@ public sealed class ProfileEditorViewModel : ObservableObject
         Raise(nameof(AdvancedToolTip));
         Raise(nameof(Hotkey));
         Raise(nameof(HotkeyText));
+        Raise(nameof(CanSetHotkey)); Raise(nameof(CanEditHotkey));
         Raise(nameof(DeleteLabel));
         Raise(nameof(OnlyThisDisplayLabel));
         RaiseAutomation();
@@ -797,6 +918,14 @@ public sealed class ProfileEditorViewModel : ObservableObject
     }
 
     private string? Filter => OnlyThisDisplay ? monitorFilter ?? Source?.Device.Name : null;
+
+    /// <summary>
+    /// The stable id to keep with "only this display": the profile's own, else the source display's (only when it is the
+    /// display an older name-only profile was for); "" when the profile is for every display; null leaves the file as it is.
+    /// </summary>
+    private string? FilterKey => !OnlyThisDisplay ? ""
+        : monitorKey ?? (Source is { } display && (monitorFilter is null ||
+            display.Device.Name.Contains(monitorFilter, StringComparison.OrdinalIgnoreCase)) ? display.Device.Key : null);
 
     private List<KeyValuePair<string, JsonNode>> Lines()
     {
@@ -1219,9 +1348,10 @@ public sealed class ProfileEditorViewModel : ObservableObject
     {
         try
         {
-            string updated = SceneStore.Upsert(SceneStore.ReadText(), originalName, Name, Filter, Lines(), AppList(), ColorToSave(), IconToSave());
+            string updated = SceneStore.Upsert(SceneStore.ReadText(), originalName, Name, Filter, Lines(), AppList(), ColorToSave(), IconToSave(), FilterKey);
             SceneStore.Write(updated);
             string saved = Name.Trim();
+            SaveHotkey(saved);
             main.Report($"Profile \"{saved}\" saved.", true);
             main.ProfilesChanged(saved);
         }

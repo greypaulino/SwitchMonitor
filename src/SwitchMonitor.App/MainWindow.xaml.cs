@@ -12,7 +12,11 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         PreviewKeyDown += (_, e) => Record(e);
-        Deactivated += (_, _) => (DataContext as MainViewModel)?.ShortcutEditor?.CancelCapture();
+        Deactivated += (_, _) =>
+        {
+            (DataContext as MainViewModel)?.ShortcutEditor?.CancelCapture();
+            (DataContext as MainViewModel)?.ProfileEditor?.CancelHotkeyCapture();
+        };
         SourceInitialized += (_, _) =>
         {
             UseDarkTitleBar();
@@ -23,7 +27,11 @@ public partial class MainWindow : Window
             FitFrame();
             AnimateState();
         };
-        Frame.RenderTransform = frameShift;
+        SizeChanged += (_, _) => FitShape();
+        Loaded += (_, _) => FitShape();           // the first size is known only once the window is laid out
+        ContentRendered += (_, _) => FitShape();
+        Frame.RenderTransformOrigin = new Point(0.5, 0.5);
+        Frame.RenderTransform = new System.Windows.Media.TransformGroup { Children = { frameScale, frameShift } };
         Theme.Changed += FitFrame;
         Theme.Changed += FitPointerLight;
         Closed += (_, _) =>
@@ -39,27 +47,106 @@ public partial class MainWindow : Window
     // ---- Minimize, maximize and restore move the window's content: down and out, back up, or a short settle ----
 
     private readonly System.Windows.Media.TranslateTransform frameShift = new();
+    private readonly System.Windows.Media.ScaleTransform frameScale = new(1, 1);
     private WindowState lastState = WindowState.Normal;
     private bool minimizing;
+
+    // ---- Opening and closing from the tray: the content fades and scales between 96 % and 100 % (ease in-out) ----
+
+    private const double HiddenScale = 0.96;
+    private static readonly TimeSpan OpenTime = TimeSpan.FromMilliseconds(260);
+    private static readonly TimeSpan CloseTime = TimeSpan.FromMilliseconds(200);
+    private static readonly System.Windows.Media.Animation.IEasingFunction EaseInOut =
+        new System.Windows.Media.Animation.CubicEase { EasingMode = System.Windows.Media.Animation.EasingMode.EaseInOut };
+    private int motionVersion;      // a newer open/close makes an older one's completion do nothing
+    private bool hiding;
+
+    private void AnimateScaleAndOpacity(double scale, double opacity, TimeSpan time, Action? done)
+    {
+        var scaleX = new System.Windows.Media.Animation.DoubleAnimation(scale, time) { EasingFunction = EaseInOut };
+        var scaleY = new System.Windows.Media.Animation.DoubleAnimation(scale, time) { EasingFunction = EaseInOut };
+        var fade = new System.Windows.Media.Animation.DoubleAnimation(opacity, time) { EasingFunction = EaseInOut };
+        int version = ++motionVersion;
+        fade.Completed += (_, _) => { if (version == motionVersion) done?.Invoke(); };
+        frameScale.BeginAnimation(System.Windows.Media.ScaleTransform.ScaleXProperty, scaleX);
+        frameScale.BeginAnimation(System.Windows.Media.ScaleTransform.ScaleYProperty, scaleY);
+        Frame.BeginAnimation(OpacityProperty, fade);
+    }
+
+    /// <summary>Shows the window from the tray with the entrance (nothing special when it is already shown or animations are off).</summary>
+    public void ShowAnimated()
+    {
+        bool wasHidden = !IsVisible;
+        hiding = false;
+        Show();
+        if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;
+        Activate();
+        if (!Animate) { ++motionVersion; ResetMotion(); return; }
+        if (wasHidden) { Frame.Opacity = 0; frameScale.ScaleX = frameScale.ScaleY = HiddenScale; }
+        // From wherever a closing animation was (a quick close-and-open never jumps), to the full window.
+        AnimateScaleAndOpacity(1, 1, OpenTime, ResetMotion);
+    }
+
+    /// <summary>Hides the window to the tray after the exit animation; the window stays until it finishes.</summary>
+    public void HideAnimated()
+    {
+        if (!IsVisible || hiding) return;
+        if (!Animate) { Hide(); return; }
+        hiding = true;
+        AnimateScaleAndOpacity(HiddenScale, 0, CloseTime, () =>
+        {
+            hiding = false;
+            Hide();
+            ResetMotion();   // the next Show starts clean (ShowAnimated sets the hidden pose again)
+        });
+    }
+
+    private void ResetMotion()
+    {
+        frameScale.BeginAnimation(System.Windows.Media.ScaleTransform.ScaleXProperty, null);
+        frameScale.BeginAnimation(System.Windows.Media.ScaleTransform.ScaleYProperty, null);
+        Frame.BeginAnimation(OpacityProperty, null);
+        frameScale.ScaleX = frameScale.ScaleY = 1;
+        Frame.Opacity = 1;
+    }
 
     private void MinimizeWindow(object sender, RoutedEventArgs e)
     {
         if (!Animate || minimizing) { WindowState = WindowState.Minimized; return; }
         minimizing = true;
-        var drop = new System.Windows.Media.Animation.DoubleAnimation(0, 36, TimeSpan.FromMilliseconds(170))
-        { EasingFunction = new System.Windows.Media.Animation.CubicEase { EasingMode = System.Windows.Media.Animation.EasingMode.EaseIn } };
-        var fade = new System.Windows.Media.Animation.DoubleAnimation(1, 0, TimeSpan.FromMilliseconds(170));
+        var time = TimeSpan.FromMilliseconds(240);
+        var drop = new System.Windows.Media.Animation.DoubleAnimation(0, 40, time) { EasingFunction = EaseInOut };
+        var shrinkX = new System.Windows.Media.Animation.DoubleAnimation(1, 0.94, time) { EasingFunction = EaseInOut };
+        var shrinkY = new System.Windows.Media.Animation.DoubleAnimation(1, 0.94, time) { EasingFunction = EaseInOut };
+        var fade = new System.Windows.Media.Animation.DoubleAnimation(1, 0, time) { EasingFunction = EaseInOut };
         fade.Completed += (_, _) =>
         {
             minimizing = false;
             WindowState = WindowState.Minimized;
         };
         frameShift.BeginAnimation(System.Windows.Media.TranslateTransform.YProperty, drop);
+        frameScale.BeginAnimation(System.Windows.Media.ScaleTransform.ScaleXProperty, shrinkX);
+        frameScale.BeginAnimation(System.Windows.Media.ScaleTransform.ScaleYProperty, shrinkY);
         Frame.BeginAnimation(OpacityProperty, fade);
     }
 
-    private void ToggleMaximize(object sender, RoutedEventArgs e) =>
-        WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
+    /// <summary>Maximize and restore: the content fades out a little, the window changes size, and it fades back in (AnimateState).</summary>
+    private void ToggleMaximize(object sender, RoutedEventArgs e)
+    {
+        var target = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
+        if (!Animate || minimizing) { WindowState = target; return; }
+        minimizing = true;   // one transition at a time
+        var time = TimeSpan.FromMilliseconds(130);
+        var fade = new System.Windows.Media.Animation.DoubleAnimation(1, 0, time) { EasingFunction = EaseInOut };
+        fade.Completed += (_, _) =>
+        {
+            minimizing = false;
+            WindowState = target;
+        };
+        frameScale.BeginAnimation(System.Windows.Media.ScaleTransform.ScaleXProperty, new System.Windows.Media.Animation.DoubleAnimation(1, 0.985, time) { EasingFunction = EaseInOut });
+        frameScale.BeginAnimation(System.Windows.Media.ScaleTransform.ScaleYProperty, new System.Windows.Media.Animation.DoubleAnimation(1, 0.985, time) { EasingFunction = EaseInOut });
+        Frame.BeginAnimation(OpacityProperty, fade);
+    }
 
     /// <summary>Back from the taskbar: the content rises into place; maximized or restored: it settles from a few pixels away.</summary>
     private void AnimateState()
@@ -69,15 +156,18 @@ public partial class MainWindow : Window
         if (WindowState == WindowState.Minimized) return;
         if (!Animate)
         {
+            ResetMotion();
             frameShift.BeginAnimation(System.Windows.Media.TranslateTransform.YProperty, null);
-            Frame.BeginAnimation(OpacityProperty, null);
             return;
         }
-        double from = previous == WindowState.Minimized ? 36 : 14;
+        bool fromTaskbar = previous == WindowState.Minimized;
+        var time = TimeSpan.FromMilliseconds(fromTaskbar ? 280 : 240);
+        double scale = fromTaskbar ? 0.94 : 0.985;
         frameShift.BeginAnimation(System.Windows.Media.TranslateTransform.YProperty,
-            new System.Windows.Media.Animation.DoubleAnimation(from, 0, TimeSpan.FromMilliseconds(previous == WindowState.Minimized ? 240 : 200)) { EasingFunction = EaseOut });
-        Frame.BeginAnimation(OpacityProperty,
-            new System.Windows.Media.Animation.DoubleAnimation(previous == WindowState.Minimized ? 0 : 0.6, 1, TimeSpan.FromMilliseconds(180)));
+            new System.Windows.Media.Animation.DoubleAnimation(fromTaskbar ? 40 : 0, 0, time) { EasingFunction = EaseInOut });
+        frameScale.BeginAnimation(System.Windows.Media.ScaleTransform.ScaleXProperty, new System.Windows.Media.Animation.DoubleAnimation(scale, 1, time) { EasingFunction = EaseInOut });
+        frameScale.BeginAnimation(System.Windows.Media.ScaleTransform.ScaleYProperty, new System.Windows.Media.Animation.DoubleAnimation(scale, 1, time) { EasingFunction = EaseInOut });
+        Frame.BeginAnimation(OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(0, 1, time) { EasingFunction = EaseInOut });
     }
 
     private void CloseWindow(object sender, RoutedEventArgs e) => Close();   // the app keeps running in the tray
@@ -101,8 +191,16 @@ public partial class MainWindow : Window
             ? System.Windows.Media.Color.FromArgb(0x48, 0xFF, 0xFF, 0xFF)    // a brighter edge reads over the blur
             : System.Windows.Media.Color.FromArgb(0x30, 0xFF, 0xFF, 0xFF));
         Theme.FitWindow(this, translucent);
+        FitShape();
         MaximizeButton.Content = maximized ? "\uE923" : "\uE922";
         MaximizeButton.ToolTip = maximized ? "Restore" : "Maximize";
+    }
+
+    /// <summary>Translucent: the window is cut to its rounded frame, so the blur behind it has no square corner (not when maximized).</summary>
+    private void FitShape()
+    {
+        bool translucent = Theme.Current.Appearance == Core.Settings.Appearance.Translucent;
+        Theme.RoundWindow(this, Theme.TranslucentCornerRadius, translucent && WindowState != WindowState.Maximized);
     }
 
     /// <summary>How far the maximized window reaches past its monitor's work area on each side, in this window's units.</summary>
@@ -170,7 +268,9 @@ public partial class MainWindow : Window
     // ---- Motion: the tab pill slides, views settle in, a soft light follows the pointer ----
 
     /// <summary>Windows' "show animations" setting; off, everything changes at once.</summary>
-    private static bool Animate => SystemParameters.ClientAreaAnimation;
+    // The app's own motion (window open/close, minimize, maximize, views) always runs: Windows' "show animations" switch was
+    // off on the test computer and hid all of it. (A setting to turn it off can be added if wanted.)
+    private static bool Animate => true;
 
     private static readonly System.Windows.Media.Animation.IEasingFunction EaseOut =
         new System.Windows.Media.Animation.CubicEase { EasingMode = System.Windows.Media.Animation.EasingMode.EaseOut };
@@ -348,7 +448,11 @@ public partial class MainWindow : Window
 
     private void Record(KeyEventArgs e)
     {
-        if (DataContext is not MainViewModel { IsShortcutsTab: true, ShortcutEditor: { IsCapturing: true } editor }) return;
+        // Two places record a shortcut: the Shortcuts tab, and the profile editor (a profile's own shortcut).
+        if (DataContext is not MainViewModel model) return;
+        var shortcuts = model is { IsShortcutsTab: true, ShortcutEditor: { IsCapturing: true } } ? model.ShortcutEditor : null;
+        var profile = model is { IsProfilesTab: true, ProfileEditor: { IsCapturingHotkey: true } } ? model.ProfileEditor : null;
+        if (shortcuts is null && profile is null) return;
         e.Handled = true;
         var key = e.Key switch
         {
@@ -365,15 +469,19 @@ public partial class MainWindow : Window
 
         if (modifiers == HotkeyModifiers.None && key == Key.Escape)
         {
-            editor.CancelCapture();
+            shortcuts?.CancelCapture();
+            profile?.CancelHotkeyCapture();
             return;
         }
         uint virtualKey = (uint)KeyInterop.VirtualKeyFromKey(key);
         if (virtualKey == 0 || HotkeyChord.IsModifierKey(virtualKey))
         {
-            editor.ShowPending(modifiers);
+            shortcuts?.ShowPending(modifiers);
+            profile?.ShowPendingHotkey(modifiers);
             return;
         }
-        editor.Capture(new HotkeyChord(modifiers, virtualKey));
+        var chord = new HotkeyChord(modifiers, virtualKey);
+        shortcuts?.Capture(chord);
+        profile?.CaptureHotkey(chord);
     }
 }

@@ -80,8 +80,17 @@ public static class Theme
     /// <summary>Corner radius of the window frame.</summary>
     public const double CornerRadius = 14;
 
-    /// <summary>Translucent keeps the same roundness; Windows 11 rounds the blur behind it (see FitWindow).</summary>
-    public const double TranslucentCornerRadius = CornerRadius;
+    /// <summary>
+    /// Windows 11 rounds the blur behind a window by itself (see FitWindow). Windows 10 cannot: its blur always fills the
+    /// window rectangle and shows as a faint square corner outside a rounded frame, so there the Translucent look is square.
+    /// </summary>
+    public static bool RoundedBlur { get; } = Environment.OSVersion.Version.Build >= 22000;
+
+    /// <summary>Corner radius of the Translucent window frame: round on Windows 11, square on Windows 10.</summary>
+    public static double TranslucentCornerRadius => RoundedBlur ? CornerRadius : 0;
+
+    /// <summary>Corner radius of the panels (brightness, its side panels, the tray menu) in the given look.</summary>
+    public static double PanelCornerRadius(bool translucent) => translucent && !RoundedBlur ? 0 : 16;
 
     /// <summary>Turns Windows' acrylic blur behind the (see-through) window on or off; Windows adds no border or rounding.</summary>
     public static void FitWindow(Window window, bool translucent) => FitWindow(new WindowInteropHelper(window).Handle, translucent);
@@ -97,6 +106,28 @@ public static class Theme
         DwmSetWindowAttribute(handle, DwmCornerPreference, ref corners, sizeof(int));
         SetAccent(handle, translucent);
     }
+
+    /// <summary>
+    /// Cuts a see-through window to its rounded shape. Windows 10 blurs (acrylic) the whole window RECTANGLE and only Windows 11
+    /// rounds that blur, so without this a faint square corner shows outside the rounded frame in the Translucent look.
+    /// </summary>
+    public static void RoundWindow(Window window, double radius, bool on) =>
+        RoundHandle(new WindowInteropHelper(window).Handle, window, window.ActualWidth, window.ActualHeight, radius, on);
+
+    /// <summary>The same for any window handle (a popup's); sizes and radius in device-independent units of <paramref name="dpiSource"/>.</summary>
+    public static void RoundHandle(IntPtr handle, Visual dpiSource, double width, double height, double radius, bool on)
+    {
+        if (handle == IntPtr.Zero) return;
+        if (!on || RoundedBlur || width <= 0 || height <= 0 || radius <= 0) { SetWindowRgn(handle, IntPtr.Zero, true); return; }   // Windows 11 rounds it itself
+        var scale = PresentationSource.FromVisual(dpiSource)?.CompositionTarget?.TransformToDevice ?? Matrix.Identity;
+        int w = (int)Math.Round(width * scale.M11), h = (int)Math.Round(height * scale.M22), d = (int)Math.Round(radius * 2 * scale.M11);
+        IntPtr region = CreateRoundRectRgn(0, 0, w + 1, h + 1, d, d);   // right and bottom are exclusive
+        if (SetWindowRgn(handle, region, true) == 0) DeleteObject(region);   // on success Windows owns the region
+    }
+
+    [DllImport("gdi32.dll")] private static extern IntPtr CreateRoundRectRgn(int left, int top, int right, int bottom, int ellipseWidth, int ellipseHeight);
+    [DllImport("gdi32.dll")] private static extern bool DeleteObject(IntPtr handle);
+    [DllImport("user32.dll")] private static extern int SetWindowRgn(IntPtr window, IntPtr region, bool redraw);
 
     /// <summary>Turns off Windows' show and hide animation for a window that animates itself (the sun panel).</summary>
     public static void NoShowAnimation(IntPtr handle)

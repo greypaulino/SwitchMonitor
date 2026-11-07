@@ -238,11 +238,26 @@ public sealed class SliderControlViewModel(MonitorViewModel owner, MonitorFeatur
         ? $"The monitor does not report {Name.ToLowerInvariant()}; the slider shows the last value set from this app."
         : null);
 
+    private uint levelTop;
+
     public override void Load(MonitorDevice device)
     {
         var raw = device.CurrentValue(Feature.Code);
         uint top = Feature.Definition.Maximum ?? raw.Maximum;
+        levelTop = top;
         loaded = top == 0 ? 0 : Math.Round(raw.Current * 100.0 / top);
+    }
+
+    /// <summary>
+    /// A gradual change (profile) just wrote <paramref name="raw"/> to the display: the slider moves with it, smoothly,
+    /// and nothing is written back.
+    /// </summary>
+    public void Follow(uint raw)
+    {
+        if (levelTop == 0) return;
+        publishing = true;
+        try { Value = raw * 100.0 / levelTop; }
+        finally { publishing = false; }
     }
 
     public override void Publish()

@@ -91,7 +91,7 @@
         </Border.RenderTransform>
         <Grid>
         <!-- The window's look (Settings > Appearance): its ground, the soft corner light and the pointer light -->
-        <Rectangle Fill="{DynamicResource GlowBrush}" IsHitTestVisible="False" RadiusX="15" RadiusY="15" />
+        <Rectangle x:Name="GlowRect" Fill="{DynamicResource GlowBrush}" IsHitTestVisible="False" RadiusX="15" RadiusY="15" />
         <Rectangle x:Name="PointerLight" IsHitTestVisible="False" Opacity="0" RadiusX="15" RadiusY="15">
             <Rectangle.Fill>
                 <RadialGradientBrush x:Name="PointerLightBrush" MappingMode="Absolute" RadiusX="130" RadiusY="130" Center="0,0" GradientOrigin="0,0">
@@ -142,14 +142,15 @@
                                                 Visibility="{Binding IsOn, Converter={StaticResource BoolToVisibility}}" AutomationProperties.Name="Main display" />
                                         <Ellipse Style="{StaticResource SunDot}" />
                                         <!-- The display icon; on a monitor with inputs it is a button that opens them -->
-                                        <Button x:Name="InputsButton" Click="InputsClick" Focusable="False" Margin="-4,0,6,0" Padding="0"
+                                        <Button x:Name="InputsButton" Click="InputsClick" MouseEnter="MonitorIconEnter" Focusable="False" Margin="-4,0,6,0" Padding="0"
                                                 IsHitTestVisible="{Binding HasInputs}" ToolTip="Inputs" AutomationProperties.Name="Inputs">
                                             <Button.Template>
                                                 <ControlTemplate TargetType="Button">
-                                                    <Border x:Name="Box" CornerRadius="7" Padding="5,2" Background="Transparent"
+                                                    <!-- Exactly square (1:1): a fixed side, the icon centered, whatever the DPI -->
+                                                    <Border x:Name="Box" CornerRadius="7" Width="26" Height="26" Background="Transparent"
                                                             BorderBrush="Transparent" BorderThickness="1">
-                                                        <TextBlock x:Name="Icon" Text="{Binding Glyph}" Style="{StaticResource Glyph}" FontSize="13" Margin="0,1,0,0"
-                                                                   Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" />
+                                                        <TextBlock x:Name="Icon" Text="{Binding Glyph}" Style="{StaticResource Glyph}" FontSize="13"
+                                                                   Foreground="{StaticResource MutedBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
                                                     </Border>
                                                     <ControlTemplate.Triggers>
                                                         <!-- A monitor with inputs: drawn as a small button (a laptop keeps a plain icon) -->
@@ -248,24 +249,101 @@
                             <Button.Template>
                                 <ControlTemplate TargetType="Button">
                                     <!-- Fixed square: the ring stays a circle -->
-                                    <Grid Width="28" Height="28" Background="Transparent">
+                                    <Grid x:Name="Root" Width="28" Height="28" Background="Transparent" RenderTransformOrigin="0.5,0.5">
+                                        <Grid.RenderTransform>
+                                            <TransformGroup>
+                                                <ScaleTransform />
+                                                <ScaleTransform />
+                                            </TransformGroup>
+                                        </Grid.RenderTransform>
                                         <Ellipse x:Name="Ring" Width="28" Height="28" Stroke="{Binding EdgeBrush}" StrokeThickness="1.5" Opacity="0" />
                                         <app:ProfileBadge x:Name="Badge" Width="22" Height="22" CornerRadius="11" GlyphSize="12"
                                                           HorizontalAlignment="Center" VerticalAlignment="Center"
                                                           Fill="{Binding ColorBrush}" Glyph="{Binding SolidMark.Text}" GlyphFont="{Binding SolidMark.Font}"
                                                           GlyphWeight="{Binding SolidMark.Weight}" Image="{Binding IconImage}"
                                                           Opacity="0.85" />
+                                        <!-- Hover: a soft light over the badge (its own layer, so it never fights the active state) -->
+                                        <Ellipse x:Name="Light" Width="22" Height="22" Fill="{StaticResource OverlayBrush}" Opacity="0"
+                                                 IsHitTestVisible="False" HorizontalAlignment="Center" VerticalAlignment="Center" />
                                         <!-- Changed by hand since it was applied ("custom"; Save? is on the main window) -->
                                         <Ellipse x:Name="Modified" Width="8" Height="8" Fill="White" Stroke="#FF1C1C1C" StrokeThickness="1.5"
                                                  HorizontalAlignment="Right" VerticalAlignment="Bottom" Visibility="Collapsed" />
                                     </Grid>
+                                    <!-- Same motion as the window's buttons: ease-in-out, 200 ms; hover lights and grows, press shrinks,
+                                         the active profile fades its ring and full color in, disabled dims -->
                                     <ControlTemplate.Triggers>
                                         <Trigger Property="IsMouseOver" Value="True">
-                                            <Setter TargetName="Badge" Property="Opacity" Value="1" />
+                                            <Trigger.EnterActions>
+                                                <BeginStoryboard>
+                                                    <Storyboard>
+                                                        <DoubleAnimation Storyboard.TargetName="Light" Storyboard.TargetProperty="Opacity" To="0.16"
+                                                                         Duration="0:0:0.2" EasingFunction="{StaticResource EaseInOut}" />
+                                                        <DoubleAnimation Storyboard.TargetName="Root" Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[1].(ScaleTransform.ScaleX)" To="1.08"
+                                                                         Duration="0:0:0.2" EasingFunction="{StaticResource EaseInOut}" />
+                                                        <DoubleAnimation Storyboard.TargetName="Root" Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[1].(ScaleTransform.ScaleY)" To="1.08"
+                                                                         Duration="0:0:0.2" EasingFunction="{StaticResource EaseInOut}" />
+                                                    </Storyboard>
+                                                </BeginStoryboard>
+                                            </Trigger.EnterActions>
+                                            <Trigger.ExitActions>
+                                                <BeginStoryboard>
+                                                    <Storyboard>
+                                                        <DoubleAnimation Storyboard.TargetName="Light" Storyboard.TargetProperty="Opacity" To="0"
+                                                                         Duration="0:0:0.2" EasingFunction="{StaticResource EaseInOut}" />
+                                                        <DoubleAnimation Storyboard.TargetName="Root" Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[1].(ScaleTransform.ScaleX)" To="1"
+                                                                         Duration="0:0:0.2" EasingFunction="{StaticResource EaseInOut}" />
+                                                        <DoubleAnimation Storyboard.TargetName="Root" Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[1].(ScaleTransform.ScaleY)" To="1"
+                                                                         Duration="0:0:0.2" EasingFunction="{StaticResource EaseInOut}" />
+                                                    </Storyboard>
+                                                </BeginStoryboard>
+                                            </Trigger.ExitActions>
+                                        </Trigger>
+                                        <Trigger Property="IsPressed" Value="True">
+                                            <Trigger.EnterActions>
+                                                <BeginStoryboard>
+                                                    <Storyboard>
+                                                        <DoubleAnimation Storyboard.TargetName="Root" Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleX)" To="0.92"
+                                                                         Duration="0:0:0.1" EasingFunction="{StaticResource EaseInOut}" />
+                                                        <DoubleAnimation Storyboard.TargetName="Root" Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleY)" To="0.92"
+                                                                         Duration="0:0:0.1" EasingFunction="{StaticResource EaseInOut}" />
+                                                    </Storyboard>
+                                                </BeginStoryboard>
+                                            </Trigger.EnterActions>
+                                            <Trigger.ExitActions>
+                                                <BeginStoryboard>
+                                                    <Storyboard>
+                                                        <DoubleAnimation Storyboard.TargetName="Root" Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleX)" To="1"
+                                                                         Duration="0:0:0.15" EasingFunction="{StaticResource EaseInOut}" />
+                                                        <DoubleAnimation Storyboard.TargetName="Root" Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleY)" To="1"
+                                                                         Duration="0:0:0.15" EasingFunction="{StaticResource EaseInOut}" />
+                                                    </Storyboard>
+                                                </BeginStoryboard>
+                                            </Trigger.ExitActions>
+                                        </Trigger>
+                                        <Trigger Property="IsEnabled" Value="False">
+                                            <Setter TargetName="Root" Property="Opacity" Value="0.45" />
                                         </Trigger>
                                         <DataTrigger Binding="{Binding IsActive}" Value="True">
-                                            <Setter TargetName="Ring" Property="Opacity" Value="1" />
-                                            <Setter TargetName="Badge" Property="Opacity" Value="1" />
+                                            <DataTrigger.EnterActions>
+                                                <BeginStoryboard>
+                                                    <Storyboard>
+                                                        <DoubleAnimation Storyboard.TargetName="Ring" Storyboard.TargetProperty="Opacity" To="1"
+                                                                         Duration="0:0:0.2" EasingFunction="{StaticResource EaseInOut}" />
+                                                        <DoubleAnimation Storyboard.TargetName="Badge" Storyboard.TargetProperty="Opacity" To="1"
+                                                                         Duration="0:0:0.2" EasingFunction="{StaticResource EaseInOut}" />
+                                                    </Storyboard>
+                                                </BeginStoryboard>
+                                            </DataTrigger.EnterActions>
+                                            <DataTrigger.ExitActions>
+                                                <BeginStoryboard>
+                                                    <Storyboard>
+                                                        <DoubleAnimation Storyboard.TargetName="Ring" Storyboard.TargetProperty="Opacity" To="0"
+                                                                         Duration="0:0:0.2" EasingFunction="{StaticResource EaseInOut}" />
+                                                        <DoubleAnimation Storyboard.TargetName="Badge" Storyboard.TargetProperty="Opacity" To="0.85"
+                                                                         Duration="0:0:0.2" EasingFunction="{StaticResource EaseInOut}" />
+                                                    </Storyboard>
+                                                </BeginStoryboard>
+                                            </DataTrigger.ExitActions>
                                         </DataTrigger>
                                         <DataTrigger Binding="{Binding IsModified}" Value="True">
                                             <Setter TargetName="Modified" Property="Visibility" Value="Visible" />
@@ -293,8 +371,6 @@
                     </Border.RenderTransform>
                     <StackPanel>
                         <DockPanel Margin="8,0,4,8">
-                            <Button DockPanel.Dock="Right" Style="{StaticResource IconButton}" Content="&#xE711;" FontSize="10" Width="24" Height="24"
-                                    Focusable="False" Click="ModesClose" ToolTip="Close" AutomationProperties.Name="Close picture modes" />
                             <StackPanel>
                                 <TextBlock Text="Picture mode" FontWeight="SemiBold" />
                                 <TextBlock Text="{Binding ModesDisplayName}" Style="{StaticResource Hint}" FontSize="11" TextTrimming="CharacterEllipsis" />
@@ -303,30 +379,18 @@
                         <ItemsControl ItemsSource="{Binding ModeItems}">
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate DataType="{x:Type vm:ModeItem}">
-                                    <Button Click="ModeClick" Focusable="False" Cursor="Hand" Margin="0,1" AutomationProperties.Name="{Binding Label}">
-                                        <Button.Template>
-                                            <ControlTemplate TargetType="Button">
-                                                <Border x:Name="Box" CornerRadius="9" Padding="10,6" Background="Transparent">
-                                                    <DockPanel>
-                                                        <TextBlock x:Name="Check" DockPanel.Dock="Right" Text="&#xE73E;" Style="{StaticResource Glyph}"
-                                                                   FontSize="11" VerticalAlignment="Center" Visibility="Collapsed" />
-                                                        <TextBlock Text="{Binding Glyph}" Style="{StaticResource Glyph}" FontSize="13" Width="22"
-                                                                   VerticalAlignment="Center"
-                                                                   Visibility="{Binding HasGlyph, Converter={StaticResource BoolToVisibility}}" />
-                                                        <TextBlock Text="{Binding Label}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
-                                                    </DockPanel>
-                                                </Border>
-                                                <ControlTemplate.Triggers>
-                                                    <Trigger Property="IsMouseOver" Value="True">
-                                                        <Setter TargetName="Box" Property="Background" Value="#14FFFFFF" />
-                                                    </Trigger>
-                                                    <DataTrigger Binding="{Binding IsPicked}" Value="True">
-                                                        <Setter TargetName="Box" Property="Background" Value="{StaticResource RaisedBrush}" />
-                                                        <Setter TargetName="Check" Property="Visibility" Value="Visible" />
-                                                    </DataTrigger>
-                                                </ControlTemplate.Triggers>
-                                            </ControlTemplate>
-                                        </Button.Template>
+                                    <Button Click="ModeClick" Focusable="False" Cursor="Hand" Margin="0,1" Padding="10,6"
+                                            Template="{StaticResource ItemButtonTemplate}" app:ButtonMotion.IsSelected="{Binding IsPicked}"
+                                            HorizontalContentAlignment="Stretch" AutomationProperties.Name="{Binding Label}">
+                                        <DockPanel>
+                                            <TextBlock DockPanel.Dock="Right" Text="&#xE73E;" Style="{StaticResource Glyph}"
+                                                       FontSize="11" VerticalAlignment="Center"
+                                                       Visibility="{Binding IsPicked, Converter={StaticResource BoolToVisibility}}" />
+                                            <TextBlock Text="{Binding Glyph}" Style="{StaticResource Glyph}" FontSize="13" Width="22"
+                                                       VerticalAlignment="Center"
+                                                       Visibility="{Binding HasGlyph, Converter={StaticResource BoolToVisibility}}" />
+                                            <TextBlock Text="{Binding Label}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                                        </DockPanel>
                                     </Button>
                                 </DataTemplate>
                             </ItemsControl.ItemTemplate>
@@ -345,8 +409,6 @@
                     </Border.RenderTransform>
                     <StackPanel>
                         <DockPanel Margin="8,0,4,8">
-                            <Button DockPanel.Dock="Right" Style="{StaticResource IconButton}" Content="&#xE711;" FontSize="10" Width="24" Height="24"
-                                    Focusable="False" Click="InputsClose" ToolTip="Close" AutomationProperties.Name="Close inputs" />
                             <StackPanel>
                                 <TextBlock Text="Inputs" FontWeight="SemiBold" />
                                 <TextBlock Text="{Binding Name}" Style="{StaticResource Hint}" FontSize="11" TextTrimming="CharacterEllipsis" />
@@ -357,31 +419,25 @@
                                 <DataTemplate DataType="{x:Type vm:InputViewModel}">
                                     <Grid Margin="0,1">
                                         <Button Command="{Binding SelectCommand}" Focusable="False" Cursor="Hand" AutomationProperties.Name="{Binding Label}"
-                                                ToolTip="Switch to this input">
-                                            <Button.Template>
-                                                <ControlTemplate TargetType="Button">
-                                                    <Border x:Name="Box" CornerRadius="9" Padding="36,7,10,7" Background="Transparent">
-                                                        <DockPanel>
-                                                            <TextBlock x:Name="Check" DockPanel.Dock="Right" Text="&#xE73E;" Style="{StaticResource Glyph}"
-                                                                       FontSize="11" VerticalAlignment="Center" Visibility="Collapsed" />
-                                                            <Path Data="{Binding ConnectorShape}" Width="22" Height="14" Stretch="Uniform" Margin="0,0,10,0"
-                                                                  Stroke="{StaticResource TextBrush}" StrokeThickness="1.4" StrokeLineJoin="Round"
-                                                                  StrokeStartLineCap="Round" StrokeEndLineCap="Round" VerticalAlignment="Center" />
-                                                            <TextBlock x:Name="Label" Text="{Binding Label}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
-                                                        </DockPanel>
-                                                    </Border>
-                                                    <ControlTemplate.Triggers>
-                                                        <Trigger Property="IsMouseOver" Value="True">
-                                                            <Setter TargetName="Box" Property="Background" Value="#14FFFFFF" />
-                                                        </Trigger>
-                                                        <DataTrigger Binding="{Binding IsCurrent}" Value="True">
-                                                            <Setter TargetName="Box" Property="Background" Value="{StaticResource RaisedBrush}" />
-                                                            <Setter TargetName="Check" Property="Visibility" Value="Visible" />
-                                                            <Setter TargetName="Label" Property="FontWeight" Value="SemiBold" />
-                                                        </DataTrigger>
-                                                    </ControlTemplate.Triggers>
-                                                </ControlTemplate>
-                                            </Button.Template>
+                                                ToolTip="Switch to this input" Padding="36,7,10,7"
+                                                Template="{StaticResource ItemButtonTemplate}" app:ButtonMotion.IsSelected="{Binding IsCurrent}"
+                                                HorizontalContentAlignment="Stretch">
+                                            <DockPanel>
+                                                <Path Data="{Binding ConnectorShape}" Width="22" Height="14" Stretch="Uniform" Margin="0,0,10,0"
+                                                      Stroke="{StaticResource TextBrush}" StrokeThickness="1.4" StrokeLineJoin="Round"
+                                                      StrokeStartLineCap="Round" StrokeEndLineCap="Round" VerticalAlignment="Center" />
+                                                <TextBlock Text="{Binding Label}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis">
+                                                    <TextBlock.Style>
+                                                        <Style TargetType="TextBlock">
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding IsCurrent}" Value="True">
+                                                                    <Setter Property="FontWeight" Value="SemiBold" />
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </TextBlock.Style>
+                                                </TextBlock>
+                                            </DockPanel>
                                         </Button>
                                         <ToggleButton Style="{StaticResource CycleToggle}" IsChecked="{Binding InCycle, Mode=TwoWay}" Focusable="False"
                                                       HorizontalAlignment="Left" VerticalAlignment="Center" Margin="10,0,0,0"
@@ -394,7 +450,7 @@
                                 </DataTemplate>
                             </ItemsControl.ItemTemplate>
                         </ItemsControl>
-                        <TextBlock Text="Round switch: Next input stops at this input." Style="{StaticResource Hint}" FontSize="11"
+                        <TextBlock Text="{Binding NextInputText}" Style="{StaticResource Hint}" FontSize="11"
                                    Margin="8,6,4,0" TextWrapping="Wrap" />
                     </StackPanel>
                 </Border>
