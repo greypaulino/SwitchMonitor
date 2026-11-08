@@ -208,9 +208,17 @@ internal sealed class WmiBrightnessTransport : IMonitorTransport
                     names.Add(text);
             }
         }
-        catch (COMException) { }   // No WMI brightness provider: desktops usually have none.
+        catch (Exception error) when (IsWmiFailure(error)) { }   // No WMI brightness provider: desktops usually have none.
         return names;
     }
+
+    /// <summary>
+    /// Any way the WMI automation object can fail when the provider or class is missing or answers with nothing. On a
+    /// desktop (AMD Radeon 780M, 07/11/2026) the query raised a RuntimeBinderException, not a COMException, which escaped
+    /// and stopped the whole display list: no monitor was shown. A WMI failure only means "no built-in panel here".
+    /// </summary>
+    private static bool IsWmiFailure(Exception error) =>
+        error is COMException or Microsoft.CSharp.RuntimeBinder.RuntimeBinderException or InvalidCastException or NullReferenceException;
 
     /// <summary>Computer maker from root\cimv2 Win32_ComputerSystem (e.g. "Dell Inc."), or null.</summary>
     internal static string? ComputerMaker()
@@ -224,7 +232,7 @@ internal sealed class WmiBrightnessTransport : IMonitorTransport
                 return maker as string;
             }
         }
-        catch (COMException) { }
+        catch (Exception error) when (IsWmiFailure(error)) { }
         return null;
     }
 
@@ -240,7 +248,7 @@ internal sealed class WmiBrightnessTransport : IMonitorTransport
                 return model as string;
             }
         }
-        catch (COMException) { }
+        catch (Exception error) when (IsWmiFailure(error)) { }
         return null;
     }
 

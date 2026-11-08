@@ -27,12 +27,17 @@ public static class DisplayNames
         if (device.Quirk?.Name is { Length: > 0 } known) return "Monitor " + known;
         string? brand = Brand(device.Identity.PnpId);
         string? model = device.CachedModel;
-        string rest = model is { Length: > 0 } ? model : device.Identity.FriendlyName.Trim();
+        // The name the monitor reports in its EDID comes first ("Odyssey G5"): the capabilities model can be an internal
+        // codename (the same monitor answers "LEMON23") and Windows often says "Generic PnP Monitor".
+        string rest = device.Identity.Edid?.Name is { Length: > 0 } edidName ? edidName
+            : model is { Length: > 0 } ? model : device.Identity.FriendlyName.Trim();
         if (rest.Length == 0 || rest.StartsWith("Generic", StringComparison.OrdinalIgnoreCase)) rest = "";
         // A long marketing name keeps its first words only (brand and model come first in EDID names).
         var words = rest.Split(' ', StringSplitOptions.RemoveEmptyEntries).Take(3).ToList();
         if (brand is not null && words.Count > 0 && string.Equals(words[0], brand, StringComparison.OrdinalIgnoreCase)) words.RemoveAt(0);
-        string name = string.Join(' ', new[] { brand }.Concat(words.Take(1)).Where(w => !string.IsNullOrEmpty(w)));
+        // A series name followed by a short model ("Odyssey G5") keeps both; a plain model code keeps one.
+        int keep = words.Count >= 2 && !words[0].Any(char.IsDigit) && words[1].Length <= 4 && words[1].Any(char.IsDigit) ? 2 : 1;
+        string name = string.Join(' ', new[] { brand }.Concat(words.Take(keep)).Where(w => !string.IsNullOrEmpty(w)));
         return name.Length == 0 ? "Monitor" : "Monitor " + name;
     }
 

@@ -163,14 +163,54 @@ public static class MonitorEnumerator
                 var quirk = quirks.Match(deviceId);
 
                 bool builtIn = pnp is not null && wmiByPnp.ContainsKey(pnp);
+                // A Samsung Odyssey G5 on an AMD Radeon 780M got an empty handle in one run and a good one in another
+                // (07/11/2026): the driver can be slow to hand it out, and without it the display has no control path.
+                if (physical.hPhysicalMonitor == IntPtr.Zero && !builtIn)
+                    physical.hPhysicalMonitor = AskForHandleAgain(hMonitor, count, i, size, gdiName, log);
                 var identity = new MonitorIdentity($"{deviceId}|{i}", builtIn ? builtInName : description,
-                    deviceId, gdiName, pnp, primary, builtIn) { Label = builtIn ? builtInLabel : null };
+                    deviceId, gdiName, pnp, primary, builtIn) { Label = builtIn ? builtInLabel : null, Edid = Displays.MonitorEdid.ReadFor(deviceId) };
                 var transport = ChooseTransport(physical.hPhysicalMonitor, identity, quirk, options, log, wmiByPnp, usedWmi);
                 result.Add(new MonitorDevice(identity, transport, quirk, log));
             }
         }
         finally { Marshal.FreeHGlobal(buffer); }
         return result;
+    }
+
+    private const int HandleRetries = 3;
+    private const int HandleRetryDelayMs = 300;
+
+    /// <summary>
+    /// Asks Windows again for the DDC/CI handle of one physical monitor that came back empty: up to three more times, 300 ms
+    /// apart. The extra handles the new calls hand out for the other monitors of the same source are given back. Returns
+    /// zero when it never arrives (the display then has no control path, as before).
+    /// </summary>
+    private static IntPtr AskForHandleAgain(IntPtr hMonitor, uint count, int index, int size, string gdiName, ICoreLog log)
+    {
+        for (int attempt = 1; attempt <= HandleRetries; attempt++)
+        {
+            System.Threading.Thread.Sleep(HandleRetryDelayMs);
+            IntPtr again = Marshal.AllocHGlobal(checked((int)count * size));
+            try
+            {
+                if (!NativeMethods.GetPhysicalMonitorsFromHMONITOR(hMonitor, count, again)) continue;
+                IntPtr found = IntPtr.Zero;
+                for (int j = 0; j < count; j++)
+                {
+                    var item = Marshal.PtrToStructure<NativeMethods.PHYSICAL_MONITOR>(again + j * size);
+                    if (j == index) found = item.hPhysicalMonitor;
+                    else if (item.hPhysicalMonitor != IntPtr.Zero) NativeMethods.DestroyPhysicalMonitor(item.hPhysicalMonitor);
+                }
+                if (found != IntPtr.Zero)
+                {
+                    log.Write(LogLevel.Info, $"{gdiName}: the DDC/CI handle was empty; it came on attempt {attempt}/{HandleRetries}.");
+                    return found;
+                }
+            }
+            finally { Marshal.FreeHGlobal(again); }
+        }
+        log.Write(LogLevel.Warning, $"{gdiName}: the DDC/CI handle stayed empty after {HandleRetries} more attempts.");
+        return IntPtr.Zero;
     }
 
     private static IMonitorTransport ChooseTransport(IntPtr handle, MonitorIdentity identity, MonitorQuirk? quirk,

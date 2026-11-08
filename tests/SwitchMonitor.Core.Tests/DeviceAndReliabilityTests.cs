@@ -122,6 +122,18 @@ internal static class DeviceTests
     }
 
     [Test]
+    public static void ASamsungThatReadsZeroForSoundOnIsStillUnmuted()
+    {
+        // Samsung Odyssey G5: writing mute = 2 ("Sound on") reads back 0; writing 1 reads back 1.
+        var fake = new FakeTransport { Capabilities = "(vcp(8D))" };
+        fake.Values[0x8D] = new VcpValue(0, 255);
+        fake.OnWrite = (t, code, value) => t.Values[code] = new VcpValue(value == 2 ? 0u : value, 255);
+        using var monitor = Standard(fake);
+        Assert.Equal(WriteOutcome.Verified, monitor.SetChoice(0x8D, 1), "muted reads 1");
+        Assert.Equal(WriteOutcome.Verified, monitor.SetChoice(0x8D, 2), "sound on reads 0 and is accepted");
+    }
+
+    [Test]
     public static void StuckValueIsMismatch()
     {
         var fake = new FakeTransport { Capabilities = "(vcp(60(11 12)))", OnWrite = (_, _, _) => { } };

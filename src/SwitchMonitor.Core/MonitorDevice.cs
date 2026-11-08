@@ -469,6 +469,9 @@ public sealed class MonitorDevice : IDisposable
                 last = transport.Read(code).Current;
                 answered = true;
                 if (last == expected) return WriteOutcome.Verified;
+                // The standard says mute is 1 and "sound on" is 2, but a Samsung Odyssey G5 answers 0 once the sound is on
+                // (07/11/2026: set 2, read 0, in both directions): that is the unmuted state, not a failed write.
+                if (code == VcpCode.AudioMute && expected == 2 && last == 0) return WriteOutcome.Verified;
             }
             catch (Exception error) when (RetryPolicy.IsTransient(error))
             {
@@ -532,6 +535,9 @@ public sealed record MonitorIdentity(
 {
     /// <summary>Short name for the interface when known at discovery (built-in screens: "Laptop DELL N5050").</summary>
     public string? Label { get; init; }
+
+    /// <summary>What the monitor says about itself (name, serial number, date), read from its EDID; null when unavailable.</summary>
+    public Displays.EdidInfo? Edid { get; init; }
 }
 
 /// <summary>Placeholder for displays that Windows lists but that no transport can control.</summary>
