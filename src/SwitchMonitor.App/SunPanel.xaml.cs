@@ -27,7 +27,7 @@ public partial class SunPanel : Window
     private DateTime hiddenAt = DateTime.MinValue;
     private DateTime stepDown;
     private DateTime lastHoldStep;
-    private bool starHeld, mainHeld;
+    private bool starHeld;
 
     public SunPanel(SunPanelViewModel model)
     {
@@ -35,7 +35,7 @@ public partial class SunPanel : Window
         DataContext = model;
         idle.Tick += (_, _) => { if (!IsMouseOver && !Model.IsTyping && !Model.IsModePending && !ModesPopup.IsMouseOver && !InputsPopup.IsMouseOver) HidePanel(); };
         starTimer.Tick += (_, _) => { starTimer.Stop(); starHeld = true; Model.Linked = !Model.Linked; };
-        mainTimer.Tick += (_, _) => { mainTimer.Stop(); mainHeld = true; Model.SwitchMain(); Place(); };
+        mainTimer.Tick += (_, _) => { mainTimer.Stop(); Model.SwitchMain(); Place(); };
         Deactivated += (_, _) => HidePanel();
         outsideClicks = new Services.OutsideClicks(PanelWindows, HidePanel);
         Closed += (_, _) => outsideClicks.Dispose();
@@ -268,7 +268,7 @@ public partial class SunPanel : Window
         }
         else if (key == Key.M)
         {
-            if (!e.IsRepeat) { mainHeld = false; mainTimer.Start(); }
+            if (!e.IsRepeat) mainTimer.Start();
         }
         else if (sign != 0)
         {

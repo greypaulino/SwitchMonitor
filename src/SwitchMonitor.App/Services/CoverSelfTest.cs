@@ -158,8 +158,8 @@ internal static class CoverSelfTest
     {
         Directory.CreateDirectory(folder);
         var menu = new TrayMenu();
-        IReadOnlyList<TrayMenuItem> sun = [new("Exit", "", () => { }), new("Start With Windows", "", () => { }, () => true)];
-        IReadOnlyList<TrayMenuItem> main = [new("Exit", "", () => { }), new("Shortcuts", Icons.Shortcuts, () => { }), new("Edit a Profile", Icons.Profiles, () => { }), new("Open", "", () => { })];
+        IReadOnlyList<TrayMenuItem> sun = [new("Exit", "\uE711", () => { }), new("Start With Windows", "\uE71D", () => { }, () => true), new("Check Updates", "\uE72C", () => { })];
+        IReadOnlyList<TrayMenuItem> main = [new("Exit", "\uE711", () => { }), new("Shortcuts", Icons.Shortcuts, () => { }), new("Edit a Profile", Icons.Profiles, () => { }), new("Open", "\uE8A7", () => { }), new("Update available > Install Now", "\uE896", () => { })];
         Task.Run(() =>
         {
             dispatcher.Invoke(() => menu.Toggle(sun));

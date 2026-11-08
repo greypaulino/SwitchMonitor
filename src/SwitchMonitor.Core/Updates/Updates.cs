@@ -249,7 +249,21 @@ public sealed class UpdateStore(string? path = null)
     public bool AutoCheck { get; set; } = true;
     public DateTimeOffset? LastCheck { get; set; }
     public string? ETag { get; set; }
+    public string? ETagVersion { get; set; }
     public string? NotifiedVersion { get; set; }
+
+    /// <summary>
+    /// The saved ETag, only for the version that was running when it was saved. "Not modified" means "the answer is the same
+    /// as last time", and last time's answer ("you are up to date") was for that version: asked again by another build (an
+    /// older portable copy, a downgrade) it would wrongly say "up to date" and then forget the tag.
+    /// </summary>
+    public string? ETagFor(string version) => ETagVersion == version ? ETag : null;
+
+    public void SetETag(string version, string? etag)
+    {
+        ETag = etag;
+        ETagVersion = etag is null ? null : version;
+    }
 
     public static UpdateStore Load(string? path = null)
     {
@@ -262,6 +276,7 @@ public sealed class UpdateStore(string? path = null)
             if (root.TryGetProperty("autoCheck", out var a) && a.ValueKind is JsonValueKind.True or JsonValueKind.False) store.AutoCheck = a.GetBoolean();
             if (root.TryGetProperty("lastCheck", out var l) && DateTimeOffset.TryParse(l.GetString(), CultureInfo.InvariantCulture, DateTimeStyles.None, out var when)) store.LastCheck = when;
             store.ETag = root.TryGetProperty("etag", out var e) ? e.GetString() : null;
+            store.ETagVersion = root.TryGetProperty("etagVersion", out var ev) ? ev.GetString() : null;   // an older file has none: its tag is not trusted
             store.NotifiedVersion = root.TryGetProperty("notified", out var n) ? n.GetString() : null;
         }
         catch (Exception error) when (error is IOException or JsonException or UnauthorizedAccessException) { }
@@ -275,7 +290,7 @@ public sealed class UpdateStore(string? path = null)
             Directory.CreateDirectory(Path.GetDirectoryName(file)!);
             File.WriteAllText(file, JsonSerializer.Serialize(new
             {
-                autoCheck = AutoCheck, lastCheck = LastCheck?.ToString("o", CultureInfo.InvariantCulture), etag = ETag, notified = NotifiedVersion
+                autoCheck = AutoCheck, lastCheck = LastCheck?.ToString("o", CultureInfo.InvariantCulture), etag = ETag, etagVersion = ETagVersion, notified = NotifiedVersion
             }, new JsonSerializerOptions { WriteIndented = true }));
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }

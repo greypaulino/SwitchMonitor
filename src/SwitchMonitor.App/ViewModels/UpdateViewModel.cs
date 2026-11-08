@@ -115,9 +115,11 @@ public sealed class UpdateViewModel : ObservableObject
         if (!silent) Status = "Checking for updates…";
         try
         {
-            var result = await feed.CheckAsync(current, store.ETag).ConfigureAwait(true);
+            var result = await feed.CheckAsync(current, store.ETagFor(CurrentVersion)).ConfigureAwait(true);
             if (result.Status != UpdateCheckStatus.Failed) store.LastCheck = DateTimeOffset.Now;
-            store.ETag = result.Status == UpdateCheckStatus.UpToDate ? result.ETag : null;   // only "nothing new" may be answered with 304
+            // Only "nothing new" may be answered with 304, and only for the version that got that answer.
+            if (result.Status == UpdateCheckStatus.UpToDate) store.SetETag(CurrentVersion, result.ETag);
+            else if (result.Status != UpdateCheckStatus.NotModified) store.SetETag(CurrentVersion, null);
             store.Save();
             switch (result.Status)
             {

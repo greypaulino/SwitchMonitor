@@ -292,22 +292,60 @@ public partial class App : Application
         every.Start();
     }
 
-    /// <summary>The sun icon's menu: Exit and Start With Windows (nothing else).</summary>
-    private IReadOnlyList<TrayMenuItem> SunMenu() =>
-    [
-        new("Exit", "\uE711", ExitApp),
-        new("Start With Windows", "\uE71D", () => { if (model is not null) model.StartWithWindows = !model.StartWithWindows; },
-            () => model?.StartWithWindows ?? false)
-    ];
+    /// <summary>The sun icon's menu: Exit, Start With Windows and the update line.</summary>
+    private IReadOnlyList<TrayMenuItem> SunMenu()
+    {
+        var items = new List<TrayMenuItem>
+        {
+            new("Exit", "\uE711", ExitApp),
+            new("Start With Windows", "\uE71D", () => { if (model is not null) model.StartWithWindows = !model.StartWithWindows; },
+                () => model?.StartWithWindows ?? false)
+        };
+        if (UpdateItem() is { } update) items.Add(update);
+        return items;
+    }
 
-    /// <summary>The SwitchMonitor icon's menu: Exit, Shortcuts, Edit a Profile, Open (nothing else).</summary>
-    private IReadOnlyList<TrayMenuItem> MainMenu() =>
-    [
-        new("Exit", "\uE711", ExitApp),
-        new("Shortcuts", Icons.Shortcuts, OpenShortcuts),
-        new("Edit a Profile", Icons.Profiles, EditProfile),
-        new("Open", "\uE8A7", ShowWindow)
-    ];
+    /// <summary>The SwitchMonitor icon's menu: Exit, Shortcuts, Edit a Profile, Open and the update line.</summary>
+    private IReadOnlyList<TrayMenuItem> MainMenu()
+    {
+        var items = new List<TrayMenuItem>
+        {
+            new("Exit", "\uE711", ExitApp),
+            new("Shortcuts", Icons.Shortcuts, OpenShortcuts),
+            new("Edit a Profile", Icons.Profiles, EditProfile),
+            new("Open", "\uE8A7", ShowWindow)
+        };
+        if (UpdateItem() is { } update) items.Add(update);
+        return items;
+    }
+
+    /// <summary>
+    /// The update line of both menus, decided each time a menu opens: "Check Updates", or, once a newer version is known,
+    /// "Update available > Install Now" (the portable edition opens the release page). None for the Store edition and demos.
+    /// </summary>
+    private TrayMenuItem? UpdateItem()
+    {
+        var updates = model?.Updates;
+        if (updates is null || !updates.CanCheck) return null;
+        return updates.IsAvailable
+            ? new TrayMenuItem("Update available > Install Now", "\uE896", () => _ = updates.InstallAsync())
+            : new TrayMenuItem("Check Updates", "\uE72C", () => _ = CheckUpdatesFromMenu(updates));
+    }
+
+    /// <summary>A check asked for from a tray menu: the answer comes as a notice above the tray (the menu has closed).</summary>
+    private async Task CheckUpdatesFromMenu(ViewModels.UpdateViewModel updates)
+    {
+        bool announced = false;
+        void Mark(string _) => announced = true;   // a new version already raises its own notice
+        updates.UpdateFound += Mark;
+        try { await updates.CheckAsync(silent: false); }
+        finally { updates.UpdateFound -= Mark; }
+        if (announced) return;
+        string text = updates.IsAvailable
+            ? $"SwitchMonitor {updates.AvailableVersion} is available. Choose \"Update available > Install Now\" in the tray menu."
+            : updates.Status;
+        if (text.Length > 0) tray?.Balloon("SwitchMonitor update", text, () => { ShowWindow(); if (model is not null) model.IsSettingsTab = true; });
+    }
 
     /// <summary>Shows the window on its Profiles tab (tray menu).</summary>
     private void EditProfile()

@@ -111,6 +111,26 @@ internal static class UpdateTests
         Assert.Equal(UpdateCheckStatus.Failed, new ReleaseFeed(Client(_ => throw new HttpRequestException("offline"))).CheckAsync(Parse("2.0.0")).GetAwaiter().GetResult().Status, "no network");
     }
 
+    [Test]
+    public static void ASavedETagOnlyBelongsToTheVersionThatGotIt()
+    {
+        string file = Path.Combine(Path.GetTempPath(), $"smstore-{Guid.NewGuid():N}.json");
+        try
+        {
+            var store = new UpdateStore(file);
+            store.SetETag("2.0.0", "\"abc\"");
+            store.Save();
+            var again = UpdateStore.Load(file);
+            Assert.Equal("\"abc\"", again.ETagFor("2.0.0"), "the same version may use it");
+            Assert.True(again.ETagFor("1.9.9") is null, "another build must ask without it (a 304 would wrongly say up to date)");
+            again.SetETag("2.0.0", null);
+            Assert.True(again.ETagFor("2.0.0") is null, "cleared");
+            File.WriteAllText(file, "{\"etag\":\"\\\"old\\\"\"}");
+            Assert.True(UpdateStore.Load(file).ETagFor("2.0.0") is null, "a file from before the fix has a tag nobody can vouch for");
+        }
+        finally { File.Delete(file); }
+    }
+
     // ---- The download: nothing is kept unless it is the published installer ----
 
     private sealed class Release
