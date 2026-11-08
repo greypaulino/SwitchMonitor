@@ -363,6 +363,7 @@ public sealed class MonitorViewModel : ObservableObject
                 }
             }
             if (reason is null && control is SliderControlViewModel { Mute.IsOn: true }) reason = "Muted: click the speaker to unmute.";
+            if (reason is null && control.ReportedLocked) reason = "The monitor has locked this control: one of its own modes (eye saver, motion blur reduction) is on.";
             control.SetLock(reason, hide: modeRule && control.Feature.Definition.HideWhenLocked);
         }
         AdvancedHint = AdvancedControls.FirstOrDefault(c => !c.IsShown)?.LockReason is { } why
@@ -461,8 +462,15 @@ public sealed class MonitorViewModel : ObservableObject
         // FreeSync re-syncs the link and the screen goes black for a moment: cover it, write, wait for the display, uncover.
         if (code is byte c && TransitionSource?.Invoke() is { } hooks &&
             Device.Features.FirstOrDefault(f => f.Code == c) is { } feature && SceneApplier.IsDisruptive(feature.Name))
-            return RunAsync(what, device => WithCover(hooks, device, c, action));
+            return RunDisruptiveByHandAsync(what, hooks, c, action);
         return RunAsync(what, action);
+    }
+
+    private async Task<bool> RunDisruptiveByHandAsync(string what, TransitionHooks hooks, byte code, Func<MonitorDevice, WriteOutcome> action)
+    {
+        bool ok = await RunAsync(what, device => WithCover(hooks, device, code, action));
+        if (ok) inputs.ReopenDisplaysAfterResync();
+        return ok;
     }
 
     /// <summary>A gradual change wrote a level to this display: the matching slider follows it (nothing is written back).</summary>

@@ -79,6 +79,9 @@ public abstract class ControlViewModel(MonitorViewModel owner, MonitorFeature fe
     /// <summary>The raw value shown now, for rules such as "only in picture mode Custom" (null for sliders).</summary>
     public virtual uint? RawValue => null;
 
+    /// <summary>The monitor itself says the control is not available now (it answers a value far beyond its maximum).</summary>
+    public virtual bool ReportedLocked => false;
+
     /// <summary>The factory-default group that can reset this control, if the monitor offers it.</summary>
     public DefaultsGroup? ResetGroup { get; init; }
     /// <summary>Known default raw value written by the reset button when no factory command covers the control.</summary>
@@ -201,7 +204,7 @@ public sealed class SliderControlViewModel(MonitorViewModel owner, MonitorFeatur
         if (t >= 1) SyncShown();
     }
 
-    public string ValueText => IsUnread ? "—" : $"{Value:0}%";
+    public string ValueText => IsUnread || lockedByMonitor ? "—" : $"{Value:0}%";
 
     /// <summary>Slider step in percent: 10 for LG sharpness (the monitor takes steps of 10), otherwise 1.</summary>
     public double SmallStep => Feature.Definition.Step is uint step ? step * 100.0 / (Feature.Definition.Maximum ?? 100) : 1;
@@ -239,13 +242,19 @@ public sealed class SliderControlViewModel(MonitorViewModel owner, MonitorFeatur
         : null);
 
     private uint levelTop;
+    private bool lockedByMonitor;
+
+    public override bool ReportedLocked => lockedByMonitor;
 
     public override void Load(MonitorDevice device)
     {
         var raw = device.CurrentValue(Feature.Code);
         uint top = Feature.Definition.Maximum ?? raw.Maximum;
         levelTop = top;
-        loaded = top == 0 ? 0 : Math.Round(raw.Current * 100.0 / top);
+        // A Samsung Odyssey G5 answers 253 (maximum 50 or 10) for brightness, black equalizer and more while its eye saver or
+        // motion blur reduction mode is on: not a value, but "locked by the monitor". Shown as unavailable, not as 100 %.
+        lockedByMonitor = top > 0 && raw.Current > top && raw.Current >= 240;
+        loaded = top == 0 || lockedByMonitor ? 0 : Math.Round(raw.Current * 100.0 / top);
     }
 
     /// <summary>
@@ -351,6 +360,11 @@ public sealed class ChoiceControlViewModel : ControlViewModel
     private ChoiceOption? selected;
     private uint loaded;
     private bool publishing;
+    private bool lockedByMonitor;
+    private ChoiceOption? shownOnly;   // the "current" line added for a value the list does not have
+
+    /// <summary>The monitor answers a value far outside the list (253): one of its own modes has locked this control.</summary>
+    public override bool ReportedLocked => lockedByMonitor;
 
     public ChoiceControlViewModel(MonitorViewModel owner, MonitorFeature feature) : base(owner, feature)
     {
@@ -386,11 +400,15 @@ public sealed class ChoiceControlViewModel : ControlViewModel
         publishing = true;
         try
         {
+            if (shownOnly is not null) { Options.Remove(shownOnly); shownOnly = null; }
             var match = Options.FirstOrDefault(o => o.Value == loaded);
+            lockedByMonitor = match is null && loaded >= 240;
             if (match is null)
             {
                 // The monitor reports a value outside the known list (e.g. a transitional state). Show it, don't offer it.
-                match = ChoiceOption.For(Feature.Definition, loaded, Feature.Definition.DescribeValue(loaded) + " (current)");
+                // 253 and the like (07/11/2026, Odyssey G5 with its eye saver on) mean "locked by the monitor".
+                string label = lockedByMonitor ? "Locked by the monitor" : Feature.Definition.DescribeValue(loaded) + " (current)";
+                match = shownOnly = ChoiceOption.For(Feature.Definition, loaded, label);
                 Options.Insert(0, match);
             }
             Selected = match;
@@ -509,6 +527,12 @@ public interface IInputCoordinator
     /// stays chosen and shows "custom" until its new values are saved into it or it is chosen again.
     /// </summary>
     void SettingChangedByHand(MonitorViewModel monitor, byte? code = null);
+
+    /// <summary>
+    /// A setting that makes the display sync again (FreeSync) was written by hand: after a moment the displays are looked
+    /// up again, so the next change of that kind does not use a control the display has stopped accepting writes on.
+    /// </summary>
+    void ReopenDisplaysAfterResync();
 }
 
 /// <summary>One input button (HDMI 1, DisplayPort 1 ...) with its shortcut and its Next input mark.</summary>

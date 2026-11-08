@@ -649,6 +649,19 @@ public sealed partial class MainViewModel : ObservableObject, IInputCoordinator
     /// A setting changed by hand. A saved profile stays the active one and shows "custom" (its values may now differ);
     /// "Save?" writes them into it, choosing it again brings its saved values back, Custom brings the person's own.
     /// </summary>
+    /// <summary>
+    /// After a FreeSync change made by hand: waits for the panel's own re-reads (0.4 s and 2 s) and for any profile running,
+    /// then looks the displays up again (see <see cref="ApplySceneAsync"/>). Not with demo displays.
+    /// </summary>
+    public async void ReopenDisplaysAfterResync()
+    {
+        if (DeviceSource is not null) return;
+        await Task.Delay(TimeSpan.FromSeconds(3));
+        await applyGate.WaitAsync();
+        try { await RefreshAsync(); }
+        finally { applyGate.Release(); }
+    }
+
     public void SettingChangedByHand(MonitorViewModel monitor, byte? code = null)
     {
         if (activeProfile == CustomName) return;
@@ -834,6 +847,12 @@ public sealed partial class MainViewModel : ObservableObject, IInputCoordinator
             int failed = steps.Count(s => s.Status is SceneStepStatus.Failed or SceneStepStatus.Mismatch);
             Report($"{scene.Name}: " + Summary(steps), failed == 0);
             foreach (var monitor in Monitors) monitor.ShowApplied(steps);
+            // A FreeSync change makes the display sync again. On a Samsung Odyssey G5 (07/11/2026) the control opened before
+            // it then rejected every later write (the second FreeSync change of a session always failed, even 90 s later; a
+            // new session worked): looking the displays up again gives the next change a fresh control.
+            bool resynced = steps.Any(s => (s.Status is SceneStepStatus.Applied or SceneStepStatus.Unconfirmed or SceneStepStatus.Mismatch)
+                && SceneApplier.IsDisruptive(s.Setting));
+            if (resynced && DeviceSource is null) await RefreshAsync();
         }
         finally { applyGate.Release(); }
     }
