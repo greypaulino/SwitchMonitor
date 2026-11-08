@@ -53,6 +53,43 @@
         }
       ],
       "notes": "Ignores standard VCP 0x60 writes; switches through LG vendor code 0xF4. Generic capabilities list an extra DisplayPort code the panel does not have. Picture-mode values are advertised in decimal and the list is wrong (it includes 9, 10 and 44, which are not modes on this unit, and omits HDR Effect = 39), so only the 10 known modes are offered. Learned on DESKTOP-BPMFO0B: Sharpness, Super Resolution+ and Buzzer change no DDC code; Color Temp (Warm, in Custom) changed no code in one try. Gamma (0xFE) reads 18 in HDR Effect and its advertised list (00 01 02) is wrong. Toggling FreeSync also changes the value read back on 0xF4. Write-verified (address 0x51): brightness, contrast, volume, picture mode, response time, FreeSync. Gamma and black stabilizer ignore DDC writes in Custom and FPS Game 1, so they are read-only. Color temperature (0x14): writing 6500 K or 9300 K sets the menu's Color Temp to Custom with that temperature; the menu presets Warm, Medium and Cool are not reachable over DDC, 0x14 does not report them, and User 1 (0x0B) is rejected. Red, green and blue only change in the Custom picture modes (Custom and Custom (Game)); the panel hides them in the others. Deep scan + guided check (2026-10-24): black level red/green/blue (0x6C/0x6E/0x70) are not advertised but write, read back, restore and visibly tint blacks, in Custom and in Reader; default 50. Offered only in the Custom picture modes (with red, green and blue), so other modes do not show black levels alone. Sharpness (0x87) is write-only: writes in steps of 10 visibly change the picture (checked by eye, there and back, in Custom, Custom (Game) and even Reader) but DDC and the menu keep reporting 50, so the app remembers the last value; it is offered only in the Custom picture modes, like the monitor's own menu. Color Temp presets (2026-10-25): the menu and DDC show red/green/blue 50/50/50 and 0x14 = 05 for Custom, Warm, Medium and Cool, so presets are not stored as gains; Warm looks the same as 6500 K and Cool the same as 9300 K (0x14 = 08); Medium has no DDC equivalent and 0x0C stays 35. Profiles (2026-10-25): response time written in Reader, Cinema, FPS Game 1 and Photo goes back to the mode's own value (Reader/Cinema 2, FPS Game 1 1) even 3 s after the mode loaded, and 9300 K in Photo reads back 6500 K, so both are adjustable only in the Custom picture modes. 0x14 values are shown as the menu names: 05 = Warm (looks the same as 6500 K), 08 = Cool (9300 K); profiles written with 6500 K / 9300 K still work through the standard color preset names. FreeSync is a gaming feature: offered in the Custom and game picture modes only. Switching FreeSync re-syncs the HDMI link; afterwards the Intel driver no longer found \\\\.\\DISPLAY2 by name until the display was looked up again."
+    },
+    {
+      "id": "samsung-odyssey-g5",
+      "name": "Samsung Odyssey G5",
+      "pnpIds": [ "SAM7488" ],
+      "controls": [
+        {
+          "vcp": "2D", "name": "Picture mode", "kind": "choice", "notAdvertised": true, "capabilityValues": "ignore", "after": "12",
+          "values": {
+            "00": "Entertain", "01": "Graphic", "02": "Eco", "03": "Game Standard", "04": "RPG",
+            "05": "RTS", "06": "FPS", "07": "Sports", "08": "Original", "09": "Custom"
+          }
+        },
+        { "vcp": "87", "name": "Sharpness", "kind": "continuous" },
+        {
+          "vcp": "F3", "name": "Response time", "kind": "choice", "notAdvertised": true, "capabilityValues": "ignore",
+          "values": { "00": "Standard", "01": "Faster", "02": "Extreme", "03": "Extreme (MBR)" }
+        },
+        {
+          "vcp": "F2", "name": "FreeSync", "kind": "choice", "notAdvertised": true, "capabilityValues": "ignore",
+          "values": { "00": "Off", "01": "On" }
+        },
+        { "vcp": "2F", "name": "Black Equalizer", "kind": "continuous", "notAdvertised": true, "maximum": 10, "default": 5 },
+        {
+          "vcp": "0C", "name": "Low Input Lag", "kind": "choice", "notAdvertised": true, "readOnly": true, "capabilityValues": "ignore",
+          "values": { "00": "Off", "01": "On" }
+        },
+        {
+          "vcp": "14", "name": "Color tone", "aliases": [ "Color preset" ], "kind": "choice", "capabilityValues": "ignore",
+          "values": { "00": "Cool", "01": "Standard", "02": "Warm 1", "03": "Warm 2" }
+        },
+        {
+          "vcp": "2E", "name": "Refresh rate", "kind": "choice", "notAdvertised": true, "readOnly": true, "capabilityValues": "ignore",
+          "values": { "00": "60 Hz", "01": "120 Hz", "02": "144 Hz" }
+        }
+      ],
+      "notes": "Learned 2026-11-07 on DESKTOP-BPMFO0B (the monitor's own menu changed by hand, DDC read-only): Picture mode is 0x2D (not advertised): it reads and WRITES one value per mode (set FPS, read FPS, back to Custom: confirmed). 0xDC (Display Application) shows the same value but ignores writes (also with write source 0x50), and 0xDB (Image Mode) does not follow the mode at all. Each mode loads its own brightness and contrast (Custom keeps the user's 8/50 and 24/50, the others read 50/50, Eco 30/50), color preset (0x14: 1 in Custom and most game modes, 0 in Entertain, 2 in Graphic, Eco and Original) and sharpness (0x87: 13 in RTS, 12 in Sports, 10 elsewhere). Response time is 0xF3 (not advertised): Standard 0, Faster 1, Extreme 2, Extreme (MBR) 3, one value per menu option (07/11/2026, menu changed by hand, DDC read-only); in the MBR mode the brightness reads 253 of 50, i.e. it is locked and not a real value. FreeSync (the menu calls it Adaptive-Sync) is 0xF2: Off 0, On 1, repeatable (menu changed by hand; DDC read-only); changing it makes the display sync again, so the control handle held before stops answering until the display is looked up again. 0xFE (1) does not follow it. Black Equalizer is 0x2F (not advertised), a slider 0 to 10 that the code follows one to one (0, 5, 10, 0 on the menu gave 0, 5, 10, 0); the monitor was at 5. Low Input Lag is 0x0C (not advertised; the standard calls it Color Temperature Request): Off 0, On 1, repeatable (menu changed by hand). It is READ-ONLY over DDC: writing 1 reads back 0, also with write source 0x50, and 2 is not a valid value; it has to be changed in the monitor's own menu. The monitor was On. Eye Saver Mode has no code of its own (Off, Low, High: no code follows it); while Low or High is on, the monitor answers 253 for brightness (0x10), picture mode (0x2D), color preset (0x14) and black equalizer (0x2F), 17 for response time (0xF3) and 50 for contrast, identical in Low and High: 253 means locked by the monitor (the same 253 for brightness in Extreme (MBR)). Color tone is 0x14 with the menu values (not the standard color preset names): Cool 0, Standard 1, Warm 1 2, Warm 2 3; each picture mode loads its own (see above), and 4 is a value the menu names were not checked for (08/11/2026, menu changed by hand). Refresh rate is 0x2E (not advertised): 60 Hz 0, 120 Hz 1, 144 Hz 2 (3 unknown), READ-ONLY over DDC (writing 120 Hz reads back 144 Hz); while it is 60 or 120 Hz the response time (0xF3) reads 17, not available. The Color setting (0, 25, 50) changes no watched code: menu only. Black Level of the HDMI input (Auto, Normal, Low) changes none of the 32 codes watched (08/11/2026): it exists only in the monitor's own menu, like the LG's Sharpness and Buzzer. Mute reads 0 when the sound is on (the standard says 2). Identical over Intel HD 3000 and AMD Radeon 780M. Never write 0x0A (Restore Factory TV Defaults, write-only)."
     }
   ]
 }

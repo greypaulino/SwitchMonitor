@@ -674,7 +674,10 @@ internal static class SceneHotkeyTests
 
         var work = SceneTemplates.Find("work")!;
         Assert.Equal<uint?>(0x0B, work.Settings[0].Value, "LG Custom first");
-        Assert.Equal("Standard", work.Settings[0].Alternatives[0].Feature.DescribeValue(work.Settings[0].Alternatives[0].Value!.Value));
+        // Each monitor model that names its picture modes adds its own alternative (the LG first, then the Samsung G5), and the
+        // standard MCCS name stays among them for monitors the quirk database does not know.
+        Assert.True(work.Settings[0].Alternatives.Any(a => a.Feature.DescribeValue(a.Value!.Value) == "Standard"), "the standard MCCS 'Standard' is still offered");
+        Assert.True(work.Settings[0].Alternatives.Any(a => a.Feature.Code == 0x2D && a.Value == 9), "the Samsung G5's own Custom mode is offered");
         Assert.Equal(80.0, work.Settings[1].Percent);
         Assert.True(SceneTemplates.All.All(t => t.Settings.Any(x => x.Feature.Name == "Brightness" && x.Percent == 80) && t.Settings.Any(x => x.Feature.Name == "Contrast" && x.Percent == 50)), "every template: brightness 80, contrast 50");
         Assert.Equal<uint?>(0x05, work.Settings[3].Value, "6500 K");
@@ -819,7 +822,7 @@ internal static class SceneHotkeyTests
     public static void TwoOptionControlsBecomeSwitches()
     {
         Assert.Equal<(uint, uint)?>((1u, 2u), FeatureCatalog.Mute.OnOffValues([1u, 2u]), "muted = on");
-        var freeSync = QuirkDatabase.LoadEmbedded().All.SelectMany(q => q.Controls).Single(c => c.Name == "FreeSync");
+        var freeSync = QuirkDatabase.LoadEmbedded().All.SelectMany(q => q.Controls).Single(c => c.Name == "FreeSync" && c.Code == 0xF8);   // the LG's; the Samsung G5 names its own (0xF2) the same
         Assert.Equal<(uint, uint)?>((1u, 0u), freeSync.OnOffValues([0u, 1u]));
         Assert.Equal<(uint, uint)?>(null, FeatureCatalog.ColorPreset.OnOffValues([5u, 8u]), "6500 K / 9300 K is not on/off");
     }

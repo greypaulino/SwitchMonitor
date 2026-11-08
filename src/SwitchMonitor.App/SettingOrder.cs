@@ -18,8 +18,9 @@ public static class SettingOrder
             VcpCode.Contrast => 2,
             VcpCode.ColorPreset => 3,
             0x87 => 4,                                       // sharpness
-            0xF7 when name.Contains("response") => 5,
-            0xF8 when name.Contains("freesync") => 6,
+            0xF7 or 0xF3 when name.Contains("response") => 5,
+            0x2F when name.Contains("equalizer") => 5,
+            0xF8 or 0xF2 when name.Contains("freesync") => 6,
             VcpCode.AudioVolume => 7,
             VcpCode.AudioMute => 8,
             _ => 20
