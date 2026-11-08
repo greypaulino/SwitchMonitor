@@ -133,6 +133,49 @@ try
             Console.WriteLine($"  {snapshot.MonitorName}: {snapshot.Values.Count} values read, {snapshot.Errors.Count} unreadable");
         Console.WriteLine($"Snapshot saved to {snapshotPath}");
     }
+    else if (ArgValue(args, "--set") is string setSpec)
+    {
+        // --set 8D=02 --yes [--only SAM7488] : one write that is NOT restored (to put a value back after a test).
+        // Input, power and the reset/command codes are refused here; use the app for those.
+        if (!args.Contains("--yes")) { Console.WriteLine("--set writes to monitors; add --yes to confirm."); return 2; }
+        IReadOnlyList<MonitorDevice> setTargets = ArgValue(args, "--only") is string setOnly
+            ? monitors.Where(m => m.Name.Contains(setOnly, StringComparison.OrdinalIgnoreCase) || m.Identity.DeviceId.Contains(setOnly, StringComparison.OrdinalIgnoreCase)).ToArray()
+            : monitors;
+        foreach (string item in setSpec.Split(',', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var parts = item.Split('=');
+            byte code = byte.Parse(parts[0], System.Globalization.NumberStyles.HexNumber);
+            uint value = uint.Parse(parts[1], System.Globalization.NumberStyles.HexNumber);
+            if (code is VcpCode.InputSource or 0xD6 or 0xF4 || SwitchMonitor.Core.Vcp.FeatureCatalog.IsCommand(code))
+            {
+                Console.WriteLine($"  REFUSED  0x{code:X2}: input, power and reset codes are not written by --set.");
+                exitCode = 1;
+                continue;
+            }
+            foreach (var monitor in setTargets.Where(m => m.IsControllable && m.Features.Any(f => f.Code == code)))
+            {
+                try
+                {
+                    // A slider takes its raw value as a share of its maximum; a list or switch takes the value itself.
+                    if (monitor.Features.First(f => f.Code == code).Kind == FeatureKind.Continuous)
+                    {
+                        uint maximum = monitor.Features.First(f => f.Code == code).Definition.Maximum is { } m ? m : monitor.Read(code).Maximum;
+                        monitor.SetPercent(code, value * 100.0 / maximum);
+                    }
+                    else monitor.SetChoice(code, value);
+                    uint now = 0;
+                    for (int i = 0; i < 16; i++) { Thread.Sleep(500); now = monitor.Read(code).Current; if (now == value) break; }
+                    Console.WriteLine($"  {(now == value ? "PASS" : "FAIL")}  {monitor.Name}: 0x{code:X2} set to 0x{value:X2}, reads 0x{now:X2}");
+                    if (now != value) exitCode = 1;
+                }
+                catch (Exception error) when (error is not OutOfMemoryException)
+                {
+                    Console.WriteLine($"  FAIL  {monitor.Name}: 0x{code:X2} = 0x{value:X2}: {error.Message}");
+                    exitCode = 1;
+                }
+            }
+        }
+    }
     else if (ArgValue(args, "--try-choice") is string spec)
     {
         // --try-choice F7=02,15=30 --yes : visible write test, each value restored afterwards.
@@ -182,7 +225,12 @@ try
             ? list.Split(',').Select(c => byte.Parse(c, System.Globalization.NumberStyles.HexNumber)).ToArray()
             : RoundTripTest.SafeCodes;
         Console.WriteLine($"Round-trip write test ({string.Join(", ", codes.Select(c => c.ToString("X2")))}: +/-1 step, then restore)");
-        foreach (var result in RoundTripTest.Run(monitors, codes))
+        // --only LG: just the monitors whose name or Windows id contains that text (the other monitors are not touched).
+        IReadOnlyList<MonitorDevice> targets = ArgValue(args, "--only") is string only
+            ? monitors.Where(m => m.Name.Contains(only, StringComparison.OrdinalIgnoreCase) || m.Identity.DeviceId.Contains(only, StringComparison.OrdinalIgnoreCase)).ToArray()
+            : monitors;
+        if (targets.Count == 0) Console.WriteLine("No monitor matches --only; nothing was sent.");
+        foreach (var result in RoundTripTest.Run(targets, codes))
         {
             Console.WriteLine("  " + result);
             if (!result.Passed) exitCode = 1;
@@ -224,6 +272,8 @@ static void Describe(MonitorDevice monitor)
         (monitor.IsActive ? "" : "  [OFF: Windows is not using this display]"));
     Console.WriteLine($"  Device:    {id.DeviceId}");
     Console.WriteLine($"  Source:    {(id.GdiName.Length > 0 ? id.GdiName : "-")}   PnP: {id.PnpId ?? "-"}");
+    Console.WriteLine($"  EDID:      {(id.Edid is { } edid ? edid.Describe() : "(not found)")}");
+    Console.WriteLine($"  Shown as:  {DisplayNames.For(monitor)}");
     Console.WriteLine($"  Transport: {monitor.TransportId}{(monitor.Quirk is { } q ? $"   Quirk: {q.Id}" : "")}");
     if (!monitor.IsControllable) return;
 
@@ -548,6 +598,20 @@ static int Watch(IReadOnlyList<MonitorDevice> monitors, byte[] codes, string[] o
         if ((Console.ReadLine() ?? "").Trim().Equals("o", StringComparison.OrdinalIgnoreCase)) continue;
         Thread.Sleep(1500);
         var seen = MenuWatch.Observe(monitor, option, codes);
+        // A setting such as Adaptive-Sync makes the display sync again: the control handle held since the start stops
+        // working (07/11/2026, Odyssey G5), so when nothing answers the display is looked up again, up to four times.
+        for (int attempt = 1; attempt <= 4 && seen.Values.Values.All(v => v is null); attempt++)
+        {
+            Console.WriteLine("    (el monitor no responde; vuelvo a buscar la pantalla...)");
+            Thread.Sleep(2500);
+            var fresh = MonitorEnumerator.Enumerate(CoreOptions.FromDataDirectory(), log: new MemoryLog());
+            var again = fresh.FirstOrDefault(m => m.IsControllable && m.Identity.DeviceId == monitor.Identity.DeviceId);
+            foreach (var other in fresh.Where(m => m != again)) other.Dispose();
+            if (again is null) continue;
+            if (!monitors.Contains(monitor)) monitor.Dispose();
+            monitor = again;
+            seen = MenuWatch.Observe(monitor, option, codes);
+        }
         observations.Add(seen);
         Console.WriteLine("    " + string.Join("  ", seen.Values.Select(v => $"0x{v.Key:X2}={v.Value?.ToString() ?? "-"}")));
     }
