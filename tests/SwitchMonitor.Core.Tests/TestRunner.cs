@@ -62,7 +62,7 @@ internal static class Program
             catch (TargetInvocationException wrapper) when (wrapper.InnerException is not null)
             {
                 failed++;
-                Console.WriteLine($"FAIL  {name}: {wrapper.InnerException.GetType().Name}: {wrapper.InnerException.Message}");
+                Console.WriteLine($"FAIL  {name}: {wrapper.InnerException.GetType().Name}: {wrapper.InnerException.Message}"); if (Environment.GetEnvironmentVariable("SM_TEST_TRACE") == "1") Console.WriteLine(wrapper.InnerException.StackTrace);
             }
         }
 

@@ -206,6 +206,9 @@ public sealed partial class PeerService : ObservableObject, IDisposable
     /// <summary>One client per paired computer; the list in Settings follows the store.</summary>
     private volatile PeerClient[] live = [];
 
+    /// <summary>Every computer connected now (paired by code or members of the group): where a shared clipboard text is sent.</summary>
+    public IReadOnlyList<PeerClient> ConnectedClients => live.Where(c => c.Connected).ToArray();
+
     /// <summary>A connected paired computer (the one with this device id, or any): read from other threads, so from a copy.</summary>
     public PeerClient? ConnectedClient(string? deviceId) =>
         live.FirstOrDefault(c => c.Connected && (deviceId is null || c.Computer.DeviceId == deviceId));

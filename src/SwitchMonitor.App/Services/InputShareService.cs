@@ -376,6 +376,15 @@ public sealed class InputShareService : ObservableObject, IDisposable
         phoneX = Math.Clamp(phoneX + sx, screens.Left, screens.Right - 1);
         phoneY = Math.Clamp(phoneY + sy, screens.Top, screens.Bottom - 1);
         MoveTo((int)Math.Round(phoneX), (int)Math.Round(phoneY), screens);
+        // Shared mouse and keyboard is on: the phone's pointer, pushed against the right or left edge, continues on the other computer
+        // exactly as a real mouse does (and the way back is the same).
+        if (hookThread is not null && !remote && !controlled && (sx != 0 || sy != 0))
+            lock (gate)
+            {
+                int px = (int)Math.Round(phoneX), py = (int)Math.Round(phoneY);
+                foreach (var side in new[] { ShareSide.Right, ShareSide.Left })
+                    if (ShareEdge.Crossed(side, px, py, Math.Sign(sx), 0, screens) && Enter(side, px, py, screens)) { pendX = pendY = 0; break; }
+            }
     }
 
     /// <summary>Every ~4 ms while there is something pending: a third of it, so a burst becomes an even run of small steps.</summary>
@@ -408,6 +417,18 @@ public sealed class InputShareService : ObservableObject, IDisposable
         string op = message.TryGetProperty("op", out var o) ? o.GetString() ?? "" : "";
         int Int(string name) => message.TryGetProperty(name, out var v) && v.TryGetInt32(out int n) ? n : 0;
         bool Flag(string name) => message.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.True;
+        if (remote)
+        {
+            // The phone's pointer went to the other computer: what the phone does goes there (the way back comes from that computer).
+            switch (op)
+            {
+                case "move": Send(new JsonObject { ["op"] = "move", ["dx"] = Math.Clamp(Int("dx"), -2000, 2000), ["dy"] = Math.Clamp(Int("dy"), -2000, 2000) }); break;
+                case "btn": Button(message.TryGetProperty("b", out var rb) ? rb.GetString() ?? "" : "", Flag("down")); break;
+                case "wheel": Send(new JsonObject { ["op"] = "wheel", ["d"] = Math.Clamp(Int("d"), -1200, 1200), ["h"] = Flag("h") }); break;
+                case "key": Send(new JsonObject { ["op"] = "key", ["vk"] = Int("vk"), ["sc"] = 0, ["ext"] = Flag("ext"), ["up"] = Flag("up") }); break;
+            }
+            return;
+        }
         switch (op)
         {
             case "move":
@@ -514,6 +535,13 @@ public sealed class InputShareService : ObservableObject, IDisposable
 
     private static void MouseWheel(int delta, bool horizontal) =>
         Inject(new Input { type = 0, u = new InputUnion { mi = new MouseInput { mouseData = (uint)delta, flags = horizontal ? 0x1000u : 0x0800u } } });
+
+    /// <summary>Presses and releases one key (the media keys of a phone's Remote tab).</summary>
+    public void Tap(int vk)
+    {
+        KeyEvent(vk, 0, false, false);
+        KeyEvent(vk, 0, false, true);
+    }
 
     private static void KeyEvent(int vk, int scan, bool extended, bool up) =>
         Inject(new Input

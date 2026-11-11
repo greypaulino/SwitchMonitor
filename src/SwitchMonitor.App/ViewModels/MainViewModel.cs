@@ -216,6 +216,13 @@ public sealed partial class MainViewModel : ObservableObject, IInputCoordinator
     /// <summary>Settings > Computers (control other computers from this one, their displays in the brightness panel); null in demo mode.</summary>
     public Services.PeerService? Peers { get => peers; set => Set(ref peers, value); }
 
+    /// <summary>The clipboard shared with the group (Settings > Devices); null in demo mode.</summary>
+    public Services.ClipboardSync? Clipboard { get; set; }
+    public Services.FileTransfer? Transfers { get; set; }
+
+    /// <summary>A Windows notification (title, text, what a click does); set by the app once the tray icon exists.</summary>
+    public Action<string, string, Action>? Notify { get; set; }
+
     /// <summary>One mouse and keyboard for two paired computers (Settings > Devices).</summary>
     public Services.InputShareService? Share { get => share; set => Set(ref share, value); }
     private Services.InputShareService? share;

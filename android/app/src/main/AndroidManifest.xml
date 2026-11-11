@@ -6,6 +6,9 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
 
     <application
@@ -39,6 +42,14 @@
             android:taskAffinity="com.greypaulino.switchmonitor.panel"
             android:theme="@style/Theme.SwitchMonitor.Panel" />
 
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/file_paths" />
+        </provider>
+
         <receiver android:name=".surfaces.ControlReceiver" android:exported="false" />
 
         <receiver android:name=".surfaces.LargeWidget" android:exported="false" android:label="SwitchMonitor">
@@ -53,6 +64,11 @@
             <intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE" /></intent-filter>
             <meta-data android:name="android.appwidget.provider" android:resource="@xml/widget_profiles_info" />
         </receiver>
+
+        <!-- Keeps the phone in the group while the app is in the background (Shared clipboard on). -->
+        <service android:name=".data.SyncService" android:exported="false" android:foregroundServiceType="specialUse">
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="Keeps the connection to the user's own computers open so copied text and files arrive" />
+        </service>
 
         <service
             android:name=".surfaces.QuickTile"

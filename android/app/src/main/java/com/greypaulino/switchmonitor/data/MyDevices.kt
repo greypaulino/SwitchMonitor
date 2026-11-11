@@ -137,10 +137,10 @@ internal object MyDevices {
     // ---- Joining, with the code a computer of the group shows ----
 
     /** What this phone sends instead of the code itself. */
-    fun enrollProof(code: String, nonce: String): String = hmac(code, "enroll:$nonce:$deviceId:$publicKey")
+    fun enrollProof(code: String, nonce: String, binding: String = ""): String = hmac(code, "enroll:$nonce:$deviceId:$publicKey" + (if (binding.isNotEmpty()) ":$binding" else ""))
 
     /** What the computer must answer, to show it knew the code. */
-    fun enrollAnswer(code: String, nonce: String, approver: String, ecosystem: String): String = hmac(code, "approver:$nonce:$deviceId:$approver:$ecosystem")
+    fun enrollAnswer(code: String, nonce: String, approver: String, ecosystem: String, binding: String = ""): String = hmac(code, "approver:$nonce:$deviceId:$approver:$ecosystem" + (if (binding.isNotEmpty()) ":$binding" else ""))
 
     private fun hmac(key: String, text: String): String {
         val mac = Mac.getInstance("HmacSHA256").apply { init(SecretKeySpec(key.toByteArray(Charsets.UTF_8), "HmacSHA256")) }

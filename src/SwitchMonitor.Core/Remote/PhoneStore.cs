@@ -37,6 +37,29 @@ public sealed class PhoneStore
     private string? code;
     private DateTimeOffset codeUntil;
     private int codeTries;
+    private readonly Queue<DateTimeOffset> failures = new();
+    private DateTimeOffset blockedUntil = DateTimeOffset.MinValue;
+
+    /// <summary>Wrong codes in all, across every code and connection: this many in <see cref="FailureWindow"/> block pairing for that long.</summary>
+    public const int MaxFailures = 15;
+    public static readonly TimeSpan FailureWindow = TimeSpan.FromMinutes(15);
+
+    /// <summary>True while too many wrong codes were tried (a new code cannot be asked for, and none is accepted).</summary>
+    public bool IsBlocked(DateTimeOffset now) { lock (gate) return now < blockedUntil; }
+
+    private void RecordFailure(DateTimeOffset now)
+    {
+        failures.Enqueue(now);
+        while (failures.Count > 0 && now - failures.Peek() > FailureWindow) failures.Dequeue();
+        if (failures.Count >= MaxFailures) { blockedUntil = now + FailureWindow; failures.Clear(); code = null; }
+    }
+
+    /// <summary>A text from another device made safe to show and to log: no control characters, trimmed, at most <paramref name="max"/> long.</summary>
+    public static string CleanText(string? text, int max = 60)
+    {
+        string clean = new string((text ?? "").Where(c => !char.IsControl(c)).ToArray()).Trim();
+        return clean.Length > max ? clean[..max] : clean;
+    }
 
     public PhoneStore(string? path = null)
     {
@@ -78,16 +101,17 @@ public sealed class PhoneStore
         string token;
         lock (gate)
         {
-            if (code is null || now >= codeUntil) return null;
+            if (now < blockedUntil || code is null || now >= codeUntil) return null;
             if (!CryptographicOperations.FixedTimeEquals(Encoding.ASCII.GetBytes(offeredCode.Trim()), Encoding.ASCII.GetBytes(code)))
             {
                 if (++codeTries >= MaxCodeTries) code = null;
+                RecordFailure(now);
                 return null;
             }
             code = null;   // one phone per code
             token = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
-            string name = string.IsNullOrWhiteSpace(phoneName) ? "Phone" : phoneName.Trim();
-            if (name.Length > 60) name = name[..60];
+            string name = CleanText(phoneName);
+            if (name.Length == 0) name = "Phone";
             var phone = new PairedPhone(Guid.NewGuid().ToString("N")[..12], name, Hash(token), now, kind, deviceId);
             phones.Add(phone);
             secrets[phone.Id] = Encoding.UTF8.GetBytes(token);
@@ -156,9 +180,10 @@ public sealed class PhoneStore
     /// nonce), or null. <paramref name="answer"/> is the computer's proof for that phone: HMAC-SHA256(token, "computer:" +
     /// phone nonce + ":" + computer nonce), so the phone knows it talks to the computer it paired with.
     /// </summary>
-    public PairedPhone? Verify(string computerNonce, string phoneNonce, string proof, out string? answer)
+    public PairedPhone? Verify(string computerNonce, string phoneNonce, string proof, out string? answer, string binding = "")
     {
         answer = null;
+        string tail = binding.Length > 0 ? ":" + binding : "";
         byte[] offered;
         try { offered = Convert.FromBase64String(proof); }
         catch (FormatException) { return null; }
@@ -167,8 +192,8 @@ public sealed class PhoneStore
             foreach (var phone in phones)
             {
                 if (!secrets.TryGetValue(phone.Id, out var key)) continue;
-                if (!CryptographicOperations.FixedTimeEquals(Proof(key, $"phone:{computerNonce}:{phoneNonce}"), offered)) continue;
-                answer = Convert.ToBase64String(Proof(key, $"computer:{phoneNonce}:{computerNonce}"));
+                if (!CryptographicOperations.FixedTimeEquals(Proof(key, $"phone:{computerNonce}:{phoneNonce}{tail}"), offered)) continue;
+                answer = Convert.ToBase64String(Proof(key, $"computer:{phoneNonce}:{computerNonce}{tail}"));
                 return phone;
             }
         return null;

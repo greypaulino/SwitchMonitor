@@ -27,6 +27,15 @@ public sealed partial class PeerService
     public ICommand? LeaveGroupCommand { get; private set; }
     public ICommand? CopyKeyCommand { get; private set; }
 
+    /// <summary>Opens the window where files are dropped on a device of the group.</summary>
+    public ICommand SendFilesCommand => new RelayCommand(_ =>
+    {
+        if (main.Transfers is not { } transfers) return;
+        var window = new SendFilesWindow(transfers);
+        if (System.Windows.Application.Current.Windows.OfType<MainWindow>().FirstOrDefault(w => w.IsVisible) is { } owner) window.Owner = owner;
+        window.ShowDialog();
+    });
+
     public bool InGroup => Eco?.InEcosystem == true;
     public bool NotInGroup => !InGroup;
     public bool HasMembers => Members.Count > 0;

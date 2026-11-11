@@ -30,6 +30,7 @@ public static class Features
         new(9, "\uE82F", "Learn your monitor", "Find settings the app lacks", "Monitors"),
         new(11, "\uE8EA", "Phone as mouse and keyboard", "A touchpad in your pocket", "Devices"),
         new(12, "\uE716", "My devices", "Your computers and phones, one group", "Devices"),
+        new(13, "\uE16F", "Shared clipboard", "Copy on one device, paste on another", "Devices"),
     ];
 
     private static FeatureInfo Item(int order) => All.First(f => f.Order == order);
@@ -40,7 +41,7 @@ public static class Features
         new("\uE7F4", "Your displays", "Brightness, inputs, modes", [Item(1), Item(2), Item(9)]),
         new("\uE765", "Shortcuts and panel", "Keys and a tray panel", [Item(3), Item(4)]),
         new("\uE8A7", "Apps", "Open where you want", [Item(7)]),
-        new("\uE716", "Your devices", "One group, connected", [Item(12), Item(6)]),
+        new("\uE716", "Your devices", "One group, connected", [Item(12), Item(13), Item(6)]),
         new("\uE8EA", "Phone, mouse and keyboard", "One mouse for all", [Item(5), Item(11), Item(8)]),
     ];
 

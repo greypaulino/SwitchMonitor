@@ -25,6 +25,40 @@ public partial class App : Application
     private SunPanel? sunPanel;
     private ViewModels.SunPanelViewModel? sunPanelModel;
     private HotkeyService? hotkeys;
+    private EventWaitHandle? sendSignal;
+    private System.Windows.Threading.DispatcherTimer? sendTimer;
+
+    /// <summary>Files arrived from the Explorer menu (one launch per file): wait a moment for the rest, then open the window.</summary>
+    private void ScheduleSendInbox()
+    {
+        sendTimer?.Stop();
+        sendTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(900) };
+        sendTimer.Tick += (_, _) =>
+        {
+            sendTimer?.Stop();
+            var entries = Services.ExplorerMenu.Take();
+            if (entries.Count == 0 || model?.Transfers is not { } transfers) return;
+            // Sent from a device of the submenu: straight to it, and a notification says how it went.
+            foreach (var group in entries.Where(e => e.Device is not null).GroupBy(e => e.Device!))
+            {
+                var target = transfers.Targets().FirstOrDefault(t => t.Id == group.Key);
+                var paths = group.Select(e => e.Path).ToList();
+                if (target is null) { model.Notify?.Invoke("SwitchMonitor", Loc.T("That device is not connected now."), () => { }); continue; }
+                _ = Task.Run(async () =>
+                {
+                    string? problem = null;
+                    foreach (string path in paths) { problem = await transfers.SendFileAsync(target, path); if (problem is not null) break; }
+                    string text = problem ?? (paths.Count == 1 ? Loc.T($"Sent {System.IO.Path.GetFileName(paths[0])} to {target.Name}.") : Loc.T($"Sent {paths.Count} files to {target.Name}."));
+                    Dispatcher.BeginInvoke(() => model.Notify?.Invoke("SwitchMonitor", text, () => { }));
+                });
+            }
+            var files = entries.Where(e => e.Device is null).Select(e => e.Path).ToList();
+            if (files.Count == 0) return;
+            Services.SendFilesWindow.Open(transfers, files);
+        };
+        sendTimer.Start();
+    }
+
     private bool shortcutsPaused;
     private bool exiting;
     private string? demoScenario;
@@ -116,12 +150,20 @@ public partial class App : Application
             catch (AbandonedMutexException) { first = true; }
         }
         activateSignal = new EventWaitHandle(false, EventResetMode.AutoReset, instanceName + ".Activate");
+        sendSignal = new EventWaitHandle(false, EventResetMode.AutoReset, instanceName + ".Send");
+        var toSend = Services.ExplorerMenu.FilesIn(e.Args);
+        if (toSend.Count > 0) Services.ExplorerMenu.Queue(toSend);   // from the Explorer right-click: the running instance picks them up
         if (!first)
         {
-            activateSignal.Set();
+            if (toSend.Count > 0) sendSignal.Set(); else activateSignal.Set();
             Shutdown();
             return;
         }
+        new Thread(() =>
+        {
+            while (sendSignal.WaitOne() && !exiting) Dispatcher.BeginInvoke(ScheduleSendInbox);
+        }) { IsBackground = true, Name = "SwitchMonitor send files" }.Start();
+        if (toSend.Count > 0) Dispatcher.BeginInvoke(ScheduleSendInbox, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
         var listener = new Thread(() =>
         {
             while (activateSignal.WaitOne() && !exiting) Dispatcher.Invoke(ShowWindow);
@@ -180,6 +222,8 @@ public partial class App : Application
         if (demoScenario is null && log is not null) model.Peers = new Services.PeerService(model, log);
         // One mouse and keyboard for the paired computers (off until turned on in Settings > Devices).
         if (demoScenario is null && log is not null) model.Share = new Services.InputShareService(model, log);
+        // What is copied is shared with the other computers of the group and the phones (off until turned on in Settings > Devices).
+        if (demoScenario is null && log is not null) { model.Transfers = new Services.FileTransfer(model, log); model.Clipboard = new Services.ClipboardSync(model, log); }
 
         if (demoScenario is not null)
         {
@@ -192,6 +236,23 @@ public partial class App : Application
         }
 
         tray = new TrayIcon(ShowWindow, () => trayMenu.Toggle(MainMenu()));
+        if (model is not null) model.Notify = (title, text, click) => tray?.Balloon(title, text, click);
+        if (demoScenario is null && model is not null)
+        {
+            string shown = "\u0000";
+            var refresh = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(4) };
+            refresh.Tick += (_, _) =>
+            {
+                if (model.Transfers is not { } transfers) return;
+                var devices = model.Settings.ExplorerMenu ? transfers.Targets().Select(t => (t.Id, t.Name)).ToList() : [];
+                string signature = model.Settings.ExplorerMenu + "|" + string.Join(",", devices.Select(d => d.Id + d.Name));
+                if (signature == shown) return;
+                shown = signature;
+                Services.ExplorerMenu.Apply(model.Settings.ExplorerMenu, devices);
+            };
+            refresh.Start();
+            refresh.Interval = TimeSpan.FromSeconds(4);
+        }
         StartUpdates();
         hotkeys = new HotkeyService();
         model.ShortcutsChanged += RegisterHotkeys;

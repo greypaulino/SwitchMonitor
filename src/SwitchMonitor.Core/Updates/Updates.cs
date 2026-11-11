@@ -175,7 +175,7 @@ public sealed class UpdateDownloader(HttpClient http, ReleaseFeed feed, bool req
         string expected = UpdateManifest.FindHash(Encoding.UTF8.GetString(manifest), update.InstallerName)
             ?? throw new InvalidDataException("The release has no valid installer checksum.");
 
-        string target = Path.Combine(folder, update.InstallerName);
+        string target = Path.Combine(folder, Path.GetFileName(update.InstallerName));
         string partial = $"{target}.{Environment.ProcessId}.part";
         try
         {

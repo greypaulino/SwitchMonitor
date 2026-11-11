@@ -17,6 +17,7 @@ import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import okio.ByteString
 import org.json.JSONObject
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
@@ -54,6 +55,19 @@ data class RemoteUi(
     val gateway: String = "",
     /** The computer of the group the mouse and keyboard act on ("" = the one connected). */
     val target: String = "",
+    /** What each computer (by device id) offers to open or close, as last asked. */
+    val apps: Map<String, AppsList> = emptyMap(),
+    /** The favorite programs of each computer (kept on this phone). */
+    val favorites: Map<String, List<AppItem>> = emptyMap(),
+    /** The mouse: pointer and scroll speed (1 = as is). */
+    val pointerSpeed: Float = 1f,
+    val scrollSpeed: Float = 1f,
+    /** Brightness moves together across the whole group (the chain / link button with several computers). */
+    val chain: Boolean = false,
+    /** What is copied on this phone is shared with the group, and theirs here (needs the switch on the computers too). */
+    val clipboard: Boolean = false,
+    /** The icons of the favorite programs, by "device id|program". */
+    val icons: Map<String, android.graphics.Bitmap> = emptyMap(),
 )
 
 /**
@@ -86,7 +100,11 @@ object Remote {
     private val _ui = MutableStateFlow(RemoteUi())
     val ui: StateFlow<RemoteUi> = _ui
 
-    @Volatile private var socket: WebSocket? = null
+    // The computer has proved who it is (welcome / memberWelcome checked, or the pairing this phone started finished): only then are
+    // its states, clipboard, files and program lists believed. Before that, a device pretending to be it could push anything.
+    @Volatile private var verified = false
+    @Volatile private var pairingSent = false
+    @Volatile private var socket: SecureSocket? = null
     @Volatile private var wanted = false
     private var retry: Job? = null
     private var messageClear: Job? = null
@@ -102,10 +120,15 @@ object Remote {
             if (host != null) keep(prefs.getString("computer", null) ?: host, host, prefs.getInt("port", DEFAULT_PORT), old)
             prefs.edit().remove("token").apply()
         }
+        val saved = loadFavorites()
+        _ui.update {
+            it.copy(favorites = saved, pointerSpeed = prefs.getFloat("pointerSpeed", 1f), scrollSpeed = prefs.getFloat("scrollSpeed", 1f),
+                chain = prefs.getBoolean("chain", false), clipboard = prefs.getBoolean("clipboardShare", false), icons = loadIcons(saved))
+        }
         val host = prefs.getString("host", null)
         // A known computer starts as Connecting, so the first frame is already the control screen (not the search).
         _ui.update { it.copy(phase = if (host != null) Phase.Connecting else it.phase, host = host, computer = prefs.getString("computer", null), paired = pairedList(), inGroup = MyDevices.inGroup(), group = groupList()) }
-        latest = prefs.getString("lastState", null)?.let { try { parseState(JSONObject(it)) } catch (_: Exception) { null } }
+        latest = prefs.getString("lastState", null)?.let { try { parseState(JSONObject(it)).let { s -> s.copy(displays = s.displays.filter { d -> !d.remote }) } } catch (_: Exception) { null } }
     }
 
     private val savedHost get() = prefs.getString("host", null)
@@ -185,6 +208,7 @@ object Remote {
             if (_ui.value.found.isEmpty()) search()
         }
         hold("app")
+        if (_ui.value.clipboard) SyncService.update(appContext, true)
     }
 
     /** The app went to the background. */
@@ -196,6 +220,7 @@ object Remote {
         wanted = true
         val host = savedHost
         if (host != null && socket == null) open(host, savedPort)
+        startGroupLoop()
     }
 
     @Synchronized
@@ -204,6 +229,8 @@ object Remote {
         if (holders.isNotEmpty()) return
         wanted = false
         retry?.cancel()
+        groupJob?.cancel(); groupJob = null
+        closeLinks()
         socket?.close(1000, null)
         socket = null
     }
@@ -237,8 +264,216 @@ object Remote {
         enrollCode = clean
         _ui.update { it.copy(enrolling = true) }
         s.send(JSONObject().put("type", "enroll").put("deviceId", MyDevices.deviceId).put("name", deviceName()).put("kind", "phone")
-            .put("key", MyDevices.publicKey).put("proof", MyDevices.enrollProof(clean, challenge)).toString())
+            .put("key", MyDevices.publicKey).put("proof", MyDevices.enrollProof(clean, challenge, s.binding)).toString())
     }
+
+    // ---- The group: the phone talks to EVERY computer of "My devices", not to one that passes the others on. Each gives its own
+    // displays; the screen shows them together and a command goes to the computer that owns the display. ----
+
+    private class Link(val deviceId: String, val name: String, val host: String, val port: Int) {
+        @Volatile var socket: SecureSocket? = null
+        @Volatile var state: PcState? = null
+        @Volatile var connected = false
+        @Volatile private var active = true
+        private var challenge = ""
+        private var mine: String? = null
+        private var retry: Job? = null
+
+        fun open() {
+            if (!active) return
+            val secure = SecureSocket()
+            socket = secure
+            connected = false
+            secure.raw = client.newWebSocket(Request.Builder().url("http://$host:$port/ws").build(), object : WebSocketListener() {
+                override fun onMessage(webSocket: WebSocket, text: String) = receive(secure, text, encrypted = false)
+
+                override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+                    if (secure !== socket) return
+                    val plain = secure.decrypt(bytes.toByteArray())
+                    if (plain == null) { secure.close(1000, null); return }   // not the next frame, or changed: the link is closed
+                    receive(secure, plain, encrypted = true)
+                }
+
+                override fun onClosed(webSocket: WebSocket, code: Int, reason: String) = lost(secure)
+                override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) = lost(secure)
+            })
+        }
+
+        private fun receive(secure: SecureSocket, text: String, encrypted: Boolean) {
+            if (secure !== socket) return
+            if (secure.keyed && !encrypted) return   // after the key exchange only encrypted frames count
+            val m = try { JSONObject(text) } catch (_: Exception) { return }
+            val type = m.optString("type")
+            if (!secure.keyed && type != "challenge") return
+            when (type) {
+                "challenge" -> {
+                    if (secure.keyed) return
+                    if (secure.start(m) != null) { secure.close(1000, null); return }
+                    challenge = m.optString("nonce")
+                    val (nonce, hello) = memberHello(challenge, secure.binding)
+                    mine = nonce
+                    secure.send(hello)
+                }
+                "memberWelcome" -> {
+                    MyDevices.merge(m.optJSONArray("members"), m.optJSONArray("revoked"))
+                    val theirs = m.optString("deviceId")
+                    if (theirs != deviceId || mine == null || !MyDevices.verify(theirs, "server:$mine:$challenge:$theirs:${secure.binding}", m.optString("signature"))) {
+                        secure.close(1000, null)
+                        return
+                    }
+                    connected = true
+                    rebuild()
+                }
+                "state" -> {
+                    if (!connected) return
+                    state = try { parseState(m) } catch (_: Exception) { return }
+                    rebuild()
+                }
+                "apps" -> if (connected) appsArrived(deviceId, m)
+                "clip" -> if (connected) clipboardArrived(m.optString("text"))
+                "blob" -> if (connected) Transfers.onBlob(appContext, m)
+            }
+        }
+
+        private fun lost(secure: SecureSocket) {
+            if (secure !== socket) return
+            socket = null
+            connected = false
+            state = null
+            rebuild()
+            if (!active || !wanted) return
+            retry = scope.launch { delay(4000); if (active && wanted && socket == null) open() }
+        }
+
+        fun send(text: String): Boolean = connected && socket?.send(text) == true
+
+        fun close() {
+            active = false
+            retry?.cancel()
+            socket?.close(1000, null)
+            socket = null
+            connected = false
+            state = null
+        }
+    }
+
+    private val links = ConcurrentHashMap<String, Link>()
+    private var groupJob: Job? = null
+
+    /** Opens what a member sends to sign in: its signature of the challenge and what it knows of the group. Returns (our nonce, the message). */
+    private fun memberHello(challenge: String, binding: String): Pair<String, String> {
+        val mine = android.util.Base64.encodeToString(ByteArray(32).also { java.security.SecureRandom().nextBytes(it) }, android.util.Base64.NO_WRAP)
+        val known = MyDevices.export()
+        val hello = JSONObject().put("type", "member").put("deviceId", MyDevices.deviceId).put("nonce", mine)
+            .put("signature", MyDevices.sign("member:$challenge:$mine:${MyDevices.deviceId}:$binding"))
+            .put("members", known.getJSONArray("members")).put("revoked", known.getJSONArray("revoked")).toString()
+        return mine to hello
+    }
+
+    /** While something needs the connection: look for the computers of the group every half minute and keep one link to each. */
+    private fun startGroupLoop() {
+        if (groupJob?.isActive == true || !MyDevices.inGroup()) return
+        groupJob = scope.launch {
+            while (wanted) {
+                if (MyDevices.inGroup() && _ui.value.gateway.isNotEmpty() &&
+                    (MyDevices.computers().any { it.deviceId != _ui.value.gateway && links[it.deviceId]?.connected != true })) search()
+                else syncLinks()
+                delay(30_000)
+            }
+        }
+    }
+
+    /** One link per computer of the group (other than the one the phone connected through), at the address the search found. */
+    private fun syncLinks() {
+        if (!MyDevices.inGroup() || !wanted) { closeLinks(); return }
+        val gateway = _ui.value.gateway
+        val members = MyDevices.computers().filter { it.deviceId != gateway && it.deviceId != MyDevices.deviceId }
+        for ((id, link) in links.entries.toList()) if (members.none { it.deviceId == id }) { link.close(); links.remove(id) }
+        for (m in members) {
+            val found = _ui.value.found.firstOrNull { it.deviceId == m.deviceId } ?: continue
+            val old = links[m.deviceId]
+            if (old != null && old.host == found.host && old.port == found.port) continue
+            old?.close()
+            links[m.deviceId] = Link(m.deviceId, m.name, found.host, found.port).also { it.open() }
+        }
+        rebuild()
+    }
+
+    private fun closeLinks() {
+        for (link in links.values) link.close()
+        links.clear()
+        rebuild()
+    }
+
+    // The state the screens show: every computer's own displays together. What the phone selected is the phone's own choice.
+    @Volatile private var primaryState: PcState? = null
+    @Volatile private var selectedId: String? = null
+    @Volatile private var severalSources = false
+    private val owners = ConcurrentHashMap<String, Pair<String, String>>()   // display id (as shown) -> owner, id for the owner
+    private var selectSentAt = 0L
+
+    @Synchronized private fun rebuild() {
+        val gateway = _ui.value.gateway
+        val sources = mutableListOf<Pair<String, PcState>>()
+        primaryState?.let { sources += gateway to it }
+        for ((id, link) in links) link.state?.let { sources += id to it }
+        if (sources.isEmpty()) {
+            if (_ui.value.state != null) { _ui.update { it.copy(state = null) }; latest = latest }
+            return
+        }
+        val several = sources.size > 1
+        val shown = mutableListOf<Display>()
+        owners.clear()
+        for ((owner, state) in sources) for (d in state.displays.filter { !it.remote }) {
+            val id = if (several) "$owner|${d.id}" else d.id
+            owners[id] = owner to d.id
+            shown += d.copy(id = id, owner = owner, key = d.id)
+        }
+        val chosen = selectedId?.takeIf { s -> shown.any { it.id == s } }
+            ?: shown.firstOrNull { d -> sources.firstOrNull { it.first == d.owner }?.second?.displays?.any { it.id == d.key && it.selected } == true }?.id
+            ?: shown.firstOrNull()?.id
+        selectedId = chosen
+        val displays = shown.map { it.copy(selected = it.id == chosen) }
+        val selected = displays.firstOrNull { it.selected }
+        val ownerState = sources.firstOrNull { it.first == selected?.owner }?.second ?: sources.first().second
+        val base = primaryState ?: sources.first().second
+        // The picture modes and the volume belong to the computer of the selected display (and only while it also has it selected).
+        val ownerFollows = selected == null || ownerState.displays.firstOrNull { it.selected }?.id == selected.key
+        severalSources = several
+        val merged = base.copy(
+            displays = displays,
+            modes = ownerState.modes.takeIf { ownerFollows },
+            volume = ownerState.volume,
+            volumeFor = ownerState.volumeFor,
+            // With several computers the chain button is the phone's: every display of the group moves together.
+            canLink = if (several) displays.count { it.on } > 1 else base.canLink,
+            linked = if (several) _ui.value.chain else base.linked,
+            linkOwner = "",
+        )
+        latest = merged
+        _ui.update { it.copy(state = merged, computer = merged.computer.ifBlank { it.computer }) }
+        changed()
+        // The owner of the selected display must have it selected too, so its modes and volume follow.
+        if (selected != null && !ownerFollows && System.currentTimeMillis() - selectSentAt > 1500) {
+            selectSentAt = System.currentTimeMillis()
+            sendTo(selected.owner, JSONObject().put("type", "select").put("display", selected.key))
+        }
+    }
+
+    /** The message to the computer with this device id (the one connected through, or a link); false when it is not reachable. */
+    private fun sendTo(owner: String, message: JSONObject): Boolean {
+        val text = message.toString()
+        if (owner.isEmpty() || owner == _ui.value.gateway) { send(message); return true }
+        return links[owner]?.send(text) == true
+    }
+
+    /** A command about one display goes to its computer, with the id that computer knows. */
+    private fun sendDisplay(display: String, message: JSONObject) {
+        val (owner, key) = owners[display] ?: ("" to display)
+        sendTo(owner, message.put("display", key))
+    }
+
+    private fun selectedOwner(): String = owners[selectedId ?: ""]?.first ?: ""
 
     // ---- What the widgets, the notification and the tile show: the last state seen, kept across restarts ----
 
@@ -267,6 +502,12 @@ object Remote {
     /** Sends now when connected, else connects, sends once paired-in, and lets the connection go 10 s later. */
     fun background(message: JSONObject) {
         if (savedHost == null) return
+        val shown = message.optString("display")
+        if (shown.isNotEmpty()) {
+            val (owner, key) = owners[shown] ?: ("" to shown)
+            message.put("display", key)
+            if (owner.isNotEmpty() && owner != _ui.value.gateway && links[owner]?.send(message.toString()) == true) return
+        }
         val text = message.toString()
         val s = socket
         if (!(_ui.value.phase == Phase.Connected && s != null && s.send(text))) queue.add(text)
@@ -307,6 +548,7 @@ object Remote {
         scope.launch {
             val found = Discovery.search(appContext)
             _ui.update { it.copy(found = found, searching = false) }
+            syncLinks()
         }
     }
 
@@ -323,7 +565,9 @@ object Remote {
         wanted = true
         socket?.close(1000, null)
         socket = null
+        primaryState = null
         _ui.update { it.copy(host = h, computer = known ?: it.computer.takeIf { sameComputer }, state = null) }
+        rebuild()
         open(h, p)
     }
 
@@ -337,6 +581,9 @@ object Remote {
             socket = null
         }
         prefs.edit().remove("host").remove("computer").remove("lastState").apply()
+        primaryState = null
+        selectedId = null
+        closeLinks()
         latest = null
         changed()
         _ui.update { RemoteUi(phase = Phase.Choose, found = it.found, paired = pairedList()) }
@@ -347,6 +594,7 @@ object Remote {
 
     fun pair(code: String) {
         val name = deviceName()
+        pairingSent = true
         send(JSONObject().put("type", "pair").put("code", code.trim()).put("name", name))
     }
 
@@ -363,7 +611,10 @@ object Remote {
             while (pendingBrightness.isNotEmpty()) {
                 for (key in pendingBrightness.keys.toList()) {
                     val v = pendingBrightness.remove(key) ?: continue
-                    send(JSONObject().put("type", "brightness").put("display", key).put("value", v))
+                    if (severalSources && _ui.value.chain) {
+                        // Chain: every display of the group goes to the same level.
+                        for (d in latest?.displays.orEmpty().filter { it.on && it.ready }) sendDisplay(d.id, JSONObject().put("type", "brightness").put("value", v))
+                    } else sendDisplay(key, JSONObject().put("type", "brightness").put("value", v))
                 }
                 delay(70)
             }
@@ -381,7 +632,7 @@ object Remote {
             while (true) {
                 val v = pendingVolume ?: break
                 pendingVolume = null
-                send(JSONObject().put("type", "volume").put("value", v))
+                sendTo(selectedOwner(), JSONObject().put("type", "volume").put("value", v))
                 delay(70)
             }
         }
@@ -389,23 +640,198 @@ object Remote {
 
     fun mute(on: Boolean) {
         latest?.let { st -> st.volume?.let { latest = st.copy(volume = it.copy(muted = on)); changed() } }
-        send(JSONObject().put("type", "mute").put("on", on))
+        sendTo(selectedOwner(), JSONObject().put("type", "mute").put("on", on))
     }
 
-    fun select(display: String) = send(JSONObject().put("type", "select").put("display", display))
-    fun link(on: Boolean) = send(JSONObject().put("type", "link").put("on", on))
+    fun select(display: String) {
+        selectedId = display
+        selectSentAt = System.currentTimeMillis()   // sent right below: rebuild() must not send it again
+        rebuild()
+        sendDisplay(display, JSONObject().put("type", "select"))
+    }
+    fun link(on: Boolean) {
+        if (severalSources) {
+            // The chain across the group is the phone's own: the displays of every computer follow one slider.
+            prefs.edit().putBoolean("chain", on).apply()
+            _ui.update { it.copy(chain = on) }
+            rebuild()
+        } else send(JSONObject().put("type", "link").put("on", on))
+    }
     fun profile(name: String) = send(JSONObject().put("type", "profile").put("name", name))
-    fun mode(value: Int) = send(JSONObject().put("type", "mode").put("value", value))
-    fun input(display: String, code: Int) = send(JSONObject().put("type", "input").put("display", display).put("code", code))
+    fun mode(value: Int) { sendTo(selectedOwner(), JSONObject().put("type", "mode").put("value", value)) }
+    fun input(display: String, code: Int) = sendDisplay(display, JSONObject().put("type", "input").put("code", code))
     fun cycle(display: String, code: Int, on: Boolean) =
-        send(JSONObject().put("type", "cycle").put("display", display).put("code", code).put("on", on))
+        sendDisplay(display, JSONObject().put("type", "cycle").put("code", code).put("on", on))
+    // ---- The mouse: how fast the pointer and the scroll go ----
+
+    val pointerSpeed: Float get() = _ui.value.pointerSpeed
+    val scrollSpeed: Float get() = _ui.value.scrollSpeed
+
+    fun setPointerSpeed(value: Float) {
+        val v = value.coerceIn(0.4f, 3f)
+        prefs.edit().putFloat("pointerSpeed", v).apply()
+        _ui.update { it.copy(pointerSpeed = v) }
+    }
+
+    fun setScrollSpeed(value: Float) {
+        val v = value.coerceIn(0.4f, 3f)
+        prefs.edit().putFloat("scrollSpeed", v).apply()
+        _ui.update { it.copy(scrollSpeed = v) }
+    }
+
+    // ---- The Remote tab: media keys, programs and power of one computer of the group (the one chosen, or the one connected) ----
+
+    /** The device id of the computer the Remote tab and the mouse act on. */
+    fun aimed(): String = _ui.value.target.ifEmpty { _ui.value.gateway }
+
+    fun media(key: String) { sendTo(aimed(), JSONObject().put("type", "media").put("key", key)) }
+
+    /** Asks the computer for its programs (and the icons of the favorites, which the phone keeps). */
+    fun requestApps() {
+        val owner = aimed()
+        val ids = org.json.JSONArray().also { a -> _ui.value.favorites[owner].orEmpty().forEach { a.put(it.id) } }
+        sendTo(owner, JSONObject().put("type", "apps").put("icons", ids))
+    }
+    fun launch(id: String) { sendTo(aimed(), JSONObject().put("type", "launch").put("id", id)) }
+    fun closeApp(id: String) { sendTo(aimed(), JSONObject().put("type", "closeapp").put("id", id)) }
+    fun power(action: String) { sendTo(aimed(), JSONObject().put("type", "power").put("action", action)) }
+
+    private fun loadFavorites(): Map<String, List<AppItem>> = try {
+        val o = JSONObject(prefs.getString("favorites", "{}") ?: "{}")
+        o.keys().asSequence().associateWith { id ->
+            val a = o.getJSONArray(id)
+            (0 until a.length()).map { a.getJSONObject(it).let { f -> AppItem(f.optString("id"), f.optString("name")) } }
+        }
+    } catch (_: Exception) { emptyMap() }
+
+    private fun saveFavorites(map: Map<String, List<AppItem>>) {
+        val o = JSONObject()
+        for ((id, list) in map) o.put(id, org.json.JSONArray().also { a -> list.forEach { a.put(JSONObject().put("id", it.id).put("name", it.name)) } })
+        prefs.edit().putString("favorites", o.toString()).apply()
+        _ui.update { it.copy(favorites = map) }
+    }
+
+    fun addFavorite(app: AppItem) {
+        val owner = aimed()
+        val map = _ui.value.favorites.toMutableMap()
+        val list = map[owner].orEmpty()
+        if (list.none { it.id == app.id }) map[owner] = list + AppItem(app.id, app.name)
+        saveFavorites(map)
+        requestApps()   // brings its icon
+    }
+
+    fun removeFavorite(id: String) {
+        val owner = aimed()
+        val map = _ui.value.favorites.toMutableMap()
+        map[owner] = map[owner].orEmpty().filter { it.id != id }
+        saveFavorites(map)
+    }
+
+    private fun parseApps(m: JSONObject): AppsList {
+        val a = m.optJSONArray("apps")
+        val items = (0 until (a?.length() ?: 0)).mapNotNull { a?.optJSONObject(it) }
+            .map { AppItem(it.optString("id"), it.optString("name"), it.optBoolean("running")) }
+        return AppsList(m.optBoolean("allowed"), items)
+    }
+
+    private fun iconFile(owner: String, id: String) =
+        java.io.File(java.io.File(appContext.filesDir, "appicons").also { it.mkdirs() }, "${owner}_$id".replace(Regex("[^A-Za-z0-9._-]"), "_") + ".png")
+
+    private fun loadIcons(favorites: Map<String, List<AppItem>>): Map<String, android.graphics.Bitmap> {
+        val map = HashMap<String, android.graphics.Bitmap>()
+        for ((owner, list) in favorites) for (app in list) {
+            val file = iconFile(owner, app.id)
+            if (file.exists()) android.graphics.BitmapFactory.decodeFile(file.path)?.let { map["$owner|${app.id}"] = it }
+        }
+        return map
+    }
+
+    private fun appsArrived(owner: String, m: JSONObject) {
+        val icons = HashMap<String, android.graphics.Bitmap>()
+        m.optJSONObject("icons")?.let { o ->
+            for (id in o.keys()) try {
+                val bytes = android.util.Base64.decode(o.getString(id), android.util.Base64.DEFAULT)
+                iconFile(owner, id).writeBytes(bytes)
+                android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.let { icons["$owner|$id"] = it }
+            } catch (_: Exception) { }
+        }
+        _ui.update { it.copy(apps = it.apps + (owner to parseApps(m)), icons = it.icons + icons) }
+    }
+
+    // ---- The shared clipboard: text copied on this phone goes to every computer of the group, and theirs lands here ----
+
+    @Volatile private var lastClip = ""
+
+    fun setClipboardShare(on: Boolean) {
+        prefs.edit().putBoolean("clipboardShare", on).apply()
+        _ui.update { it.copy(clipboard = on) }
+        SyncService.update(appContext, on)
+    }
+
+    /** Something was copied on this phone (the app's clipboard listener): it goes out when sharing is on. */
+    fun clipboardChanged(text: String) {
+        if (!_ui.value.clipboard || text.isEmpty() || text == lastClip || text.length > 100_000) return
+        lastClip = text
+        val message = JSONObject().put("type", "clip").put("id", java.util.UUID.randomUUID().toString().replace("-", ""))
+            .put("text", text).put("from", MyDevices.deviceId).toString()
+        val s = socket
+        if (s != null && _ui.value.phase == Phase.Connected) s.send(message)
+        for (link in links.values) link.send(message)
+    }
+
+    /** "Send my clipboard now" (the menu): sends what is on the clipboard even if it was copied before sharing was turned on. */
+    fun sendClipboardNow(text: String) {
+        if (!_ui.value.clipboard) { show("Turn on Shared clipboard first."); return }
+        lastClip = ""
+        clipboardChanged(text)
+        show("Clipboard sent.")
+    }
+
+    // ---- What Transfers needs: a short message on screen, and a way to reach the computers ----
+
+    fun notice(text: String) = show(text)
+
+    /** The message to the computer this phone aims at; false when it is not reachable. */
+    fun sendToTarget(message: JSONObject, device: String = ""): Boolean {
+        val ui = _ui.value
+        return sendTo(device.ifEmpty { ui.target.ifEmpty { ui.gateway } }, message)
+    }
+
+    /** The message to every computer of the group this phone is connected to. */
+    fun sendToAll(message: JSONObject) {
+        val text = message.toString()
+        val s = socket
+        if (s != null && _ui.value.phase == Phase.Connected) s.send(text)
+        for (link in links.values) link.send(text)
+    }
+
+    /** Bytes still waiting to go out to the computer this phone aims at. */
+    fun queuedBytes(device: String = ""): Long {
+        val ui = _ui.value
+        val target = device.ifEmpty { ui.target.ifEmpty { ui.gateway } }
+        return (if (target.isEmpty() || target == ui.gateway) socket?.queueSize() else links[target]?.socket?.queueSize()) ?: 0L
+    }
+
+    private fun clipboardArrived(text: String) {
+        if (!_ui.value.clipboard || text.isEmpty() || text == lastClip) return
+        lastClip = text
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            val manager = appContext.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+            manager.setPrimaryClip(android.content.ClipData.newPlainText("SwitchMonitor", text))
+        }
+    }
+
     // ---- The phone as the computer's mouse and keyboard (dropped, never queued, when not connected) ----
 
     private fun sendInput(op: JSONObject) {
         val s = socket
         val ui = _ui.value
-        // Aimed at another computer of the group: the one connected passes it on.
-        if (ui.target.isNotEmpty() && ui.target != ui.gateway) op.put("target", ui.target)
+        if (ui.target.isNotEmpty() && ui.target != ui.gateway) {
+            // Another computer of the group: straight to it when linked, else the one connected passes it on.
+            val link = links[ui.target]
+            if (link?.connected == true) { link.send(op.put("type", "input").toString()); return }
+            op.put("target", ui.target)
+        }
         if (s != null && ui.phase == Phase.Connected) s.send(op.put("type", "input").toString())
     }
 
@@ -442,11 +868,12 @@ object Remote {
     fun button(name: String, down: Boolean) { flushMoves(); sendInput(JSONObject().put("op", "btn").put("b", name).put("down", down)) }
     fun click(name: String) { button(name, true); button(name, false) }
     fun wheel(delta: Int) = sendInput(JSONObject().put("op", "wheel").put("d", delta).put("h", false))
+    fun hwheel(delta: Int) = sendInput(JSONObject().put("op", "wheel").put("d", delta).put("h", true))
     fun key(code: Int, up: Boolean) = sendInput(JSONObject().put("op", "key").put("vk", code).put("up", up))
     fun text(value: String) = sendInput(JSONObject().put("op", "text").put("s", value))
 
-    fun main(display: String) = send(JSONObject().put("type", "main").put("display", display))
-    fun preferred(display: String) = send(JSONObject().put("type", "preferred").put("display", display))
+    fun main(display: String) = sendDisplay(display, JSONObject().put("type", "main"))
+    fun preferred(display: String) = sendDisplay(display, JSONObject().put("type", "preferred"))
 
     private fun send(message: JSONObject) {
         val s = socket
@@ -462,24 +889,42 @@ object Remote {
         retry?.cancel()
         _ui.update { it.copy(phase = if (it.phase == Phase.Offline) Phase.Offline else Phase.Connecting, host = host) }
         val request = Request.Builder().url("http://$host:$port/ws").build()
-        socket = client.newWebSocket(request, Listener())
+        val secure = SecureSocket()
+        socket = secure
+        secure.raw = client.newWebSocket(request, Listener(secure))
     }
 
-    private class Listener : WebSocketListener() {
+    private class Listener(private val secure: SecureSocket) : WebSocketListener() {
         // The computer's answer to our own challenge, expected in "welcome" (see "challenge" below).
         @Volatile private var expected: String? = null
 
         override fun onOpen(webSocket: WebSocket, response: Response) {
-            if (webSocket !== socket) return
+            if (secure !== socket) return
+            verified = false
             // The computer speaks first with a challenge; without a token for it, the code is needed.
             if (!MyDevices.inGroup() && savedHost?.let { tokenFor(prefs.getString("computer", null), it) } == null) _ui.update { it.copy(phase = Phase.NeedCode) }
         }
 
-        override fun onMessage(webSocket: WebSocket, text: String) {
-            if (webSocket !== socket) return
+        override fun onMessage(webSocket: WebSocket, text: String) = receive(text, encrypted = false)
+
+        override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+            if (secure !== socket) return
+            val plain = secure.decrypt(bytes.toByteArray())
+            if (plain == null) { show("The connection to the computer was not safe and was closed."); secure.close(1000, null); return }   // not the next frame, or changed
+            receive(plain, encrypted = true)
+        }
+
+        private fun receive(text: String, encrypted: Boolean) {
+            if (secure !== socket) return
+            val webSocket: WebSocket = secure   // every send below is encrypted
+            if (secure.keyed && !encrypted) return   // after the key exchange only encrypted frames count
             val m = try { JSONObject(text) } catch (_: Exception) { return }
+            if (!secure.keyed && m.optString("type") != "challenge") return   // before the keys only the challenge is believed
             when (m.optString("type")) {
                 "challenge" -> {
+                    if (secure.keyed) return
+                    val problem = secure.start(m)
+                    if (problem != null) { show(problem); secure.close(1000, null); return }
                     challenge = m.optString("nonce")
                     if (MyDevices.inGroup()) {
                         // A member of the group signs the challenge with its key: no token, no code. It tells what it knows of the
@@ -488,32 +933,39 @@ object Remote {
                         memberNonce = mine
                         val known = MyDevices.export()
                         webSocket.send(JSONObject().put("type", "member").put("deviceId", MyDevices.deviceId).put("nonce", mine)
-                            .put("signature", MyDevices.sign("member:$challenge:$mine:${MyDevices.deviceId}"))
+                            .put("signature", MyDevices.sign("member:$challenge:$mine:${MyDevices.deviceId}:${secure.binding}"))
                             .put("members", known.getJSONArray("members")).put("revoked", known.getJSONArray("revoked")).toString())
                         return
                     }
                     val t = savedHost?.let { tokenFor(prefs.getString("computer", null), it) } ?: return
                     signInWithToken(webSocket, t)
                 }
+                "apps" -> if (verified) appsArrived(_ui.value.gateway, m)
+                "clip" -> if (verified) clipboardArrived(m.optString("text"))
+                "blob" -> if (verified) Transfers.onBlob(appContext, m)
                 "memberWelcome" -> {
                     MyDevices.merge(m.optJSONArray("members"), m.optJSONArray("revoked"))
                     val theirs = m.optString("deviceId")
                     val mine = memberNonce
-                    if (mine == null || !MyDevices.verify(theirs, "server:$mine:$challenge:$theirs", m.optString("signature"))) {
+                    if (mine == null || !MyDevices.verify(theirs, "server:$mine:$challenge:$theirs:${secure.binding}", m.optString("signature"))) {
                         show("This computer could not prove it is in your group.")
                         webSocket.close(1000, null)
                         return
                     }
+                    verified = true
                     val name = m.optString("computer")
                     prefs.edit().putString("computer", name).apply()
                     _ui.update { it.copy(phase = Phase.Connected, computer = name, group = groupList(), gateway = theirs) }
                     flushQueue()
+                    links.remove(theirs)?.close()   // the computer connected through is not also a link
+                    startGroupLoop()
+                    scope.launch { if (_ui.value.found.isEmpty()) search() else syncLinks() }
                 }
                 "enrolled" -> {
                     val code = enrollCode
                     val eco = m.optJSONObject("ecosystem")
                     if (code == null || eco == null) return
-                    val answer = MyDevices.enrollAnswer(code, challenge, m.optString("deviceId"), eco.optString("id"))
+                    val answer = MyDevices.enrollAnswer(code, challenge, m.optString("deviceId"), eco.optString("id"), secure.binding)
                     if (!java.security.MessageDigest.isEqual(answer.toByteArray(), m.optString("answer").toByteArray())) {
                         show("That computer could not prove it showed the code.")
                         _ui.update { it.copy(enrolling = false) }
@@ -535,6 +987,10 @@ object Remote {
                     if (host != null) open(host, port)
                 }
                 "paired" -> {
+                    // Only the answer to the pairing this phone asked for: a stray "paired" would replace the saved token.
+                    if (!pairingSent) return
+                    pairingSent = false
+                    verified = true
                     prefs.edit().putString("computer", m.optString("computer")).apply()
                     savedHost?.let { keep(m.optString("computer").ifBlank { it }, it, savedPort, m.optString("token")) }
                     _ui.update { it.copy(phase = Phase.Connected, computer = m.optString("computer"), message = null) }
@@ -548,17 +1004,18 @@ object Remote {
                         webSocket.close(1000, null)
                         return
                     }
+                    verified = true
                     prefs.edit().putString("computer", m.optString("computer")).apply()
                     savedHost?.let { keep(m.optString("computer").ifBlank { it }, it, savedPort, null) }   // its address may have changed
                     _ui.update { it.copy(phase = Phase.Connected, computer = m.optString("computer")) }
                     flushQueue()
                 }
                 "state" -> {
+                    if (!verified) return
                     val state = try { parseState(m) } catch (_: Exception) { return }
-                    _ui.update { it.copy(state = state, computer = state.computer.ifBlank { it.computer }) }
-                    latest = state
+                    primaryState = state
                     prefs.edit().putString("lastState", text).apply()
-                    changed()
+                    rebuild()
                 }
                 "error" -> {
                     _ui.update { it.copy(enrolling = false) }
@@ -581,21 +1038,29 @@ object Remote {
         private fun signInWithToken(webSocket: WebSocket, token: String) {
             val mine = nonce()
             val theirs = challenge
-            expected = proof(token, "computer:$mine:$theirs")
-            webSocket.send(JSONObject().put("type", "hello").put("nonce", mine).put("proof", proof(token, "phone:$theirs:$mine")).toString())
+            val tail = ":" + secure.binding
+            expected = proof(token, "computer:$mine:$theirs$tail")
+            webSocket.send(JSONObject().put("type", "hello").put("nonce", mine).put("proof", proof(token, "phone:$theirs:$mine$tail")).toString())
         }
 
         private fun nonce(): String = android.util.Base64.encodeToString(ByteArray(32).also { java.security.SecureRandom().nextBytes(it) }, android.util.Base64.NO_WRAP)
 
-        override fun onClosed(webSocket: WebSocket, code: Int, reason: String) = lost(webSocket)
+        override fun onClosed(webSocket: WebSocket, code: Int, reason: String) = lost()
 
-        override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) = lost(webSocket)
+        override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) = lost()
 
-        private fun lost(webSocket: WebSocket) {
-            if (webSocket !== socket) return
+        private fun lost() {
+            if (secure !== socket) return
             socket = null
+            primaryState = null
             changed()
             if (!wanted) return
+            links.values.firstOrNull { it.connected }?.let { other ->
+                // Another computer of the group is live: connect through it (the lost one becomes a link when it is back).
+                scope.launch { choose(other.host, other.port, other.name) }
+                return
+            }
+            rebuild()
             _ui.update { it.copy(phase = Phase.Offline) }
             retry?.cancel()
             // Quick retries while something is on screen; slower ones for the notification (away from home, say).

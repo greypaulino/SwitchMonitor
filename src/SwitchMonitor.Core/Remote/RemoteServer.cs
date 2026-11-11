@@ -31,6 +31,15 @@ public interface IRemoteHost
     /// <summary>Mouse and keyboard events of a paired COMPUTER that shares its input with this one (<paramref name="deviceId"/> is that computer).</summary>
     void InputEvent(JsonElement message, string? deviceId) { }
 
+    /// <summary>The programs a phone may open or close from its Remote tab: {"allowed", "apps": [{id, name, running}]}.</summary>
+    Task<JsonObject> AppsAsync(JsonElement request) => Task.FromResult(new JsonObject { ["allowed"] = false, ["apps"] = new JsonArray() });
+
+    /// <summary>A computer or phone of the group copied some text (a "clip" message): the app puts it on this computer's clipboard.</summary>
+    void ClipboardEvent(JsonElement message, string? deviceId) { }
+
+    /// <summary>One piece ("blob" message) of an image or a file that a computer or phone of the group sends to this computer.</summary>
+    void BlobEvent(JsonElement message, string? deviceId) { }
+
     /// <summary>Another computer reads or writes one of this computer's displays ("dev" request); the answer is sent back.</summary>
     Task<JsonObject> DeviceRequestAsync(JsonElement message) => Task.FromResult(new JsonObject { ["ok"] = false, ["error"] = "Not supported." });
 }
@@ -50,7 +59,7 @@ public sealed class RemoteServer : IDisposable
     public const int Protocol = 1;
     public const string DiscoveryQuestion = "SWITCHMONITOR?";
     private const string WebSocketGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-    private const int MaxMessage = 64 * 1024;
+    private const int MaxMessage = 1024 * 1024;   // a shared clipboard text can be long
 
     /// <summary>Connections served at once (page loads, phones); more are closed at once (a flood on the network).</summary>
     public const int MaxConnections = 24;
@@ -59,6 +68,10 @@ public sealed class RemoteServer : IDisposable
     public static readonly TimeSpan SignInTime = TimeSpan.FromSeconds(10);
     private const int MaxSignInErrors = 5;
     private int connections;
+    /// <summary>Connections one address may hold at once (the loopback address is not limited): one device cannot take every slot.</summary>
+    public const int MaxPerAddress = 8;
+    private readonly ConcurrentDictionary<IPAddress, int> perAddress = new();
+    private readonly ConcurrentDictionary<IPAddress, long> lastDiscovery = new();
 
     private readonly PhoneStore store;
     private readonly IRemoteHost host;
@@ -91,6 +104,13 @@ public sealed class RemoteServer : IDisposable
     }
 
     private readonly Ecosystem? ecosystem;
+
+    /// <summary>
+    /// The web page for phones without the app (a browser cannot do the encryption on a plain http address): off unless the person
+    /// turns it on in Settings, and then the connections of that page (they send an Origin) are NOT encrypted. The app and the
+    /// computers always are.
+    /// </summary>
+    public bool AllowUnencryptedPage { get; set; }
 
     /// <summary>
     /// A device typed the right code and asks to join the ecosystem: the app asks the person (name, kind, address) and answers
@@ -178,6 +198,25 @@ public sealed class RemoteServer : IDisposable
         Stop();
     }
 
+    /// <summary>Sends a message (the shared clipboard) to every connected phone; computers are reached through their own connection.</summary>
+    public async Task SendToPhonesAsync(JsonObject message)
+    {
+        string json = message.ToJsonString();
+        foreach (var client in clients.Values.Where(c => !c.Phone.IsComputer)) await SendAsync(client.Socket, client.Sending, json);
+    }
+
+    /// <summary>The phones connected now (id and name), where a file can be sent.</summary>
+    public IReadOnlyList<PairedPhone> PhonesOnline => clients.Values.Where(c => !c.Phone.IsComputer).Select(c => c.Phone).ToArray();
+
+    /// <summary>Sends a message to one connected phone (by <see cref="PairedPhone.Id"/>); false when it is not connected.</summary>
+    public async Task<bool> SendToPhoneAsync(string phoneId, JsonObject message)
+    {
+        var client = clients.Values.FirstOrDefault(c => !c.Phone.IsComputer && c.Phone.Id == phoneId);
+        if (client is null || client.Socket.State != WebSocketState.Open) return false;
+        await SendAsync(client.Socket, client.Sending, message.ToJsonString());
+        return true;
+    }
+
     /// <summary>Sends the state to every connected phone (called by the app when something changed).</summary>
     public async Task BroadcastAsync(JsonObject state)
     {
@@ -207,8 +246,24 @@ public sealed class RemoteServer : IDisposable
             connection.Dispose();
             return;
         }
+        IPAddress? ip = null;
+        try { ip = (connection.Client.RemoteEndPoint as IPEndPoint)?.Address; }
+        catch (Exception error) when (error is ObjectDisposedException or SocketException) { }
+        if (ip is not null && ip.IsIPv4MappedToIPv6) ip = ip.MapToIPv4();
+        bool counted = ip is not null && !IPAddress.IsLoopback(ip);
+        if (counted && perAddress.AddOrUpdate(ip!, 1, (_, n) => n + 1) > MaxPerAddress)
+        {
+            perAddress.AddOrUpdate(ip!, 0, (_, n) => Math.Max(0, n - 1));
+            Interlocked.Decrement(ref connections);
+            connection.Dispose();
+            return;
+        }
         try { await ServeOne(connection, cancel); }
-        finally { Interlocked.Decrement(ref connections); }
+        finally
+        {
+            if (counted) perAddress.AddOrUpdate(ip!, 0, (_, n) => Math.Max(0, n - 1));
+            Interlocked.Decrement(ref connections);
+        }
     }
 
     private async Task ServeOne(TcpClient connection, CancellationToken cancel)
@@ -225,15 +280,29 @@ public sealed class RemoteServer : IDisposable
             {
                 var stream = connection.GetStream();
                 using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancel);
-                timeout.CancelAfter(TimeSpan.FromSeconds(10));
+                timeout.CancelAfter(TimeSpan.FromSeconds(5));
                 var request = await ReadRequestAsync(stream, timeout.Token);
                 if (request is null) return;
                 var (method, path, headers) = request.Value;
                 if (method != "GET") { await RespondAsync(stream, "405 Method Not Allowed", "text/plain", "Method not allowed"); return; }
-                if (path is "/" or "/index.html") { await RespondAsync(stream, "200 OK", "text/html; charset=utf-8", host.Page); return; }
+                if (path is "/" or "/index.html")
+                {
+                    await RespondAsync(stream, "200 OK", "text/html; charset=utf-8", AllowUnencryptedPage ? host.Page
+                        : "<!doctype html><meta name=viewport content='width=device-width'><body style='font:16px system-ui;background:#111;color:#eee;padding:24px'>" +
+                          "This page is turned off. Use the SwitchMonitor app, or turn on the web page in SwitchMonitor > Settings > Devices (it is not encrypted).");
+                    return;
+                }
                 if (path == "/ws" && headers.TryGetValue("upgrade", out var upgrade) && upgrade.Equals("websocket", StringComparison.OrdinalIgnoreCase)
                     && headers.TryGetValue("sec-websocket-key", out var key))
                 {
+                    // A web page in a browser sends its Origin; only this server's own page (same address) may open the socket.
+                    // The phone app and the computers send none.
+                    if (headers.TryGetValue("origin", out var origin) && !SameOrigin(origin, headers.GetValueOrDefault("host")))
+                    {
+                        log.Write(LogLevel.Warning, $"Phone: refused a web page from another site ({PhoneStore.CleanText(origin, 80)}) at {remote.Address}.");
+                        await RespondAsync(stream, "403 Forbidden", "text/plain", "Forbidden");
+                        return;
+                    }
                     string accept = AcceptKey(key);
                     byte[] head = Encoding.ASCII.GetBytes("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" +
                         $"Sec-WebSocket-Accept: {accept}\r\n\r\n");
@@ -242,7 +311,7 @@ public sealed class RemoteServer : IDisposable
                     {
                         IsServer = true, KeepAliveInterval = TimeSpan.FromSeconds(20)
                     });
-                    await TalkAsync(socket, remote, cancel);
+                    await TalkAsync(socket, remote, cancel, plainAllowed: AllowUnencryptedPage && headers.ContainsKey("origin"));
                     return;
                 }
                 await RespondAsync(stream, "404 Not Found", "text/plain", "Not found");
@@ -255,7 +324,7 @@ public sealed class RemoteServer : IDisposable
     }
 
     /// <summary>The WebSocket conversation: pair or hello first, then commands; the state comes after each change.</summary>
-    private async Task TalkAsync(WebSocket socket, IPEndPoint remote, CancellationToken cancel)
+    private async Task TalkAsync(WebSocket socket, IPEndPoint remote, CancellationToken cancel, bool plainAllowed)
     {
         var sending = new SemaphoreSlim(1, 1);
         Client? client = null;
@@ -267,7 +336,8 @@ public sealed class RemoteServer : IDisposable
         signIn.CancelAfter(SignInTime);
         try
         {
-            await SendAsync(socket, sending, Message("challenge", new JsonObject { ["nonce"] = nonce, ["version"] = 2 }));
+            using var channelKey = SecureChannel.NewKey();
+            await SendAsync(socket, sending, Message("challenge", new JsonObject { ["nonce"] = nonce, ["version"] = SecureChannel.Version, ["ecdh"] = SecureChannel.PublicKeyOf(channelKey) }));
             while (socket.State == WebSocketState.Open && !cancel.IsCancellationRequested)
             {
                 if (client is null && errors >= MaxSignInErrors) break;
@@ -283,9 +353,32 @@ public sealed class RemoteServer : IDisposable
                 }
                 catch (JsonException) { errors++; await SendAsync(socket, sending, Error("Not a JSON message.")); continue; }
 
+                if (type == "key")
+                {
+                    // The other side's half of the key exchange: from the next message on, everything is encrypted.
+                    if (SecureChannel.Of(socket) is not null || !SecureChannel.ServerAccept(socket, channelKey, nonce, message.TryGetProperty("ecdh", out var theirKey) ? theirKey.GetString() ?? "" : ""))
+                    {
+                        await SendAsync(socket, sending, Error("The key exchange failed."));
+                        break;
+                    }
+                    await SendAsync(socket, sending, Message("ready", new JsonObject()));
+                    continue;
+                }
+                if (SecureChannel.Of(socket) is null && !plainAllowed)
+                {
+                    errors++;
+                    await SendAsync(socket, sending, Error("This computer needs an encrypted connection: update SwitchMonitor on the other device.", "encrypt"));
+                    continue;
+                }
                 if (type == "pairRequest")
                 {
                     var asked = DateTimeOffset.Now;
+                    if (store.IsBlocked(asked))
+                    {
+                        await SendAsync(socket, sending, Error("Too many wrong codes. Pairing is paused for a few minutes."));
+                        errors++;
+                        continue;
+                    }
                     if (asked - lastPairRequest < TimeSpan.FromSeconds(4))
                     {
                         await SendAsync(socket, sending, Error("A pairing request was just made. Wait a few seconds and try again."));
@@ -293,8 +386,8 @@ public sealed class RemoteServer : IDisposable
                     }
                     lastPairRequest = asked;
                     string who = message.TryGetProperty("name", out var rn) ? rn.GetString() ?? "" : "";
-                    who = string.IsNullOrWhiteSpace(who) ? remote.Address.ToString() : who.Trim();
-                    if (who.Length > 60) who = who[..60];
+                    who = PhoneStore.CleanText(who);
+                    if (who.Length == 0) who = remote.Address.ToString();
                     string shown = store.NewCode(asked);
                     log.Write(LogLevel.Info, $"Pairing requested by \"{who}\" ({remote.Address}); the code is on screen.");
                     PairRequested?.Invoke(who, shown, store.CodeExpires);
@@ -304,7 +397,13 @@ public sealed class RemoteServer : IDisposable
                 if (type == "pair")
                 {
                     string code = message.TryGetProperty("code", out var c) ? c.GetString() ?? "" : "";
-                    string name = message.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "";
+                    string name = PhoneStore.CleanText(message.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "");
+                    if (store.IsBlocked(DateTimeOffset.Now))
+                    {
+                        errors++;
+                        await SendAsync(socket, sending, Error("Too many wrong codes. Pairing is paused for a few minutes."));
+                        continue;
+                    }
                     string kind = message.TryGetProperty("kind", out var k) && k.GetString() == "computer" ? "computer" : "phone";
                     string? otherDevice = message.TryGetProperty("deviceId", out var di) ? di.GetString() : null;
                     string? token = store.Pair(code, name, DateTimeOffset.Now, kind, kind == "computer" ? otherDevice : null);
@@ -350,7 +449,7 @@ public sealed class RemoteServer : IDisposable
                     // token instead: it is told to pair again (that token is not accepted any more).
                     string phoneNonce = message.TryGetProperty("nonce", out var pn) ? pn.GetString() ?? "" : "";
                     string proof = message.TryGetProperty("proof", out var pr) ? pr.GetString() ?? "" : "";
-                    if (store.Verify(nonce, phoneNonce, proof, out string? answer) is not { } phone)
+                    if (store.Verify(nonce, phoneNonce, proof, out string? answer, SecureChannel.Binding(socket)) is not { } phone)
                     {
                         errors++;
                         log.Write(LogLevel.Warning, $"Phone: a connection from {remote.Address} could not prove it is a paired phone.");
@@ -389,11 +488,27 @@ public sealed class RemoteServer : IDisposable
                     }
                     continue;
                 }
-                if (type == "input")
+                if (type == "input" && message.TryGetProperty("op", out _))
                 {
                     // A paired computer (sharing on) or a paired phone (when the person allowed it) may move the mouse and type here; the
                     // host checks which. A phone has no device id.
                     host.InputEvent(message, client.Phone.IsComputer ? client.Phone.DeviceId : null);
+                    continue;
+                }
+                if (type == "clip")
+                {
+                    host.ClipboardEvent(message, client.Phone.IsComputer ? client.Phone.DeviceId : null);
+                    continue;
+                }
+                if (type == "blob")
+                {
+                    host.BlobEvent(message, client.Phone.IsComputer ? client.Phone.DeviceId : null);
+                    continue;
+                }
+                if (type == "apps")
+                {
+                    // The programs of this computer, for a phone's Remote tab (only a paired phone or computer is here).
+                    await SendAsync(socket, sending, Message("apps", await host.AppsAsync(message)));
                     continue;
                 }
                 if (type == "get")
@@ -437,13 +552,13 @@ public sealed class RemoteServer : IDisposable
             await SendAsync(socket, sending, Error("Too many wrong codes. Wait a minute and try again."));
             return false;
         }
-        if (!ecosystem.CheckEnrollProof(proof, nonce, deviceId, publicKey, now, out string code))
+        if (!ecosystem.CheckEnrollProof(proof, nonce, deviceId, publicKey, now, out string code, SecureChannel.Binding(socket)))
         {
             log.Write(LogLevel.Warning, $"Ecosystem: wrong or expired code from {remote.Address}.");
             await SendAsync(socket, sending, Error("The code is wrong or expired. Look at the one this computer shows now."));
             return false;
         }
-        var request = new EnrollRequest(deviceId, string.IsNullOrWhiteSpace(name) ? remote.Address.ToString() : name.Trim(), kind, remote.Address.ToString());
+        var request = new EnrollRequest(deviceId, PhoneStore.CleanText(name) is { Length: > 0 } shownName ? shownName : remote.Address.ToString(), kind, remote.Address.ToString());
         bool allowed;
         try
         {
@@ -467,7 +582,7 @@ public sealed class RemoteServer : IDisposable
             ["ecosystem"] = ecosystem.Export(),
             ["computer"] = host.ComputerName,
             ["deviceId"] = ecosystem.DeviceId,
-            ["answer"] = Ecosystem.EnrollAnswer(code, nonce, deviceId, ecosystem.DeviceId, ecosystem.Id!)
+            ["answer"] = Ecosystem.EnrollAnswer(code, nonce, deviceId, ecosystem.DeviceId, ecosystem.Id!, SecureChannel.Binding(socket))
         }));
         return true;
     }
@@ -493,7 +608,7 @@ public sealed class RemoteServer : IDisposable
         }
         catch (JsonException) { }
         ecosystem.Merge(members, revoked);
-        if (theirNonce.Length is < 16 or > 128 || !ecosystem.Verify(deviceId, $"member:{nonce}:{theirNonce}:{deviceId}", signature) || ecosystem.Find(deviceId) is not { } cert)
+        if (theirNonce.Length is < 16 or > 128 || !ecosystem.Verify(deviceId, $"member:{nonce}:{theirNonce}:{deviceId}" + Tail(socket), signature) || ecosystem.Find(deviceId) is not { } cert)
         {
             await SendAsync(socket, sending, Error("This device is not in the ecosystem (or was removed).", "notMember"));
             return null;
@@ -502,13 +617,16 @@ public sealed class RemoteServer : IDisposable
         await SendAsync(socket, sending, Message("memberWelcome", new JsonObject
         {
             ["deviceId"] = ecosystem.DeviceId,
-            ["signature"] = ecosystem.SignText($"server:{theirNonce}:{nonce}:{ecosystem.DeviceId}"),
+            ["signature"] = ecosystem.SignText($"server:{theirNonce}:{nonce}:{ecosystem.DeviceId}" + Tail(socket)),
             ["members"] = export["members"]!.DeepClone(),
             ["revoked"] = export["revoked"]!.DeepClone(),
             ["computer"] = host.ComputerName
         }));
         return new PairedPhone(MemberPrefix + cert.DeviceId, cert.Name, "", DateTimeOffset.Now, cert.IsComputer ? "computer" : "phone", cert.IsComputer ? cert.DeviceId : null);
     }
+
+    /// <summary>":binding" of this connection (nothing for the plain page): added to the text every signature covers.</summary>
+    private static string Tail(WebSocket socket) => SecureChannel.Of(socket) is { } session ? ":" + session.Binding : "";
 
     private Client Join(Guid id, WebSocket socket, SemaphoreSlim sending, PairedPhone phone)
     {
@@ -551,6 +669,12 @@ public sealed class RemoteServer : IDisposable
             catch (Exception error) when (error is OperationCanceledException or ObjectDisposedException or SocketException) { return; }
             if (!LocalNetwork.IsAllowed(received.RemoteEndPoint.Address)) continue;
             if (Encoding.ASCII.GetString(received.Buffer).Trim() != DiscoveryQuestion) continue;
+            // One answer per address every quarter of a second: this cannot be used to flood somebody else.
+            var asker = received.RemoteEndPoint.Address;
+            long nowTicks = Environment.TickCount64;
+            if (lastDiscovery.TryGetValue(asker, out long before) && nowTicks - before < 250) continue;
+            if (lastDiscovery.Count > 512) lastDiscovery.Clear();
+            lastDiscovery[asker] = nowTicks;
             byte[] answer = Encoding.UTF8.GetBytes(new JsonObject
             {
                 ["app"] = "SwitchMonitor", ["computer"] = host.ComputerName, ["port"] = Port,
@@ -594,6 +718,10 @@ public sealed class RemoteServer : IDisposable
         return null;
     }
 
+    /// <summary>The Origin of a page is the same site as the address it was fetched from (Host).</summary>
+    private static bool SameOrigin(string origin, string? host) =>
+        host is not null && Uri.TryCreate(origin, UriKind.Absolute, out var uri) && uri.Authority.Equals(host, StringComparison.OrdinalIgnoreCase);
+
     private static int IndexOf(byte[] buffer, int length, ReadOnlySpan<byte> pattern) =>
         buffer.AsSpan(0, length).IndexOf(pattern);
 
@@ -601,38 +729,21 @@ public sealed class RemoteServer : IDisposable
     {
         byte[] content = Encoding.UTF8.GetBytes(body);
         byte[] head = Encoding.ASCII.GetBytes($"HTTP/1.1 {status}\r\nContent-Type: {type}\r\nContent-Length: {content.Length}\r\n" +
-            "Cache-Control: no-store\r\nConnection: close\r\n\r\n");
+            "Cache-Control: no-store\r\nX-Frame-Options: DENY\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nContent-Security-Policy: frame-ancestors 'none'\r\nConnection: close\r\n\r\n");
         await stream.WriteAsync(head);
         await stream.WriteAsync(content);
         await stream.FlushAsync();
     }
 
-    private static async Task<string?> ReceiveAsync(WebSocket socket, CancellationToken cancel)
-    {
-        var buffer = new byte[4096];
-        using var message = new MemoryStream();
-        while (true)
-        {
-            var result = await socket.ReceiveAsync(buffer, cancel);
-            if (result.MessageType == WebSocketMessageType.Close)
-            {
-                try { await socket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "bye", CancellationToken.None); }
-                catch (Exception error) when (error is WebSocketException or IOException or ObjectDisposedException) { }
-                return null;
-            }
-            message.Write(buffer, 0, result.Count);
-            if (message.Length > MaxMessage) return null;
-            if (result.EndOfMessage) return Encoding.UTF8.GetString(message.ToArray());
-        }
-    }
+    private static Task<string?> ReceiveAsync(WebSocket socket, CancellationToken cancel) =>
+        SecureChannel.ReceiveAsync(socket, MaxMessage, cancel);
 
     private static async Task SendAsync(WebSocket socket, SemaphoreSlim sending, string json)
     {
         await sending.WaitAsync();
         try
         {
-            if (socket.State == WebSocketState.Open)
-                await socket.SendAsync(Encoding.UTF8.GetBytes(json), WebSocketMessageType.Text, true, CancellationToken.None);
+            if (socket.State == WebSocketState.Open) await SecureChannel.SendAsync(socket, json);
         }
         catch (Exception error) when (error is WebSocketException or IOException or ObjectDisposedException) { }
         finally { sending.Release(); }

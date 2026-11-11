@@ -54,6 +54,12 @@ object Glyphs {
         }
     }
 
+    val Power = line("power", "M12 3v8", "M17.7 6.3a8 8 0 1 1-11.4 0")
+    val Mouse = line("mouse", "M12 3a5.5 5.5 0 0 1 5.5 5.5v7a5.5 5.5 0 0 1-11 0v-7A5.5 5.5 0 0 1 12 3z", "M12 3v6")
+    val Remote = line("remote", circle(12f, 12f, 9f), circle(12f, 12f, 3f), "M12 3v3M12 18v3M3 12h3M18 12h3")
+    val Widget = line("widget", "M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4z", "M16.5 13v7M13 16.5h7")
+    val Swap = line("swap", "M4 8h13M14 4l3 4-3 4", "M20 16H7M10 12l-3 4 3 4")
+    val Copy = line("copy", "M9 9h11v11H9z", "M5 15V4h10")
     val Close = line("close", "M6 6l12 12M18 6L6 18", width = 2.2f)
     val Refresh = line("refresh", "M20 11a8 8 0 1 0-2.3 5.7", "M20 4v7h-7")
 

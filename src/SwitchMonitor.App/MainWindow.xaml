@@ -1954,6 +1954,42 @@
                             </DockPanel>
                             <Border Height="1" Background="{StaticResource LineBrush}" Margin="0,12,0,12" />
                             <DockPanel>
+                                <ToggleButton DockPanel.Dock="Right" Style="{StaticResource Switch}" IsChecked="{Binding Phone.PhoneRemote, Mode=TwoWay}"
+                                              VerticalAlignment="Center" AutomationProperties.Name="Phone as remote" />
+                                <Border DockPanel.Dock="Left" Style="{StaticResource IconTile}" Margin="0,0,12,0" VerticalAlignment="Center">
+                                    <TextBlock Text="&#xE7E8;" Style="{StaticResource Glyph}" HorizontalAlignment="Center" />
+                                </Border>
+                                <StackPanel Margin="0,0,16,0" VerticalAlignment="Center">
+                                    <TextBlock Text="Phone as remote" FontWeight="SemiBold" FontSize="14" />
+                                    <TextBlock Style="{StaticResource Hint}" Margin="0,2,0,0" TextWrapping="Wrap" Text="A paired phone opens and closes programs and turns this computer off." />
+                                </StackPanel>
+                            </DockPanel>
+                            <Border Height="1" Background="{StaticResource LineBrush}" Margin="0,12,0,12" />
+                            <DockPanel>
+                                <ToggleButton DockPanel.Dock="Right" Style="{StaticResource Switch}" IsChecked="{Binding Phone.PhoneWebPage, Mode=TwoWay}"
+                                              VerticalAlignment="Center" AutomationProperties.Name="Web page for phones without the app" />
+                                <Border DockPanel.Dock="Left" Style="{StaticResource IconTile}" Margin="0,0,12,0" VerticalAlignment="Center">
+                                    <TextBlock Text="&#xE774;" Style="{StaticResource Glyph}" HorizontalAlignment="Center" />
+                                </Border>
+                                <StackPanel Margin="0,0,16,0" VerticalAlignment="Center">
+                                    <TextBlock Text="Web page for phones without the app" FontWeight="SemiBold" FontSize="14" />
+                                    <TextBlock Style="{StaticResource Hint}" Margin="0,2,0,0" TextWrapping="Wrap" Text="A browser cannot encrypt on a plain address, so this page is NOT encrypted. Leave it off unless you need it; the app always is." />
+                                </StackPanel>
+                            </DockPanel>
+                            <Border Height="1" Background="{StaticResource LineBrush}" Margin="0,12,0,12" />
+                            <DockPanel>
+                                <ToggleButton DockPanel.Dock="Right" Style="{StaticResource Switch}" IsChecked="{Binding Phone.SharedClipboard, Mode=TwoWay}"
+                                              VerticalAlignment="Center" AutomationProperties.Name="Shared clipboard" />
+                                <Border DockPanel.Dock="Left" Style="{StaticResource IconTile}" Margin="0,0,12,0" VerticalAlignment="Center">
+                                    <TextBlock Text="&#xE8C8;" Style="{StaticResource Glyph}" HorizontalAlignment="Center" />
+                                </Border>
+                                <StackPanel Margin="0,0,16,0" VerticalAlignment="Center">
+                                    <TextBlock Text="Shared clipboard" FontWeight="SemiBold" FontSize="14" />
+                                    <TextBlock Style="{StaticResource Hint}" Margin="0,2,0,0" TextWrapping="Wrap" Text="Text copied on one device is copied on the others of the group." />
+                                </StackPanel>
+                            </DockPanel>
+                            <Border Height="1" Background="{StaticResource LineBrush}" Margin="0,12,0,12" />
+                            <DockPanel>
                                 <ToggleButton DockPanel.Dock="Right" Style="{StaticResource Switch}" IsChecked="{Binding Updates.AutoCheck, Mode=TwoWay}"
                                               VerticalAlignment="Center" AutomationProperties.Name="Check for updates automatically" />
                                 <Border DockPanel.Dock="Left" Style="{StaticResource IconTile}" Margin="0,0,12,0" VerticalAlignment="Center">
@@ -2280,6 +2316,34 @@
                             <Button Content="Leave this group" Command="{Binding LeaveGroupCommand}" Style="{StaticResource QuietButton}" HorizontalAlignment="Left" Margin="0,8,0,0"
                                     Visibility="{Binding InGroup, Converter={StaticResource BoolToVisibility}}" />
                         </StackPanel>
+                        <Border Height="1" Background="{StaticResource LineBrush}" Margin="0,14,0,14" />
+                        <DockPanel DataContext="{Binding DataContext.Phone, RelativeSource={RelativeSource AncestorType=Window}}">
+                            <ToggleButton DockPanel.Dock="Right" Style="{StaticResource Switch}" IsChecked="{Binding SharedClipboard, Mode=TwoWay}"
+                                          VerticalAlignment="Center" AutomationProperties.Name="Shared clipboard" />
+                            <StackPanel Margin="0,0,16,0">
+                                <TextBlock Text="Shared clipboard" FontWeight="SemiBold" FontSize="14" />
+                                <TextBlock Style="{StaticResource Hint}" Margin="0,3,0,0" TextWrapping="Wrap"
+                                           Text="Text and images you copy here are copied on your other computers and phones, and theirs here. Turn it on in each device; a clipboard can hold a password." />
+                            </StackPanel>
+                        </DockPanel>
+                        <DockPanel Margin="0,14,0,0" DataContext="{Binding Peers}">
+                            <Button DockPanel.Dock="Right" Content="Send files…" Command="{Binding SendFilesCommand}" VerticalAlignment="Center"
+                                    ToolTip="Drop files on one of your devices" />
+                            <StackPanel Margin="0,0,16,0">
+                                <TextBlock Text="Send files" FontWeight="SemiBold" FontSize="14" />
+                                <TextBlock Style="{StaticResource Hint}" Margin="0,3,0,0" TextWrapping="Wrap"
+                                           Text="Drop files on a computer or phone of your group; they are saved in Downloads\SwitchMonitor. Copy files here and paste them on another computer (up to 500 MB)." />
+                            </StackPanel>
+                        </DockPanel>
+                        <DockPanel Margin="0,14,0,0" DataContext="{Binding DataContext.Phone, RelativeSource={RelativeSource AncestorType=Window}}">
+                            <ToggleButton DockPanel.Dock="Right" Style="{StaticResource Switch}" IsChecked="{Binding ExplorerMenu, Mode=TwoWay}"
+                                          VerticalAlignment="Center" AutomationProperties.Name="Right-click menu in Windows" />
+                            <StackPanel Margin="0,0,16,0">
+                                <TextBlock Text="Right-click menu in Windows" FontWeight="SemiBold" FontSize="14" />
+                                <TextBlock Style="{StaticResource Hint}" Margin="0,3,0,0" TextWrapping="Wrap"
+                                           Text="Adds &quot;Send with SwitchMonitor&quot; to the right-click menu of a file, listing your connected devices (under Show more options in Windows 11)." />
+                            </StackPanel>
+                        </DockPanel>
 
                         </StackPanel>
                     </Border>
@@ -2311,6 +2375,15 @@
                                     <TextBlock Text="Phone as mouse and keyboard" FontWeight="SemiBold" FontSize="14" />
                                     <TextBlock Style="{StaticResource Hint}" Margin="0,3,0,0" TextWrapping="Wrap"
                                                Text="A paired phone can move the pointer, click and type on this computer from its Mouse and keyboard screen." />
+                                </StackPanel>
+                            </DockPanel>
+                            <DockPanel Margin="0,14,0,0">
+                                <ToggleButton DockPanel.Dock="Right" Style="{StaticResource Switch}" IsChecked="{Binding PhoneRemote, Mode=TwoWay}"
+                                              VerticalAlignment="Center" AutomationProperties.Name="Phone as remote" />
+                                <StackPanel Margin="0,0,16,0">
+                                    <TextBlock Text="Phone as remote" FontWeight="SemiBold" FontSize="14" />
+                                    <TextBlock Style="{StaticResource Hint}" Margin="0,3,0,0" TextWrapping="Wrap"
+                                               Text="A paired phone can open and close programs and turn this computer off from its Remote tab. Turning it off waits 10 seconds so you can cancel." />
                                 </StackPanel>
                             </DockPanel>
                             <Border Margin="0,12,0,0" Padding="14,10" CornerRadius="12" Background="{StaticResource RaisedBrush}"

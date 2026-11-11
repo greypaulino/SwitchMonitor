@@ -94,7 +94,7 @@ fun ControlScreen(ui: RemoteUi, state: PcState?, live: Boolean = true) {
                         .padding(horizontal = 16.dp, vertical = 12.dp),
                     verticalArrangement = Arrangement.spacedBy(14.dp),
                 ) {
-                    Header(title, if (ui.inGroup) null else ui.host, ui.phase)
+                    Header(title, if (ui.inGroup) null else ui.host, ui.phase, ui)
                     if (state == null) SkeletonPanels()
                     else Column(Modifier.graphicsLayer { alpha = dim }, verticalArrangement = Arrangement.spacedBy(14.dp)) {
                         BrightnessPanel(state)
@@ -106,8 +106,10 @@ fun ControlScreen(ui: RemoteUi, state: PcState?, live: Boolean = true) {
                     }
                     Spacer(Modifier.height(8.dp))
                 }
-            } else {
+            } else if (controlTab == 1) {
                 TouchpadScreen(ui)
+            } else {
+                RemoteScreen(ui)
             }
             ui.message?.let { Toast(it, Modifier.align(Alignment.BottomCenter)) }
         }
@@ -124,23 +126,60 @@ private fun TabBar() {
         Modifier.fillMaxWidth().background(Ground).border(1.dp, Line).padding(horizontal = 16.dp, vertical = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        for ((i, label) in listOf("Controls", "Mouse").withIndex()) {
+        for ((i, tab) in listOf("Controls" to Glyphs.Sun, "Mouse" to Glyphs.Mouse, "Remote" to Glyphs.Remote).withIndex()) {
             val on = controlTab == i
-            Box(
-                Modifier.weight(1f).height(44.dp).clip(RoundedCornerShape(14.dp))
+            Column(
+                Modifier.weight(1f).height(56.dp).clip(RoundedCornerShape(14.dp))
                     .background(if (on) Raised else Color.Transparent)
                     .clickable { controlTab = i },
-                contentAlignment = Alignment.Center,
-            ) { Text(label, fontSize = 15.sp, fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal, color = if (on) Text else Muted) }
+                horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center,
+            ) {
+                Icon(tab.second, null, Modifier.size(22.dp), tint = if (on) Text else Muted)
+                Text(tab.first, Modifier.padding(top = 2.dp), fontSize = 12.sp, fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal, color = if (on) Text else Muted)
+            }
         }
     }
 }
 
 @Composable
-private fun Header(computer: String, host: String?, phase: com.greypaulino.switchmonitor.data.Phase) {
+private fun Header(computer: String, host: String?, phase: com.greypaulino.switchmonitor.data.Phase, ui: RemoteUi) {
     var menu by remember { mutableStateOf(false) }
     var pickWidget by remember { mutableStateOf(false) }
     val context = androidx.compose.ui.platform.LocalContext.current
+    // Files for the computer this phone is controlling.
+    var sendDevice by remember { mutableStateOf("") }
+    var chooseDevice by remember { mutableStateOf(false) }
+    val pickFiles = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isNotEmpty()) com.greypaulino.switchmonitor.data.Transfers.sendFiles(context, uris, sendDevice)
+    }
+    val aimed = ui.target.ifEmpty { ui.gateway }
+    val aimedName = ui.group.firstOrNull { it.deviceId == aimed }?.name ?: computer
+    if (chooseDevice) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { chooseDevice = false },
+            containerColor = Raised,
+            title = { Text("Send files to…", color = Text) },
+            text = {
+                Column {
+                    for (pc in ui.group) Row(
+                        Modifier.fillMaxWidth().clickable { chooseDevice = false; sendDevice = pc.deviceId; pickFiles.launch(arrayOf("*/*")) }.padding(vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(Glyphs.Monitor, null, Modifier.size(20.dp), tint = Text)
+                        Text(pc.name, Modifier.padding(start = 12.dp), color = Text, fontSize = 16.sp)
+                    }
+                    if (ui.group.size > 1) Row(
+                        Modifier.fillMaxWidth().clickable { chooseDevice = false; sendDevice = "*"; pickFiles.launch(arrayOf("*/*")) }.padding(vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(Glyphs.Link, null, Modifier.size(20.dp), tint = Text)
+                        Text("All computers", Modifier.padding(start = 12.dp), color = Text, fontSize = 16.sp)
+                    }
+                }
+            },
+            confirmButton = { androidx.compose.material3.TextButton(onClick = { chooseDevice = false }) { Text("Cancel", color = Soft) } },
+        )
+    }
     if (pickWidget) {
         val kinds = com.greypaulino.switchmonitor.surfaces.Widgets.Kind.entries
         val names = mapOf(
@@ -205,9 +244,50 @@ private fun Header(computer: String, host: String?, phase: com.greypaulino.switc
         Box {
             IconButton(onClick = { menu = true }) { Icon(Glyphs.More, "Menu", tint = Text) }
             DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, containerColor = Raised) {
-                if (host != null) DropdownMenuItem(text = { Text("Address: $host", color = Muted) }, onClick = { menu = false }, enabled = false)
-                DropdownMenuItem(text = { Text("Add a widget…") }, onClick = { menu = false; pickWidget = true })
-                DropdownMenuItem(text = { Text("Use another computer") }, onClick = { menu = false; Remote.forget() })
+                if (host != null) DropdownMenuItem(
+                    text = { Text("Address: $host", color = Muted) }, onClick = { menu = false }, enabled = false,
+                    leadingIcon = { Icon(Glyphs.Wifi, null, Modifier.size(20.dp), tint = Muted) },
+                )
+                DropdownMenuItem(
+                    text = { Text(if (ui.clipboard) "Shared clipboard: on" else "Shared clipboard: off") },
+                    onClick = { Remote.setClipboardShare(!ui.clipboard) },
+                    leadingIcon = { Icon(if (ui.clipboard) Glyphs.Check else Glyphs.Copy, null, Modifier.size(20.dp), tint = if (ui.clipboard) Green else Text) },
+                )
+                if (ui.clipboard) DropdownMenuItem(
+                    text = { Text("Send my clipboard now") },
+                    onClick = {
+                        menu = false
+                        val manager = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                        val clip = try { manager.primaryClip?.takeIf { it.itemCount > 0 } } catch (_: Exception) { null }
+                        val uri = clip?.getItemAt(0)?.uri
+                        if (clip != null && uri != null && (0 until clip.description.mimeTypeCount).any { clip.description.getMimeType(it).startsWith("image/") }) {
+                            com.greypaulino.switchmonitor.data.Transfers.lastImageUri = ""
+                            com.greypaulino.switchmonitor.data.Transfers.sendImage(context, uri)
+                            Remote.notice("Image sent.")
+                        } else {
+                            val text = try { clip?.getItemAt(0)?.coerceToText(context)?.toString() } catch (_: Exception) { null }
+                            if (!text.isNullOrEmpty()) Remote.sendClipboardNow(text)
+                        }
+                    },
+                    leadingIcon = { Icon(Glyphs.Next, null, Modifier.size(20.dp), tint = Text) },
+                )
+                DropdownMenuItem(
+                    text = { Text("Send files…") },
+                    onClick = {
+                        menu = false
+                        // With several computers in the group, the person picks which one (or all); with one, it goes there.
+                        if (ui.group.size > 1) chooseDevice = true else { sendDevice = ""; pickFiles.launch(arrayOf("*/*")) }
+                    },
+                    leadingIcon = { Icon(Glyphs.Copy, null, Modifier.size(20.dp), tint = Text) },
+                )
+                DropdownMenuItem(
+                    text = { Text("Add a widget…") }, onClick = { menu = false; pickWidget = true },
+                    leadingIcon = { Icon(Glyphs.Widget, null, Modifier.size(20.dp), tint = Text) },
+                )
+                DropdownMenuItem(
+                    text = { Text("Use another computer") }, onClick = { menu = false; Remote.forget() },
+                    leadingIcon = { Icon(Glyphs.Swap, null, Modifier.size(20.dp), tint = Text) },
+                )
             }
         }
     }
@@ -225,8 +305,12 @@ private fun BrightnessPanel(state: PcState) {
         }
         val shown = state.displays.filter { it.on }
         if (shown.isEmpty()) Text("No display can be controlled right now.", Modifier.padding(8.dp), color = Muted, fontSize = 14.sp)
-        if (state.linked && shown.size > 1) LinkedBox(shown)
-        else for (display in shown) DisplayRow(display)
+        // Linking works within a computer: its displays share one slider, the other computers' displays keep their own.
+        val together = if (state.linkOwner.isEmpty()) shown else shown.filter { it.owner == state.linkOwner }
+        if (state.linked && together.size > 1) {
+            LinkedBox(together)
+            for (display in shown.filter { it !in together }) DisplayRow(display)
+        } else for (display in shown) DisplayRow(display)
     }
 }
 

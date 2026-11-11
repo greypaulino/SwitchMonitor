@@ -15,6 +15,8 @@ data class PcState(
     val volume: Volume? = null,
     /** The display the volume belongs to (the one selected; its computer's sound). */
     val volumeFor: String? = null,
+    /** The computer whose displays the "link brightness" button moves together ("" = all of them). */
+    val linkOwner: String = "",
 )
 
 data class Volume(val percent: Int, val muted: Boolean)
@@ -31,8 +33,12 @@ data class Display(
     val preferred: Boolean,
     val canBeMain: Boolean,
     val inputs: List<InputPort>,
-    /** The display belongs to another paired computer (shown with a REMOTE label). */
+    /** The display belongs to another paired computer (as that computer lists it; the phone keeps only each computer's own). */
     val remote: Boolean = false,
+    /** The device id of the computer that owns the display ("" when the phone has one connection and no group). */
+    val owner: String = "",
+    /** The id the owner knows the display by (the phone's [id] adds the owner, so two computers never clash). */
+    val key: String = "",
 )
 
 data class InputPort(val code: Int, val label: String, val current: Boolean, val inCycle: Boolean)
@@ -42,6 +48,12 @@ data class Profile(val name: String, val color: Long, val icon: String?, val act
 data class Modes(val display: String, val current: Int?, val options: List<ModeOption>)
 
 data class ModeOption(val value: Int, val label: String)
+
+/** A program of a computer's Start menu (what the Remote tab opens and closes). */
+data class AppItem(val id: String, val name: String, val running: Boolean = false)
+
+/** The programs a computer offers; [allowed] is false until its owner turns on "Phone as remote". */
+data class AppsList(val allowed: Boolean, val items: List<AppItem>)
 
 /** A computer that answered the Wi-Fi search. */
 data class Found(val name: String, val host: String, val port: Int, val deviceId: String = "")

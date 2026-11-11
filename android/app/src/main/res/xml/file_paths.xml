@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Images that arrive for the shared clipboard are kept here for a while so other apps can paste them. -->
+<paths>
+    <cache-path name="shared" path="shared/" />
+</paths>

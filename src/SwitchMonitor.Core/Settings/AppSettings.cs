@@ -108,6 +108,18 @@ public sealed record AppSettings
     /// <summary>A paired phone may act as this computer's mouse and keyboard (off until the person turns it on).</summary>
     public bool PhoneInput { get; init; }
 
+    /// <summary>A paired phone may open and close programs and turn this computer off (its Remote tab).</summary>
+    public bool PhoneRemote { get; init; }
+
+    /// <summary>What is copied here (text) is copied on the other computers of the group and on the phones, and the other way round.</summary>
+    public bool SharedClipboard { get; init; }
+
+    /// <summary>The web page for phones without the app (not encrypted: a browser cannot do it on a plain address). Off unless turned on.</summary>
+    public bool PhoneWebPage { get; init; }
+
+    /// <summary>"Send with SwitchMonitor…" in the right-click menu of files in Windows (on unless turned off).</summary>
+    public bool ExplorerMenu { get; init; } = true;
+
     /// <summary>Where the other computer sits, seen from this one: Right, Left, Above or Below.</summary>
     public Sharing.ShareSide ShareSide { get; init; } = Sharing.ShareSide.Right;
 
@@ -217,6 +229,10 @@ public sealed record AppSettings
             PhoneAccess = root.TryGetProperty("phoneAccess", out var phone) && phone.ValueKind == JsonValueKind.True,
             Language = root.TryGetProperty("language", out var lang) && lang.ValueKind == JsonValueKind.String && lang.GetString() is "en" or "es" ? lang.GetString() : null,
             PhoneInput = root.TryGetProperty("phoneInput", out var phoneInput) && phoneInput.ValueKind == JsonValueKind.True,
+            PhoneRemote = root.TryGetProperty("phoneRemote", out var phoneRemote) && phoneRemote.ValueKind == JsonValueKind.True,
+            SharedClipboard = root.TryGetProperty("sharedClipboard", out var sharedClipboard) && sharedClipboard.ValueKind == JsonValueKind.True,
+            PhoneWebPage = root.TryGetProperty("phoneWebPage", out var webPage) && webPage.ValueKind == JsonValueKind.True,
+            ExplorerMenu = !root.TryGetProperty("explorerMenu", out var explorerMenu) || explorerMenu.ValueKind != JsonValueKind.False,
             WelcomeSeen = root.TryGetProperty("welcomeSeen", out var welcome) && welcome.TryGetInt32(out int seenValue) ? Math.Max(0, seenValue) : 0,
             ShareInput = root.TryGetProperty("shareInput", out var share) && share.ValueKind == JsonValueKind.True,
             ShareSide = root.TryGetProperty("shareSide", out var shareSide) && shareSide.ValueKind == JsonValueKind.String
@@ -279,6 +295,10 @@ public sealed record AppSettings
             ["shareInput"] = ShareInput,
             ["welcomeSeen"] = WelcomeSeen,
             ["phoneInput"] = PhoneInput,
+            ["phoneRemote"] = PhoneRemote,
+            ["sharedClipboard"] = SharedClipboard,
+            ["explorerMenu"] = ExplorerMenu,
+            ["phoneWebPage"] = PhoneWebPage,
             ["language"] = Language,
             ["shareSide"] = ShareSide.ToString(),
             ["preferredMain"] = PreferredMain

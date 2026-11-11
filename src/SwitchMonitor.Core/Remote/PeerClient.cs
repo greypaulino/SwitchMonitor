@@ -90,7 +90,7 @@ public sealed class PeerClient : IDisposable
         try
         {
             await socket.ConnectAsync(new Uri($"ws://{Bracket(host)}:{port}/ws"), timeout.Token);
-            await ReceiveJsonAsync(socket, timeout.Token);   // the challenge
+            await StartChannelAsync(socket, await ReceiveJsonAsync(socket, timeout.Token), timeout.Token);   // the challenge
             var pair = new JsonObject { ["type"] = "pair", ["code"] = code.Trim(), ["name"] = myName };
             if (counterToken is not null)
             {
@@ -131,7 +131,7 @@ public sealed class PeerClient : IDisposable
         try
         {
             await socket.ConnectAsync(new Uri($"ws://{Bracket(host)}:{port}/ws"), timeout.Token);
-            await ReceiveJsonAsync(socket, timeout.Token);   // the challenge
+            await StartChannelAsync(socket, await ReceiveJsonAsync(socket, timeout.Token), timeout.Token);   // the challenge
             await SendRawAsync(socket, new JsonObject { ["type"] = "pairRequest", ["name"] = myName }.ToJsonString());
             while (true)
             {
@@ -164,13 +164,16 @@ public sealed class PeerClient : IDisposable
         try
         {
             await socket.ConnectAsync(new Uri($"ws://{Bracket(host)}:{port}/ws"), timeout.Token);
-            string nonce = (string?)(await ReceiveJsonAsync(socket, timeout.Token))?["nonce"] ?? "";
-            if (nonce.Length == 0) return "The other computer did not answer as expected.";
+            var challenge = await ReceiveJsonAsync(socket, timeout.Token);
+            string nonce = (string?)challenge?["nonce"] ?? "";
+            if (challenge is null || nonce.Length == 0) return "The other computer did not answer as expected.";
+            await StartChannelAsync(socket, challenge, timeout.Token);
+            string binding = SecureChannel.Binding(socket);
             string clean = code.Replace(" ", "").Trim();
             await SendRawAsync(socket, new JsonObject
             {
                 ["type"] = "enroll", ["deviceId"] = me.DeviceId, ["name"] = me.Name, ["kind"] = me.Kind, ["key"] = me.PublicKey,
-                ["proof"] = Ecosystem.EnrollProof(clean, nonce, me.DeviceId, me.PublicKey)
+                ["proof"] = Ecosystem.EnrollProof(clean, nonce, me.DeviceId, me.PublicKey, binding)
             }.ToJsonString());
             while (true)
             {
@@ -181,7 +184,7 @@ public sealed class PeerClient : IDisposable
                 if (type != "enrolled") continue;
                 var shared = reply["ecosystem"] as JsonObject;
                 string approver = (string?)reply["deviceId"] ?? "";
-                if ((string?)reply["answer"] != Ecosystem.EnrollAnswer(clean, nonce, me.DeviceId, approver, (string?)shared?["id"] ?? ""))
+                if ((string?)reply["answer"] != Ecosystem.EnrollAnswer(clean, nonce, me.DeviceId, approver, (string?)shared?["id"] ?? "", binding))
                     return "That computer could not prove it showed the code.";
                 return me.Join(shared, replace: true) ? null : "The ecosystem it sent is not valid.";
             }
@@ -231,7 +234,9 @@ public sealed class PeerClient : IDisposable
             await web.ConnectAsync(new Uri($"ws://{Bracket(computer.Host)}:{computer.Port}/ws"), timeout.Token);
             var challenge = await ReceiveJsonAsync(web, timeout.Token);
             string serverNonce = (string?)challenge?["nonce"] ?? "";
-            if (serverNonce.Length == 0) throw new InvalidOperationException("No challenge from the other computer.");
+            if (challenge is null || serverNonce.Length == 0) throw new InvalidOperationException("No challenge from the other computer.");
+            await StartChannelAsync(web, challenge, timeout.Token);
+            string tail = ":" + SecureChannel.Binding(web);
             string myNonce = PhoneStore.NewNonce();
             if (ecosystem is not null)
             {
@@ -240,7 +245,7 @@ public sealed class PeerClient : IDisposable
                 await SendRawAsync(web, new JsonObject
                 {
                     ["type"] = "member", ["deviceId"] = ecosystem.DeviceId, ["nonce"] = myNonce,
-                    ["signature"] = ecosystem.SignText($"member:{serverNonce}:{myNonce}:{ecosystem.DeviceId}"),
+                    ["signature"] = ecosystem.SignText($"member:{serverNonce}:{myNonce}:{ecosystem.DeviceId}" + tail),
                     ["members"] = known["members"]!.DeepClone(), ["revoked"] = known["revoked"]!.DeepClone()
                 }.ToJsonString());
                 while (true)
@@ -252,14 +257,14 @@ public sealed class PeerClient : IDisposable
                     ecosystem.Merge(reply["members"], reply["revoked"]);
                     string theirId = (string?)reply["deviceId"] ?? "";
                     if (computer.DeviceId is not null && theirId != computer.DeviceId) throw new InvalidOperationException("Another computer answered.");
-                    if (!ecosystem.Verify(theirId, $"server:{myNonce}:{serverNonce}:{theirId}", (string?)reply["signature"] ?? ""))
+                    if (!ecosystem.Verify(theirId, $"server:{myNonce}:{serverNonce}:{theirId}" + tail, (string?)reply["signature"] ?? ""))
                         throw new InvalidOperationException("The other computer could not prove it is in the ecosystem.");
                     break;
                 }
             }
             else
             {
-                string proof = Convert.ToBase64String(PhoneStore.Proof(token!, $"phone:{serverNonce}:{myNonce}"));
+                string proof = Convert.ToBase64String(PhoneStore.Proof(token!, $"phone:{serverNonce}:{myNonce}{tail}"));
                 await SendRawAsync(web, new JsonObject { ["type"] = "hello", ["nonce"] = myNonce, ["proof"] = proof }.ToJsonString());
                 while (true)
                 {
@@ -271,7 +276,7 @@ public sealed class PeerClient : IDisposable
                         throw new InvalidOperationException((string?)reply["error"] ?? "Refused.");
                     }
                     if (type != "welcome") continue;
-                    string expected = Convert.ToBase64String(PhoneStore.Proof(token!, $"computer:{myNonce}:{serverNonce}"));
+                    string expected = Convert.ToBase64String(PhoneStore.Proof(token!, $"computer:{myNonce}:{serverNonce}{tail}"));
                     if ((string?)reply["proof"] != expected) throw new InvalidOperationException("The other computer could not prove who it is.");
                     break;
                 }
@@ -378,36 +383,31 @@ public sealed class PeerClient : IDisposable
         Changed?.Invoke();
     }
 
+    /// <summary>The key exchange with the server's challenge (see <see cref="SecureChannel"/>); every message after it is encrypted.</summary>
+    private static Task StartChannelAsync(WebSocket web, JsonObject? challenge, CancellationToken cancel) =>
+        challenge is null ? throw new InvalidOperationException("No challenge from the other computer.") : SecureChannel.StartAsync(web, challenge, cancel);
+
     private async Task<bool> SendRawAsync(ClientWebSocket web, string json)
     {
         await sending.WaitAsync();
         try
         {
             if (web.State != WebSocketState.Open) return false;
-            await web.SendAsync(Encoding.UTF8.GetBytes(json), WebSocketMessageType.Text, true, CancellationToken.None);
+            await SecureChannel.SendAsync(web, json);
             return true;
         }
         catch (Exception error) when (error is WebSocketException or ObjectDisposedException or IOException) { return false; }
         finally { sending.Release(); }
     }
 
-    private static async Task SendRawAsync(WebSocket web, string json) =>
-        await web.SendAsync(Encoding.UTF8.GetBytes(json), WebSocketMessageType.Text, true, CancellationToken.None);
+    private static Task SendRawAsync(WebSocket web, string json) => SecureChannel.SendAsync(web, json);
 
     private static async Task<JsonObject?> ReceiveJsonAsync(WebSocket web, CancellationToken cancel)
     {
-        var buffer = new byte[8192];
-        using var message = new MemoryStream();
-        while (true)
-        {
-            var result = await web.ReceiveAsync(buffer, cancel);
-            if (result.MessageType == WebSocketMessageType.Close) return null;
-            message.Write(buffer, 0, result.Count);
-            if (message.Length > 1024 * 1024) return null;
-            if (!result.EndOfMessage) continue;
-            try { return JsonNode.Parse(message.ToArray()) as JsonObject; }
-            catch (JsonException) { return null; }
-        }
+        string? text = await SecureChannel.ReceiveAsync(web, 1024 * 1024, cancel);
+        if (text is null) return null;
+        try { return JsonNode.Parse(text) as JsonObject; }
+        catch (JsonException) { return null; }
     }
 
     private static string Bracket(string host) => host.Contains(':') && !host.StartsWith('[') ? $"[{host}]" : host;

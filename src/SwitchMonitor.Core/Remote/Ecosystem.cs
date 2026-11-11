@@ -343,7 +343,7 @@ public sealed class Ecosystem
     /// the ones next to it. A code works once. <paramref name="answer"/> is this computer's proof back, so the newcomer knows it
     /// reached the computer that showed the code.
     /// </summary>
-    public bool CheckEnrollProof(string proof, string nonce, string deviceId, string publicKey, DateTimeOffset now, out string code)
+    public bool CheckEnrollProof(string proof, string nonce, string deviceId, string publicKey, DateTimeOffset now, out string code, string binding = "")
     {
         code = "";
         lock (gate)
@@ -359,7 +359,7 @@ public sealed class Ecosystem
             {
                 string candidate = Totp.Code(totpSecret, step);
                 // Every candidate is compared (no early exit): the time taken says nothing.
-                if (CryptographicOperations.FixedTimeEquals(Convert.FromBase64String(EnrollProof(candidate, nonce, deviceId, publicKey)), offered) && step > lastStep)
+                if (CryptographicOperations.FixedTimeEquals(Convert.FromBase64String(EnrollProof(candidate, nonce, deviceId, publicKey, binding)), offered) && step > lastStep)
                 { match = candidate; matchStep = step; }
             }
             if (match is null) return Fail(now);
@@ -377,12 +377,12 @@ public sealed class Ecosystem
     }
 
     /// <summary>What a joining device sends instead of the code itself: HMAC(code, nonce, who it is, its key).</summary>
-    public static string EnrollProof(string code, string nonce, string deviceId, string publicKey) =>
-        Convert.ToBase64String(HMACSHA256.HashData(Encoding.UTF8.GetBytes(code), Encoding.UTF8.GetBytes($"enroll:{nonce}:{deviceId}:{publicKey}")));
+    public static string EnrollProof(string code, string nonce, string deviceId, string publicKey, string binding = "") =>
+        Convert.ToBase64String(HMACSHA256.HashData(Encoding.UTF8.GetBytes(code), Encoding.UTF8.GetBytes($"enroll:{nonce}:{deviceId}:{publicKey}" + (binding.Length > 0 ? ":" + binding : ""))));
 
     /// <summary>What the approving computer sends back with the ecosystem, to show it knew the code.</summary>
-    public static string EnrollAnswer(string code, string nonce, string deviceId, string approverId, string ecosystemId) =>
-        Convert.ToBase64String(HMACSHA256.HashData(Encoding.UTF8.GetBytes(code), Encoding.UTF8.GetBytes($"approver:{nonce}:{deviceId}:{approverId}:{ecosystemId}")));
+    public static string EnrollAnswer(string code, string nonce, string deviceId, string approverId, string ecosystemId, string binding = "") =>
+        Convert.ToBase64String(HMACSHA256.HashData(Encoding.UTF8.GetBytes(code), Encoding.UTF8.GetBytes($"approver:{nonce}:{deviceId}:{approverId}:{ecosystemId}" + (binding.Length > 0 ? ":" + binding : ""))));
 
     // ---- Saved on disk (ecosystem.json); the private key and the code secret are sealed for this Windows user ----
 

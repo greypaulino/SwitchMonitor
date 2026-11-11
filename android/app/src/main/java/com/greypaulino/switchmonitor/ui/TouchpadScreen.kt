@@ -72,6 +72,11 @@ import kotlin.math.roundToInt
 @Composable
 fun TouchpadScreen(ui: RemoteUi) {
     var keyboard by remember { mutableStateOf(false) }
+    var settings by remember { mutableStateOf(false) }
+    var keys by remember { mutableStateOf(false) }
+    var options by remember { mutableStateOf(false) }
+    var air by remember { mutableStateOf(false) }
+    var holding by remember { mutableStateOf(false) }
     // While the touchpad is open the Wi-Fi radio stays awake (no power-save naps between messages) and the screen stays on.
     val context = androidx.compose.ui.platform.LocalContext.current
     androidx.compose.runtime.DisposableEffect(Unit) {
@@ -95,7 +100,35 @@ fun TouchpadScreen(ui: RemoteUi) {
                 Text("Mouse and keyboard", fontSize = 17.sp, fontWeight = FontWeight.SemiBold, color = Text)
                 Text(if (ui.group.size > 1) "Pick the computer to control" else "On this computer", fontSize = 13.sp, color = Muted)
             }
-            Chip(if (keyboard) "Hide keyboard" else "Keyboard") { keyboard = !keyboard }
+            val hasGyro = remember { (context.getSystemService(android.content.Context.SENSOR_SERVICE) as android.hardware.SensorManager).getDefaultSensor(android.hardware.Sensor.TYPE_GYROSCOPE) != null }
+            if (hasGyro) { Chip("Air", selected = air) { air = !air }; Box(Modifier.size(8.dp)) }
+            // Options (three dots): speed, the phone's keyboard and the special keys.
+            Box {
+                androidx.compose.material3.IconButton(onClick = { options = true }) { androidx.compose.material3.Icon(Glyphs.More, "Options", tint = Text) }
+                androidx.compose.material3.DropdownMenu(expanded = options, onDismissRequest = { options = false }, containerColor = Raised) {
+                    androidx.compose.material3.DropdownMenuItem(
+                        text = { Text(if (settings) "Hide speed" else "Speed") }, onClick = { options = false; settings = !settings },
+                        leadingIcon = { androidx.compose.material3.Icon(Glyphs.Mouse, null, Modifier.size(20.dp), tint = Text) },
+                    )
+                    androidx.compose.material3.DropdownMenuItem(
+                        text = { Text(if (keyboard) "Hide keyboard" else "Keyboard") }, onClick = { options = false; keyboard = !keyboard },
+                        leadingIcon = { androidx.compose.material3.Icon(Glyphs.Remote, null, Modifier.size(20.dp), tint = Text) },
+                    )
+                    androidx.compose.material3.DropdownMenuItem(
+                        text = { Text(if (keys) "Hide special keys" else "Special keys") }, onClick = { options = false; keys = !keys },
+                        leadingIcon = { androidx.compose.material3.Icon(Glyphs.Next, null, Modifier.size(20.dp), tint = Text) },
+                    )
+                }
+            }
+        }
+        if (settings) {
+            Column(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Raised).border(1.dp, Line, RoundedCornerShape(16.dp)).padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                SpeedRow("Pointer speed", ui.pointerSpeed) { Remote.setPointerSpeed(it) }
+                SpeedRow("Scroll speed", ui.scrollSpeed) { Remote.setScrollSpeed(it) }
+            }
         }
         // Every computer of the group can be the one the mouse and keyboard act on.
         if (ui.group.size > 1) {
@@ -105,21 +138,73 @@ fun TouchpadScreen(ui: RemoteUi) {
             }
         }
 
-        Pad(Modifier.weight(1f).fillMaxWidth())
-
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            MouseButton("Left", "l", Modifier.weight(1f))
-            MouseButton("Middle", "m", Modifier.weight(0.6f))
-            MouseButton("Right", "r", Modifier.weight(1f))
+        AirMouse(air && holding)
+        // One surface: the pad above and, along its bottom, the three buttons (left, middle, right) as plain zones, no text.
+        Column(
+            Modifier.weight(1f).fillMaxWidth().clip(RoundedCornerShape(28.dp)).background(Card).border(1.dp, Line, RoundedCornerShape(28.dp)),
+        ) {
+            Pad(Modifier.weight(1f).fillMaxWidth(), air) { holding = it }
+            Box(Modifier.fillMaxWidth().height(1.dp).background(Line))
+            Row(Modifier.fillMaxWidth().height(84.dp)) {
+                MouseZone("l", Modifier.weight(1f))
+                Box(Modifier.width(1.dp).fillMaxSize().background(Line))
+                MouseZone("m", Modifier.weight(0.45f))
+                Box(Modifier.width(1.dp).fillMaxSize().background(Line))
+                MouseZone("r", Modifier.weight(1f))
+            }
         }
 
-        KeysRow()
+        if (keys) KeysRow()
         if (keyboard) TypeBox()
     }
 }
 
+/** The air mouse: while [active] the gyroscope turns the phone's rotation into pointer steps (yaw = sideways, pitch = up and down). */
 @Composable
-private fun Chip(label: String, selected: Boolean = false, onClick: () -> Unit) {
+private fun AirMouse(active: Boolean) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    androidx.compose.runtime.DisposableEffect(active) {
+        val manager = context.getSystemService(android.content.Context.SENSOR_SERVICE) as android.hardware.SensorManager
+        val gyro = manager.getDefaultSensor(android.hardware.Sensor.TYPE_GYROSCOPE)
+        var last = 0L
+        var carryX = 0f
+        var carryY = 0f
+        val listener = object : android.hardware.SensorEventListener {
+            override fun onSensorChanged(e: android.hardware.SensorEvent) {
+                if (last != 0L) {
+                    val dt = (e.timestamp - last) / 1_000_000_000f
+                    val k = 1100f * Remote.pointerSpeed
+                    val yaw = if (abs(e.values[2]) > 0.03f) e.values[2] else 0f     // a little drift is ignored
+                    val pitch = if (abs(e.values[0]) > 0.03f) e.values[0] else 0f
+                    carryX += -yaw * dt * k
+                    carryY += -pitch * dt * k
+                    val dx = carryX.roundToInt()
+                    val dy = carryY.roundToInt()
+                    if (dx != 0 || dy != 0) { carryX -= dx; carryY -= dy; Remote.pointer(dx, dy) }
+                }
+                last = e.timestamp
+            }
+            override fun onAccuracyChanged(sensor: android.hardware.Sensor?, accuracy: Int) {}
+        }
+        if (active && gyro != null) manager.registerListener(listener, gyro, android.hardware.SensorManager.SENSOR_DELAY_GAME)
+        onDispose { manager.unregisterListener(listener) }
+    }
+}
+
+@Composable
+private fun SpeedRow(label: String, value: Float, onChange: (Float) -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(label, Modifier.weight(1f), color = Text, fontSize = 14.sp)
+        Text("%.1f×".format(value), color = Muted, fontSize = 13.sp)
+    }
+    androidx.compose.material3.Slider(
+        value = value, onValueChange = onChange, valueRange = 0.4f..3f,
+        colors = androidx.compose.material3.SliderDefaults.colors(thumbColor = Text, activeTrackColor = Text, inactiveTrackColor = Line),
+    )
+}
+
+@Composable
+internal fun Chip(label: String, selected: Boolean = false, onClick: () -> Unit) {
     Box(
         Modifier.clip(RoundedCornerShape(14.dp)).background(if (selected) Text else Raised).border(1.dp, if (selected) Text else Line, RoundedCornerShape(14.dp))
             .clickable { onClick() }.padding(horizontal = 14.dp, vertical = 10.dp),
@@ -129,44 +214,83 @@ private fun Chip(label: String, selected: Boolean = false, onClick: () -> Unit) 
 
 /** The touchpad itself. */
 @Composable
-private fun Pad(modifier: Modifier) {
+private fun Pad(modifier: Modifier, air: Boolean, onHold: (Boolean) -> Unit) {
     val haptic = LocalHapticFeedback.current
     Box(
         modifier
-            .clip(RoundedCornerShape(24.dp))
-            .background(Card)
-            .border(1.dp, Line, RoundedCornerShape(24.dp))
-            .pointerInput(Unit) {
+            .pointerInput(air) {
+                var lastTapAt = 0L
                 awaitEachGesture {
                     awaitFirstDown(requireUnconsumed = false)
+                    if (air) onHold(true)
+                    // A tap and, at once, a touch that stays and moves: drag with the left button held (a quick second tap is a double click).
+                    val dragging = !air && System.currentTimeMillis() - lastTapAt < 280
+                    if (dragging) Remote.button("l", true)
                     var moved = 0f
                     var fingers = 1
                     var carryX = 0f
                     var carryY = 0f
                     var scrollCarry = 0f
+                    var sideCarry = 0f
+                    var pinchCarry = 0f
+                    var ctrlHeld = false
+                    var mode = 0                       // two fingers: 0 undecided, 1 scroll, 2 side scroll, 3 pinch (zoom)
+                    var accScroll = 0f
+                    var accSide = 0f
+                    var accPinch = 0f
                     while (true) {
                         val event = awaitPointerEvent(PointerEventPass.Main)
                         val down = event.changes.filter { it.pressed }
                         if (down.size > fingers) fingers = down.size
                         if (down.isEmpty()) break
                         if (down.size >= 2) {
-                            // Two fingers: scroll (the average of both).
-                            val dy = down.map { it.positionChange().y }.average().toFloat()
-                            moved += abs(dy)
-                            scrollCarry += dy
-                            val notches = (scrollCarry / 14f).toInt()
-                            if (notches != 0) {
-                                scrollCarry -= notches * 14f
-                                Remote.wheel(notches * 120)
+                            val avgY = down.map { it.positionChange().y }.average().toFloat()
+                            val avgX = down.map { it.positionChange().x }.average().toFloat()
+                            val a = down[0]
+                            val b = down[1]
+                            val now = (a.position - b.position).getDistance()
+                            val before = ((a.position - a.positionChange()) - (b.position - b.positionChange())).getDistance()
+                            val spread = now - before
+                            moved += abs(avgY) + abs(avgX) + abs(spread)
+                            if (mode == 0) {
+                                accScroll += abs(avgY); accSide += abs(avgX); accPinch += abs(spread)
+                                if (accScroll + accSide + accPinch > 22f) mode = when {
+                                    accPinch > accScroll * 1.3f && accPinch > accSide * 1.3f -> 3
+                                    accSide > accScroll * 1.5f -> 2
+                                    else -> 1
+                                }
+                            }
+                            when (mode) {
+                                1 -> {
+                                    scrollCarry += avgY
+                                    val step = 14f / Remote.scrollSpeed
+                                    val notches = (scrollCarry / step).toInt()
+                                    if (notches != 0) { scrollCarry -= notches * step; Remote.wheel(notches * 120) }
+                                }
+                                2 -> {
+                                    sideCarry += avgX
+                                    val step = 14f / Remote.scrollSpeed
+                                    val notches = (sideCarry / step).toInt()
+                                    if (notches != 0) { sideCarry -= notches * step; Remote.hwheel(notches * 120) }
+                                }
+                                3 -> {
+                                    // Pinch: Ctrl and the wheel, which zooms in most programs.
+                                    if (!ctrlHeld) { Remote.key(0x11, false); ctrlHeld = true }
+                                    pinchCarry += spread
+                                    val notches = (pinchCarry / 36f).toInt()
+                                    if (notches != 0) { pinchCarry -= notches * 36f; Remote.wheel(notches * 120) }
+                                }
                             }
                         } else {
                             val change = down[0]
                             val delta = change.positionChange()
                             moved += abs(delta.x) + abs(delta.y)
+                            // Air mouse: the finger only holds the button; the phone's turning moves the pointer.
+                            if (air) { event.changes.forEach { it.consume() }; continue }
                             // A touchpad speeds up with the finger, smoothly: the gain follows the speed in px per millisecond.
                             val elapsed = (change.uptimeMillis - change.previousUptimeMillis).coerceAtLeast(1L)
                             val pace = kotlin.math.sqrt(delta.x * delta.x + delta.y * delta.y) / elapsed
-                            val gain = (1.25f + 0.55f * pace).coerceAtMost(3.6f)
+                            val gain = (1.25f + 0.55f * pace).coerceAtMost(3.6f) * Remote.pointerSpeed
                             carryX += delta.x * gain
                             carryY += delta.y * gain
                             val dx = carryX.roundToInt()
@@ -178,32 +302,39 @@ private fun Pad(modifier: Modifier) {
                         }
                         event.changes.forEach { it.consume() }
                     }
-                    // A short touch that hardly moved is a click: one finger left, two fingers right.
-                    if (moved < 24f) {
+                    onHold(false)
+                    if (ctrlHeld) Remote.key(0x11, true)
+                    if (dragging) {
+                        Remote.button("l", false)
+                        lastTapAt = 0L
+                    } else if (moved < 24f) {
+                        // A short touch that hardly moved is a click: one finger left, two fingers right, three fingers middle.
                         haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                        Remote.click(if (fingers >= 2) "r" else "l")
-                    }
+                        Remote.click(if (fingers >= 3) "m" else if (fingers == 2) "r" else "l")
+                        lastTapAt = if (fingers == 1 && !air) System.currentTimeMillis() else 0L
+                    } else lastTapAt = 0L
                 }
             },
         contentAlignment = Alignment.Center,
-    ) {
-        Text("Move one finger to move the pointer\nTap to click · two fingers to scroll", color = Muted, fontSize = 13.sp, textAlign = TextAlign.Center)
-    }
+    ) { }
 }
 
+/** A mouse button as a zone of the pad: it lights while it is pressed. */
 @Composable
-private fun MouseButton(label: String, button: String, modifier: Modifier) {
+private fun MouseZone(button: String, modifier: Modifier) {
+    var pressed by remember { mutableStateOf(false) }
     Box(
-        modifier.height(52.dp).clip(RoundedCornerShape(16.dp)).background(Raised).border(1.dp, Line, RoundedCornerShape(16.dp))
+        modifier.fillMaxSize().background(if (pressed) Raised else androidx.compose.ui.graphics.Color.Transparent)
             .pointerInput(button) {
                 detectTapGestures(onPress = {
+                    pressed = true
                     Remote.button(button, true)
                     tryAwaitRelease()
+                    pressed = false
                     Remote.button(button, false)
                 })
             },
-        contentAlignment = Alignment.Center,
-    ) { Text(label, color = Text, fontSize = 15.sp) }
+    )
 }
 
 /** Keys a keyboard needs that the phone's keyboard lacks (Windows virtual-key codes). */

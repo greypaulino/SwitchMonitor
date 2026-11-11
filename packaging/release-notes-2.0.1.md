@@ -20,7 +20,12 @@ Your computers and phones now work as one group, and the app is easier to find y
 
 - The app is the group's, not one computer's: controls for every display of every connected computer, a **Controls / Mouse** pair of tabs, and the volume of the computer that owns the selected display.
 - Join the group with the code (*Add this phone*) or pair with one computer as before.
-- **Mouse** tab: touchpad, buttons, scroll, keys and a keyboard for any computer of the group.
+- **Mouse** tab: touchpad, buttons, scroll, keys and a keyboard for any computer of the group, with pointer and scroll speed.
+- **Remote** tab: a control wheel like a media remote (play/pause, volume, back and forward), mute above the favorite programs (a sideways carousel of icons) per computer to open or close, and turn the computer off (10 s to cancel). Needs *Phone as remote* on that computer.
+- **Shared clipboard** (text and images, off by default): what you copy on one device is copied on the others of the group, phones included.
+- **Send files**: drop files on a computer or phone of the group (*Settings > Devices > My devices > Send files*), or send them from the phone's menu; the receiver asks first and saves them in Downloads/SwitchMonitor.
+- **Air mouse** (gyroscope): hold a finger on the pad and point the phone like a TV remote. *Chain* moves the brightness of every display of the group together.
+- The phone connects to **every computer of the group** at once and shows each one's own displays together; a command goes to the computer that owns the display.
 
 ## Files
 

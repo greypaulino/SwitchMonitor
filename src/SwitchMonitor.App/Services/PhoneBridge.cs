@@ -41,7 +41,7 @@ public sealed class PhoneBridge : ObservableObject, IRemoteHost, IDisposable
         dispatcher = Dispatcher.CurrentDispatcher;
         store = new PhoneStore();
         Eco = new Ecosystem();
-        server = new RemoteServer(store, this, log, ecosystem: Eco) { Enrolling = AskToAdmit };
+        server = new RemoteServer(store, this, log, ecosystem: Eco) { Enrolling = AskToAdmit, AllowUnencryptedPage = main.Settings.PhoneWebPage };
         push = new DispatcherTimer(TimeSpan.FromMilliseconds(250), DispatcherPriority.Background, (_, _) => _ = PushIfChangedAsync(), dispatcher);
         codeClock = new DispatcherTimer(TimeSpan.FromSeconds(1), DispatcherPriority.Background, (_, _) => TickCode(), dispatcher);
         PairCommand = new RelayCommand(_ => NewCode(), _ => Enabled);
@@ -127,6 +127,18 @@ public sealed class PhoneBridge : ObservableObject, IRemoteHost, IDisposable
         {
             if (value == main.Settings.PhoneInput) return;
             main.UpdateSettings(main.Settings with { PhoneInput = value }, shortcutsChanged: false);
+            Raise();
+        }
+    }
+
+    /// <summary>A paired phone may open and close programs and turn this computer off (Settings > Devices).</summary>
+    public bool PhoneRemote
+    {
+        get => main.Settings.PhoneRemote;
+        set
+        {
+            if (value == main.Settings.PhoneRemote) return;
+            main.UpdateSettings(main.Settings with { PhoneRemote = value }, shortcutsChanged: false);
             Raise();
         }
     }
@@ -362,7 +374,136 @@ public sealed class PhoneBridge : ObservableObject, IRemoteHost, IDisposable
 
     // ---- What the phone does ----
 
-    public Task<string?> CommandAsync(string type, JsonElement message) => dispatcher.InvokeAsync(() => Run(type, message)).Task;
+    public Task<string?> CommandAsync(string type, JsonElement message) =>
+        type is "launch" or "closeapp" or "power" ? RemoteAsync(type, message) : dispatcher.InvokeAsync(() => Run(type, message)).Task;
+
+    private const string RemoteOff = "Turn on \"Phone as remote\" in SwitchMonitor > Settings > Devices on that computer first.";
+
+    /// <summary>The programs a phone may open or close (the Start menu's), with whether each one is running.</summary>
+    public async Task<JsonObject> AppsAsync(JsonElement request)
+    {
+        if (!main.Settings.PhoneRemote) return new JsonObject { ["allowed"] = false, ["apps"] = new JsonArray() };
+        var apps = await Automation.InstalledApps.AllAsync();
+        var running = System.Diagnostics.Process.GetProcesses().Select(p => p.ProcessName.ToLowerInvariant() + ".exe").ToHashSet();
+        // The icons the phone asked for (its favorites): small PNGs, base64.
+        var wanted = request.TryGetProperty("icons", out var ids) && ids.ValueKind == JsonValueKind.Array
+            ? ids.EnumerateArray().Select(i => i.GetString() ?? "").ToHashSet(StringComparer.OrdinalIgnoreCase) : [];
+        var icons = new JsonObject();
+        foreach (var app in apps.Where(a => wanted.Contains(a.Exe)))
+            if (IconPng(app.Path) is { } png) icons[app.Exe] = png;
+        return new JsonObject
+        {
+            ["allowed"] = true,
+            ["apps"] = new JsonArray(apps.Select(a => (JsonNode)new JsonObject { ["id"] = a.Exe, ["name"] = a.Name, ["running"] = running.Contains(a.Exe.ToLowerInvariant()) }).ToArray()),
+            ["icons"] = icons
+        };
+    }
+
+    private static string? IconPng(string path)
+    {
+        try
+        {
+            if (AppIcons.IconOf(path) is not System.Windows.Media.Imaging.BitmapSource bitmap) return null;
+            var encoder = new System.Windows.Media.Imaging.PngBitmapEncoder();
+            encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(bitmap));
+            using var stream = new MemoryStream();
+            encoder.Save(stream);
+            return Convert.ToBase64String(stream.ToArray());
+        }
+        catch (Exception error) when (error is IOException or NotSupportedException or InvalidOperationException) { return null; }
+    }
+
+    // ---- Shared clipboard ----
+
+    /// <summary>The text copied on this computer goes on to the phones that are connected (computers are reached by their own connection).</summary>
+    public Task SendToPhonesAsync(JsonObject message) => server.SendToPhonesAsync(message);
+
+    public void ClipboardEvent(JsonElement message, string? deviceId) => main.Clipboard?.OnClip(message);
+
+    public void BlobEvent(JsonElement message, string? deviceId) => main.Transfers?.OnBlob(message);
+
+    /// <summary>The phones connected now, and a way to send to one of them (files and images).</summary>
+    public IReadOnlyList<Core.Remote.PairedPhone> PhonesOnline => server.PhonesOnline;
+    public Task<bool> SendToPhoneAsync(string phoneId, JsonObject message) => server.SendToPhoneAsync(phoneId, message);
+
+    /// <summary>The right-click "Send with SwitchMonitor…" of Windows Explorer.</summary>
+    public bool ExplorerMenu
+    {
+        get => main.Settings.ExplorerMenu;
+        set
+        {
+            if (value == main.Settings.ExplorerMenu) return;
+            main.UpdateSettings(main.Settings with { ExplorerMenu = value }, shortcutsChanged: false);
+            Services.ExplorerMenu.Apply(value, value ? main.Transfers?.Targets().Select(t => (t.Id, t.Name)) : null);
+            Raise();
+        }
+    }
+
+    /// <summary>The web page for phones without the app: not encrypted (a browser cannot do it), so off unless the person turns it on.</summary>
+    public bool PhoneWebPage
+    {
+        get => main.Settings.PhoneWebPage;
+        set
+        {
+            if (value == main.Settings.PhoneWebPage) return;
+            main.UpdateSettings(main.Settings with { PhoneWebPage = value }, shortcutsChanged: false);
+            server.AllowUnencryptedPage = value;
+            Raise();
+        }
+    }
+
+    public bool SharedClipboard
+    {
+        get => main.Settings.SharedClipboard;
+        set
+        {
+            if (value == main.Settings.SharedClipboard) return;
+            main.UpdateSettings(main.Settings with { SharedClipboard = value }, shortcutsChanged: false);
+            Raise();
+        }
+    }
+
+    /// <summary>Open or close a program, or turn the computer off (needs "Phone as remote"). Off waits 10 s so someone here can cancel it.</summary>
+    private async Task<string?> RemoteAsync(string type, JsonElement message)
+    {
+        if (!main.Settings.PhoneRemote) return RemoteOff;
+        string Text(string name) => message.TryGetProperty(name, out var v) ? v.GetString() ?? "" : "";
+        try
+        {
+            switch (type)
+            {
+                case "launch":
+                {
+                    var apps = await Automation.InstalledApps.AllAsync();
+                    if (apps.FirstOrDefault(a => a.Exe.Equals(Text("id"), StringComparison.OrdinalIgnoreCase)) is not { } app) return "That program is not in the Start menu of this computer.";
+                    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(app.Path) { UseShellExecute = true });
+                    return null;
+                }
+                case "closeapp":
+                {
+                    // Only a program of this computer's Start menu (the same list the phone shows) can be closed.
+                    var known = await Automation.InstalledApps.AllAsync();
+                    if (known.FirstOrDefault(a => a.Exe.Equals(Text("id"), StringComparison.OrdinalIgnoreCase)) is not { } listed) return "That program is not in the Start menu of this computer.";
+                    string name = System.IO.Path.GetFileNameWithoutExtension(listed.Exe);
+                    if (name.Length == 0) return "Unknown program.";
+                    int closed = 0;
+                    foreach (var process in System.Diagnostics.Process.GetProcessesByName(name))
+                        using (process) { try { if (process.CloseMainWindow()) closed++; } catch (InvalidOperationException) { } }
+                    return closed > 0 ? null : "That program is not open.";
+                }
+                default:
+                    if (Text("action") == "cancel") { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("shutdown.exe", "/a") { CreateNoWindow = true, UseShellExecute = false }); return null; }
+                    if (Text("action") != "shutdown") return "Unknown action.";
+                    log.Write(LogLevel.Warning, "A phone asked to turn this computer off: it goes off in 10 s.");
+                    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("shutdown.exe", "/s /t 10 /c \"SwitchMonitor: turned off from a phone. Run shutdown /a to cancel.\"") { CreateNoWindow = true, UseShellExecute = false });
+                    return null;
+            }
+        }
+        catch (Exception error) when (error is System.ComponentModel.Win32Exception or InvalidOperationException or System.IO.IOException)
+        {
+            return "Windows could not do that: " + error.Message;
+        }
+    }
 
     private string? Run(string type, JsonElement message)
     {
@@ -392,6 +533,16 @@ public sealed class PhoneBridge : ObservableObject, IRemoteHost, IDisposable
                 if (panel.Scenes.FirstOrDefault(s => s.Name == name) is not { } scene) return "Unknown profile.";
                 scene.ApplyCommand.Execute(null);
                 return null;
+            case "media":
+            {
+                // The media keys of a phone's Remote tab (like a keyboard's): needs the phone to be allowed as mouse and keyboard.
+                if (!main.Settings.PhoneInput) return "Turn on \"Phone as mouse and keyboard\" in SwitchMonitor > Settings > Devices on that computer first.";
+                string key = message.TryGetProperty("key", out var mk) ? mk.GetString() ?? "" : "";
+                int vk = key switch { "playpause" => 0xB3, "next" => 0xB0, "prev" => 0xB1, "stop" => 0xB2, "volup" => 0xAF, "voldown" => 0xAE, "mute" => 0xAD, _ => 0 };
+                if (vk == 0) return "Unknown media key.";
+                main.Share?.Tap(vk);
+                return null;
+            }
             case "mode":
                 if (panel.PictureMode is not { } mode || !panel.ShowsModes) return "Picture modes are available while Custom is in use.";
                 if (Int("value") is not int modeValue || mode.Options.FirstOrDefault(o => o.Value == modeValue) is not { } option)
