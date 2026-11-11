@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -58,6 +58,16 @@ public partial class App : Application
             string folder = e.Args.ElementAtOrDefault(cornerAt + 1) is { Length: > 0 } given && !given.StartsWith("--") ? given : Path.GetTempPath();
             Theme.Apply(Core.Settings.InterfaceSettings.Load());
             Services.CoverSelfTest.Corner(Dispatcher, folder, () => Shutdown());
+            return;
+        }
+
+        // Pairing pop-ups (--test-pair [folder]): photographed.
+        int pairAt = Array.FindIndex(e.Args, x => x.Equals("--test-pair", StringComparison.OrdinalIgnoreCase));
+        if (pairAt >= 0)
+        {
+            string folder = e.Args.ElementAtOrDefault(pairAt + 1) is { Length: > 0 } given && !given.StartsWith("--") ? given : Path.GetTempPath();
+            Theme.Apply(Core.Settings.InterfaceSettings.Load());
+            Services.CoverSelfTest.PairWindows(Dispatcher, folder, () => Shutdown());
             return;
         }
 
@@ -137,6 +147,7 @@ public partial class App : Application
             settingsProblem = $"settings.json could not be read ({error.Message}); defaults are in use until it is fixed.";
         }
 
+        Loc.Start(settings.Language);   // the language, before any window is made
         Theme.Apply(Core.Settings.InterfaceSettings.Load());   // the saved look, before the window appears
         model = new MainViewModel(log, settings)
         {
@@ -165,6 +176,10 @@ public partial class App : Application
         if (demoScenario is null) desktopStar = new Services.DesktopStarKey(() => sunPanel.ShowPanel());
         // A phone on the home Wi-Fi (Settings > Phone); not in demo mode, which must not answer the network.
         if (demoScenario is null && log is not null) model.Phone = new Services.PhoneBridge(model, sunModel, log);
+        // Other computers this one controls (Settings > Computers); their displays join the brightness panel.
+        if (demoScenario is null && log is not null) model.Peers = new Services.PeerService(model, log);
+        // One mouse and keyboard for the paired computers (off until turned on in Settings > Devices).
+        if (demoScenario is null && log is not null) model.Share = new Services.InputShareService(model, log);
 
         if (demoScenario is not null)
         {
@@ -182,7 +197,13 @@ public partial class App : Application
         model.ShortcutsChanged += RegisterHotkeys;
         model.RestartRequested += () =>
         {
-            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(Environment.ProcessPath!, RestartedArgument) { UseShellExecute = false });
+            try
+            {
+                var start = new System.Diagnostics.ProcessStartInfo(Environment.ProcessPath!, RestartedArgument) { UseShellExecute = model.RestartElevated };
+                if (model.RestartElevated) start.Verb = "runas";
+                System.Diagnostics.Process.Start(start);
+            }
+            catch (System.ComponentModel.Win32Exception) { model.RestartElevated = false; return; }   // the administrator prompt was declined: stay as we are
             ExitApp();
         };
         model.IsShortcutFree = hotkeys.IsFree;
@@ -199,7 +220,11 @@ public partial class App : Application
 
         // Started by Windows at sign-in: stay in the notification area.
         bool atSignIn = e.Args.Any(a => a.Equals(Services.StartWithWindows.StartupArgument, StringComparison.OrdinalIgnoreCase));
-        if (!settings.StartMinimized && !atSignIn) ShowWindow();
+        bool showMain = !settings.StartMinimized && !atSignIn;
+        model.TourRequested += all => ShowTour(all, null);
+        // The welcome tour goes first: the main window opens when it is closed ("Let's start!").
+        bool touring = !atSignIn && demoScenario is null && ShowTour(false, showMain ? ShowWindow : null);
+        if (showMain && !touring) ShowWindow();
         if (settingsProblem is not null) model.Report(settingsProblem, false);
         displaySet = CurrentDisplaySet();
         _ = StartAsync();
@@ -297,7 +322,7 @@ public partial class App : Application
     {
         var items = new List<TrayMenuItem>
         {
-            new("Exit", "\uE711", ExitApp),
+            new("Exit", "\uE8BB", ExitApp),
             new("Start With Windows", "\uE71D", () => { if (model is not null) model.StartWithWindows = !model.StartWithWindows; },
                 () => model?.StartWithWindows ?? false)
         };
@@ -310,7 +335,7 @@ public partial class App : Application
     {
         var items = new List<TrayMenuItem>
         {
-            new("Exit", "\uE711", ExitApp),
+            new("Exit", "\uE8BB", ExitApp),
             new("Shortcuts", Icons.Shortcuts, OpenShortcuts),
             new("Edit a Profile", Icons.Profiles, EditProfile),
             new("Open", "\uE8A7", ShowWindow)
@@ -387,8 +412,17 @@ public partial class App : Application
             Add("open window", chord, ShowWindow);
         foreach (var chord in settings.For(HotkeyAction.CustomProfile))
             Add("profile Custom", chord, () => _ = model.RestoreCustomAsync());
-        foreach (var input in settings.InputShortcuts)
-            Add(model.DescribeInputShortcut(input), input.Chord, () => _ = model.SwitchInputByKeyAsync(input.MonitorKey, input.InputCode));
+        // A combination only one display uses acts on that display; one several displays share acts on the display under the mouse.
+        foreach (var group in settings.InputShortcuts.GroupBy(i => i.Chord))
+        {
+            var shared = group.ToList();
+            if (shared.Count == 1)
+            {
+                var input = shared[0];
+                Add(model.DescribeInputShortcut(input), input.Chord, () => _ = model.SwitchInputByKeyAsync(input.MonitorKey, input.InputCode));
+            }
+            else Add(string.Join(" / ", shared.Select(model.DescribeInputShortcut)), group.Key, () => _ = model.SwitchInputByChordAsync(group.Key));
+        }
         foreach (var scene in model.SceneProfiles)
             if (scene.Hotkey is { } chord) Add($"profile {scene.Name}", chord, () => _ = model.ApplySceneAsync(scene));
 
@@ -437,10 +471,31 @@ public partial class App : Application
         if (sender is Slider slider && !slider.IsKeyboardFocusWithin) slider.Focus();
     }
 
+    private Services.WelcomeWindow? tourWindow;
+
+    /// <summary>The welcome tour: every feature the first time (or when asked), else only the ones added since it last ran. True when it opened.</summary>
+    private bool ShowTour(bool all, Action? whenClosed)
+    {
+        if (model is null) return false;
+        if (tourWindow is not null) { tourWindow.Activate(); return true; }
+        int seen = all ? 0 : model.Settings.WelcomeSeen;
+        var news = Features.All.Where(f => f.Order > seen).ToList();
+        if (news.Count == 0) return false;
+        bool first = seen == 0;
+        tourWindow = new Services.WelcomeWindow(news, first);
+        tourWindow.Closed += (_, _) => { tourWindow = null; whenClosed?.Invoke(); };
+        tourWindow.Show();
+        if (!all && model.Settings.WelcomeSeen != Features.Latest)
+            model.UpdateSettings(model.Settings with { WelcomeSeen = Features.Latest }, shortcutsChanged: false);
+        return true;
+    }
+
     private void ShowWindow()
     {
         if (window is null) return;
+        if (tourWindow is not null) { tourWindow.Activate(); return; }   // the welcome tour first
         window.ShowAnimated();
+        model?.Placer.PlaceNow(new System.Windows.Interop.WindowInteropHelper(window).Handle);   // on the display chosen in the Apps tab
         if (model?.Updates is { IsDue: true } due) _ = due.CheckAsync(silent: true);   // opened after a long time: look again
     }
 
@@ -456,7 +511,9 @@ public partial class App : Application
         sunTray?.Dispose();
         trayMenu?.Close();
         desktopStar?.Dispose();
+        model?.Share?.Dispose();
         model?.Phone?.Dispose();
+        model?.Peers?.Dispose();
         sunPanel?.Close();
         model?.Shutdown();
         log?.Write(LogLevel.Info, "SwitchMonitor v2 stopped.");

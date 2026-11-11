@@ -16,6 +16,7 @@
       },
       "transports": [ "intel-cui", "amd-adl" ],
       "resendInputOnReturn": [ "intel-cui" ],
+      "standardInputOn": [ "amd-adl" ],
       "controls": [
         {
           "vcp": "15", "name": "Picture mode", "aliases": [ "LG picture mode" ], "kind": "choice", "capabilityValues": "ignore",

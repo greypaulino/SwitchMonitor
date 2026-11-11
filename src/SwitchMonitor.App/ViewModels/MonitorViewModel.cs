@@ -25,6 +25,12 @@ public sealed class MonitorViewModel : ObservableObject
 
     public string Key => Device.Key;
 
+    /// <summary>The display belongs to another computer (this one controls it over the network).</summary>
+    public bool IsRemote => Device.Identity.IsRemote;
+
+    /// <summary>The computer that owns the display, or null for a display on this computer.</summary>
+    public string? ComputerName => Device.Identity.RemoteComputer;
+
     /// <summary>True once the panel has been read from the monitor.</summary>
     public bool IsLoaded => loaded && loading is { IsCompleted: true };
 
@@ -32,10 +38,24 @@ public sealed class MonitorViewModel : ObservableObject
     public int? CurrentInput => Inputs.FirstOrDefault(i => i.IsCurrent)?.Code;
 
     public MonitorDevice Device { get; }
-    /// <summary>Type, brand and model ("Monitor LG 29WK600", "Laptop DELL N5050").</summary>
+    /// <summary>Brand and model ("LG 29WK600", "Laptop DELL N5050").</summary>
     public string Name => DisplayNames.For(Device);
     public bool IsActive => Device.IsActive;
-    public bool IsControllable => Device.IsControllable;
+    public bool IsControllable => Device.IsControllable && !unavailable;
+
+    private bool unavailable;
+    private bool stopped;
+
+    /// <summary>What the page says in place of the controls.</summary>
+    public string NothingToAdjustHint => unavailable
+        ? "This display is not answering: it is probably showing another computer. It comes back here by itself when that computer lets go of it."
+        : "Nothing to adjust here right now. Turn the display on or reconnect it, then use Refresh displays.";
+
+    /// <summary>
+    /// The display is on and connected here but does not answer: the monitor is showing another computer's input, or that
+    /// computer holds its DDC/CI. Not an error: it is checked again every few seconds and comes back by itself.
+    /// </summary>
+    public bool IsUnavailable => unavailable;
 
     private string? panel;
 
@@ -89,9 +109,11 @@ public sealed class MonitorViewModel : ObservableObject
         : "Prefer this display as the main display: whenever it is connected, it becomes the main display.";
 
     public string Subtitle => !Device.IsActive ? "Off — Windows is not using this display"
+        : unavailable ? (IsRemote ? $"Unavailable on {ComputerName}" : "Unavailable — in use by another computer")
         : !Device.IsControllable ? "No control path on this computer"
         : string.Join(" · ", new[]
           {
+              IsRemote ? ComputerName : null,
               IsMainDisplay ? "Main display" : null,
               IsPreferredMain ? "Preferred" : null,
               Device.Identity.IsBuiltIn ? "Built-in" : IsMainDisplay ? null : "External",
@@ -100,7 +122,7 @@ public sealed class MonitorViewModel : ObservableObject
 
     /// <summary>Tooltip of the display: full name and how the app talks to it (ddc-ci, intel-cui, amd-adl, wmi).</summary>
     /// <summary>Laptop screen, external monitor, or one Windows is not using.</summary>
-    public string DisplayGlyph => Device.Identity.IsBuiltIn ? Icons.BuiltIn : Device.IsActive ? Icons.External : Icons.ExternalOff;
+    public string DisplayGlyph => Device.Identity.IsBuiltIn ? Icons.BuiltIn : Device.IsActive && !unavailable ? Icons.External : Icons.ExternalOff;
 
     public string Details => Device.IsControllable ? $"{Name}\nControlled through {Device.TransportId}" : Name;
 
@@ -145,13 +167,13 @@ public sealed class MonitorViewModel : ObservableObject
     /// While the controls are being read for the first time: the page shows grey placeholders the size of the Input and
     /// Settings cards, so nothing jumps when they arrive.
     /// </summary>
-    public bool ShowsSkeleton => Device.IsControllable && Controls.Count == 0 && loadError is null && (isLoading || !loaded);
+    public bool ShowsSkeleton => IsControllable && Controls.Count == 0 && loadError is null && (isLoading || !loaded);
     public string? LoadError { get => loadError; private set { if (Set(ref loadError, value)) Raise(nameof(ShowsSkeleton)); } }
 
     /// <summary>Builds the panel the first time the monitor is selected (reading every control takes a few seconds on GPU transports).</summary>
     public Task EnsureLoadedAsync()
     {
-        if (loaded || !Device.IsControllable) return loading ?? Task.CompletedTask;
+        if (loaded || !IsControllable) return loading ?? Task.CompletedTask;
         loaded = true;
         return loading = LoadAsync();
     }
@@ -192,7 +214,7 @@ public sealed class MonitorViewModel : ObservableObject
                         // A standard slider (brightness above all) stays on the panel, dimmed, and is read again
                         // shortly: on the laptop the first read after sign-in can fail and works seconds later.
                         if (control is SliderControlViewModel) { control.IsUnread = true; built.Add(control); }
-                        else notShown.Add(control.Name);
+                        else { notShown.Add(control.Name); failedControls.Add(control); }
                         failed.Add($"{control.Name} ({error.Message})");
                     }
                 }
@@ -204,6 +226,31 @@ public sealed class MonitorViewModel : ObservableObject
                 return (inputList, current, built, failed);
             });
 
+            // Nothing answered at all (and no laptop panel, whose first read can fail by itself): not an error, the display is
+            // busy with another computer. Show it as unavailable and look again every few seconds.
+            if (!Device.Identity.IsBuiltIn && currentInput is null && !controls.Any(c => !c.IsUnread && !c.Feature.Definition.WriteOnly))
+            {
+                notShown.Clear();
+                loaded = false;
+                SetUnavailable(true);
+                _ = WatchAvailabilityAsync();
+                return;
+            }
+
+            // The display answers but shows another computer's input (the LG keeps answering DDC on every input): it is not
+            // this computer's display now, so it counts as unavailable here and is not published to the other computers.
+            if (currentInput is int shown && Device.AnswersOnOtherInputs && ShowsAnotherComputerNow(shown))
+            {
+                notShown.Clear();
+                loaded = false;
+                SetUnavailable(true);
+                _ = WatchAvailabilityAsync();
+                return;
+            }
+
+            _ = WatchHealthAsync();
+            // The display answers and shows this computer's picture: this is the input this computer is plugged into.
+            if (currentInput is int own && Device.ResendsInputOnReturn && Device.IsActive) this.inputs.LearnHomeInput(this, own);
             foreach (var (code, label) in inputs)
                 Inputs.Add(new InputViewModel(this, code, label, this.inputs) { IsCurrent = code == currentInput });
             this.inputs.InputsLoaded(this);
@@ -224,6 +271,7 @@ public sealed class MonitorViewModel : ObservableObject
                             string.Join("; ", unreadable);
                 report($"{Name}: {LoadError}", false);
                 if (retrying) _ = RetryUnreadAsync();
+                if (failedControls.Count > 0) _ = RetryFailedControlsAsync();
             }
         }
         catch (Exception error) when (error is not OutOfMemoryException)
@@ -236,6 +284,117 @@ public sealed class MonitorViewModel : ObservableObject
             IsLoading = false;
             Raise(nameof(HasNoAdvanced));
         }
+    }
+
+    private void SetUnavailable(bool value)
+    {
+        if (unavailable == value) return;
+        unavailable = value;
+        LoadError = null;
+        foreach (string name in new[] { nameof(IsUnavailable), nameof(NothingToAdjustHint), nameof(IsControllable), nameof(Subtitle), nameof(DisplayGlyph), nameof(Details), nameof(ShowsSkeleton) })
+            Raise(name);
+    }
+
+    private bool watching;
+
+    /// <summary>The display stopped answering: its page is emptied, it shows as unavailable and is looked at again.</summary>
+    private void GoUnavailable()
+    {
+        ForgetControls();
+        SetUnavailable(true);
+        _ = WatchAvailabilityAsync();
+    }
+
+    private bool ProbeAnswers()
+    {
+        Device.ForgetFailedCapabilities();
+        foreach (byte code in new[] { VcpCode.Brightness, VcpCode.InputSource })
+            try { Device.ReadOnce(code); return true; }
+            catch (Exception error) when (error is not OutOfMemoryException) { }
+        return false;
+    }
+
+    /// <summary>It answers, but reports an input other than the one this computer is plugged into (only for displays that keep answering).</summary>
+    private bool ShowsAnotherComputer() =>
+        Device.AnswersOnOtherInputs && Device.TryReadInputOnce() is int shown && ShowsAnotherComputerNow(shown);
+
+    /// <summary>
+    /// The display answers, but is it showing this computer? Windows knows how this computer is plugged in (HDMI, DisplayPort...):
+    /// an input of another kind is the other computer's. When that does not decide (same kind on both), the input learned for
+    /// this computer is compared.
+    /// </summary>
+    private bool ShowsAnotherComputerNow(int shown)
+    {
+        if (Core.Diagnostics.BuiltInProbe.InputFitsConnector(Core.Diagnostics.BuiltInProbe.ConnectorOf(Device.Identity.GdiName), shown) is bool fits)
+            return !fits;
+        return this.inputs.HomeInput(this) is int own && shown != own;
+    }
+
+    private bool healthWatching;
+
+    /// <summary>
+    /// A display can stop answering without the app doing anything: its own menu switched it to another computer. Every 30
+    /// seconds a quiet read; two misses in a row (so one slow answer does not count) and it shows as unavailable.
+    /// </summary>
+    private async Task WatchHealthAsync()
+    {
+        if (healthWatching || Device.Identity.IsBuiltIn) return;
+        healthWatching = true;
+        try
+        {
+            while (!stopped)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(30));
+                if (stopped) break;
+                if (unavailable || !loaded || isLoading || !Device.IsControllable) continue;
+                if (await RunExclusiveAsync(ProbeAnswers)) continue;
+                await Task.Delay(TimeSpan.FromSeconds(3));
+                if (stopped || unavailable || await RunExclusiveAsync(ProbeAnswers)) continue;
+                GoUnavailable();
+            }
+        }
+        finally { healthWatching = false; }
+    }
+
+    private void ForgetControls()
+    {
+        Inputs.Clear();
+        Controls.Clear();
+        AdvancedControls.Clear();
+        notShown.Clear();
+        failedControls.Clear();
+        loaded = false;
+    }
+
+    /// <summary>While unavailable: every 8 seconds one quiet read; when the display answers, its controls are loaded.</summary>
+    private async Task WatchAvailabilityAsync()
+    {
+        if (watching) return;
+        watching = true;
+        try
+        {
+            while (unavailable && !stopped)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(8));
+                if (!unavailable || stopped) break;
+                bool answers = await RunExclusiveAsync(ProbeAnswers);
+                if (!answers || await RunExclusiveAsync(ShowsAnotherComputer)) continue;
+                ForgetControls();
+                SetUnavailable(false);
+                report($"{Name} is available again.", true);
+                await EnsureLoadedAsync();
+                Raise(nameof(Name));
+                // Another computer handed the display back by the standard code: its menu still shows the other port. Sending
+                // this computer's own input again (the vendor command) refreshes it (08/11/2026, LG 29WK600 from an AMD PC).
+                if (Device.ResendsInputOnReturn && this.inputs.HomeInput(this) is int home && Device.Inputs.Contains(home))
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(1.5));
+                    if (!stopped && !unavailable)
+                        await SwitchToAsync(home, $"menu corrected ({Device.DescribeInput(home)} sent again)");
+                }
+            }
+        }
+        finally { watching = false; }
     }
 
     /// <summary>Re-reads every control (after a scene or a change made on the monitor's own menu).</summary>
@@ -259,6 +418,7 @@ public sealed class MonitorViewModel : ObservableObject
     private bool retrying;
     /// <summary>Standard controls left out of the panel because they could not be read (not retried).</summary>
     private readonly List<string> notShown = [];
+    private readonly List<ControlViewModel> failedControls = [];
 
     /// <summary>
     /// Reads the controls that could not be read at load time again, a few times with growing pauses
@@ -295,6 +455,40 @@ public sealed class MonitorViewModel : ObservableObject
                             ". Use Retry next to it.";
         }
         finally { retrying = false; }
+    }
+
+    /// <summary>
+    /// Controls left out because their first read failed (the display was still waking up, or answering badly) are read again
+    /// after 3, 8, 16 and 30 seconds; the ones that answer join the panel in their place. Nothing is reported.
+    /// </summary>
+    private async Task RetryFailedControlsAsync()
+    {
+        foreach (int seconds in new[] { 3, 5, 8, 14 })
+        {
+            await Task.Delay(TimeSpan.FromSeconds(seconds));
+            if (stopped || unavailable || failedControls.Count == 0) return;
+            var pending = failedControls.ToArray();
+            var read = await RunExclusiveAsync(() =>
+            {
+                var ok = new List<ControlViewModel>();
+                foreach (var control in pending)
+                    try { control.Load(Device); ok.Add(control); } catch (Exception error) when (error is not OutOfMemoryException) { }
+                return ok;
+            });
+            foreach (var control in read)
+            {
+                failedControls.Remove(control);
+                notShown.Remove(control.Name);
+                control.Publish();
+                var target = FeatureCatalog.IsAdvanced(control.Feature.Code) ? AdvancedControls : Controls;
+                int rank = SettingOrder.Rank(control.Feature.Definition);
+                int at = target.Count;
+                for (int i = 0; i < target.Count; i++)
+                    if (SettingOrder.Rank(target[i].Feature.Definition) > rank) { at = i; break; }
+                target.Insert(at, control);
+            }
+            if (read.Count > 0) { UpdateLocks(); ClearLoadErrorWhenAllRead(); Raise(nameof(HasAdvanced)); }
+        }
     }
 
     private void ClearLoadErrorWhenAllRead()
@@ -436,9 +630,31 @@ public sealed class MonitorViewModel : ObservableObject
     public async Task<bool> SwitchToAsync(int code, string? what = null)
     {
         string label = Device.DescribeInput(code);
-        bool ok = await RunAsync(what ?? $"Input {label}", device => device.SetInput(code));
-        if (ok) MarkCurrentInput(code);
-        return ok;
+        string text = what ?? $"Input {label}";
+        try
+        {
+            var outcome = await RunExclusiveAsync(() => Device.SetInput(code));
+            // The write went out but the display does not confirm (or says another input): when it was switched to an input
+            // another computer uses, it stops answering here. That is the point of the switch, not a failure.
+            if (!Device.Identity.IsBuiltIn && outcome == WriteOutcome.Unverified)
+            {
+                report($"{Name}: {text} (sent; the display is probably showing another computer now)", true);
+                GoUnavailable();
+                return true;
+            }
+            report(outcome == WriteOutcome.Mismatch
+                ? $"{Name}: {text} — the display stayed on its input. It usually does not switch to an input with no signal: check that the other computer is on and connected there."
+                : Describe(outcome, text), outcome != WriteOutcome.Mismatch);
+            if (outcome != WriteOutcome.Mismatch) MarkCurrentInput(code);
+            // Confirmed and still answering: this is an input this computer has the picture on (the one it is plugged into).
+            if (outcome == WriteOutcome.Applied && Device.AnswersOnOtherInputs) this.inputs.LearnHomeInput(this, code);
+            return outcome != WriteOutcome.Mismatch;
+        }
+        catch (Exception error) when (error is not OutOfMemoryException)
+        {
+            report($"{Name}: {text} failed — {error.Message}", false);
+            return false;
+        }
     }
 
     /// <summary>Reads the current input once (no retries). Null when the display does not answer.</summary>
@@ -494,20 +710,24 @@ public sealed class MonitorViewModel : ObservableObject
     /// <summary>The cover to use for a change that blacks the screen out (set by the app); null: none (demo displays).</summary>
     public Func<TransitionHooks?>? TransitionSource { get; init; }
 
+    private string Describe(WriteOutcome outcome, string what) => outcome switch
+    {
+        WriteOutcome.Verified => $"{Name}: {what}",
+        WriteOutcome.Applied => $"{Name}: {what} (sent; this monitor does not report it back)",
+        WriteOutcome.Unverified => $"{Name}: {what} (sent; the monitor did not confirm)",
+        _ => $"{Name}: {what} — the monitor kept another value"
+    };
+
     /// <summary>Runs one write and reports the outcome in the status bar. Returns false when it failed.</summary>
     public async Task<bool> RunAsync(string what, Func<MonitorDevice, WriteOutcome> action)
     {
         try
         {
             var outcome = await RunExclusiveAsync(() => action(Device));
-            string message = outcome switch
-            {
-                WriteOutcome.Verified => $"{Name}: {what}",
-                WriteOutcome.Applied => $"{Name}: {what} (sent; this monitor does not report it back)",
-                WriteOutcome.Unverified => $"{Name}: {what} (sent; the monitor did not confirm)",
-                _ => $"{Name}: {what} — the monitor kept another value"
-            };
-            report(message, outcome != WriteOutcome.Mismatch);
+            report(Describe(outcome, what), outcome != WriteOutcome.Mismatch);
+            // A write the display could not confirm, and it no longer answers at all: it went to another computer.
+            if (outcome == WriteOutcome.Unverified && !Device.Identity.IsBuiltIn && !unavailable && !await RunExclusiveAsync(ProbeAnswers))
+                GoUnavailable();
             return outcome != WriteOutcome.Mismatch;
         }
         catch (Exception error) when (error is not OutOfMemoryException)
@@ -563,7 +783,11 @@ public sealed class MonitorViewModel : ObservableObject
         finally { gate.Release(); }
     }
 
-    public void Dispose() => Device.Dispose();
+    public void Dispose()
+    {
+        stopped = true;
+        Device.Dispose();
+    }
 
     /// <summary>The display name, for drop-downs whose template shows the item as text.</summary>
     public override string ToString() => Name;

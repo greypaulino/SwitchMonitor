@@ -176,6 +176,47 @@ try
             }
         }
     }
+    else if (ArgValue(args, "--try-input") is string inputSpec)
+    {
+        // --try-input 11 --only LG --yes : sends the input switch three ways, in order, until the display leaves its input.
+        if (!args.Contains("--yes")) { Console.WriteLine("--try-input changes the input of a monitor; add --yes to confirm."); return 2; }
+        int wanted = int.Parse(inputSpec, System.Globalization.NumberStyles.HexNumber);
+        string only = ArgValue(args, "--only") ?? "LG";
+        foreach (var monitor in monitors.Where(m => m.IsControllable && m.Name.Contains(only, StringComparison.OrdinalIgnoreCase)))
+        {
+            uint start;
+            try { start = monitor.Read(VcpCode.InputSource).Current; }
+            catch (Exception error) { Console.WriteLine($"  {monitor.Name}: cannot read the input now ({error.Message}); nothing was sent."); exitCode = 1; continue; }
+            Console.WriteLine($"  {monitor.Name}: on input 0x{start:X2} through {monitor.TransportId}; asking for 0x{wanted:X2}.");
+            var (vcp, value) = monitor.Quirk?.MapInputWrite(wanted) ?? (VcpCode.InputSource, (uint)wanted);
+            var attempts = new List<(string Name, byte Code, uint Value, byte VendorSource)>
+            {
+                ($"vendor 0x{vcp:X2}=0x{value:X2}, source 0x50 (as v2 and 1.x)", vcp, value, 0x50),
+                ($"vendor 0x{vcp:X2}=0x{value:X2}, source 0x51", vcp, value, 0x51),
+                ($"standard 0x60=0x{wanted:X2}, source 0x51", VcpCode.InputSource, (uint)wanted, 0x50),
+            };
+            bool left = false;
+            foreach (var attempt in attempts)
+            {
+                SwitchMonitor.Core.Transports.DdcWriteSettings.VendorWriteSource = attempt.VendorSource;
+                try { monitor.Write(attempt.Code, attempt.Value); }
+                catch (Exception error) { Console.WriteLine($"    {attempt.Name}: write refused ({error.Message})"); continue; }
+                string seen = "no answer";
+                for (int i = 0; i < 12; i++)
+                {
+                    Thread.Sleep(500);
+                    try { uint now = monitor.ReadOnce(VcpCode.InputSource).Current; seen = $"0x{now:X2}"; if (now != start) break; }
+                    catch (Exception) { seen = "no answer (the display stopped answering here)"; left = true; break; }
+                }
+                left |= seen != $"0x{start:X2}";
+                Console.WriteLine($"    {attempt.Name}: the display reads {seen}{(left ? "  <-- it LEFT this input" : "  (stayed)")}");
+                if (left) break;
+            }
+            if (!left) exitCode = 1;
+            Console.WriteLine(left ? "  Result: one way worked (see the arrow). Put the input back from the other computer."
+                : "  Result: none of the three ways moved the display.");
+        }
+    }
     else if (ArgValue(args, "--try-choice") is string spec)
     {
         // --try-choice F7=02,15=30 --yes : visible write test, each value restored afterwards.

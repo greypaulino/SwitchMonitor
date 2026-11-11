@@ -1,4 +1,4 @@
-using System.Windows;
+﻿using System.Windows;
 using System.Windows.Media;
 using SwitchMonitor.Core.Vcp;
 
@@ -59,10 +59,13 @@ public static class Icons
         VcpCode.ColorPreset => "",         // Light
         VcpCode.AudioVolume => "",         // Volume
         VcpCode.AudioMute => "",           // Mute
-        VcpCode.DisplayMode or 0x15 when IsPictureMode(feature) => "",   // Picture
+        _ when IsPictureMode(feature) => "",   // Picture
         0x87 => "",                        // ZoomIn: detail
         0xF7 when Named(feature, "response") => "\uEC4A",   // SpeedHigh: a speedometer
         0xF8 when Named(feature, "freesync") => "",   // Sync
+        _ when Named(feature, "black equalizer") || Named(feature, "black stabilizer") => "\uE9E9",   // Equalizer: shadow detail (the LG's stabilizer and the Samsung's equalizer are the same thing)
+        _ when Named(feature, "input lag") => "\uE916",      // Stopwatch
+        _ when Named(feature, "refresh rate") => "\uE72C",   // Refresh
         _ when Named(feature, "black level") => "",
         // Learned settings carry the usual names, so they get the usual icons on any code.
         _ when Named(feature, "brightness") => "\uE706",
@@ -94,7 +97,7 @@ public static class Icons
         VcpCode.ColorPreset => Drawn("M10,14.2 V5.5 A2,2 0 0 1 14,5.5 V14.2 A4,4 0 1 1 10,14.2 Z M15.8,6.5 H17.5 M15.8,9.5 H17.5",
             "M12,14.6 m-2.2,0 a2.2,2.2 0 1 0 4.4,0 a2.2,2.2 0 1 0 -4.4,0 Z M11.25,9 H12.75 V15 H11.25 Z"),
         0x87 => Drawn("M12,4 L20.5,19 H3.5 Z", "M12,4 L12,19 H3.5 Z"),
-        VcpCode.DisplayMode or 0x15 when IsPictureMode(feature) =>
+        _ when IsPictureMode(feature) =>
             Drawn("M3.5,5.5 H20.5 V18.5 H3.5 Z M3.5,16 L9,10.5 L13,14.5 L15.5,12 L20.5,17", "M15,8 A1.75,1.75 0 1 1 14.99,8 Z"),
         _ => null
     };
@@ -130,16 +133,22 @@ public static class Icons
         if (IsPictureMode(feature))
             return value switch
             {
-                _ when value.Contains("game") || value.StartsWith("fps") || value.StartsWith("rts") => "",   // Game
+                _ when value.Contains("game") || value.StartsWith("fps") || value.StartsWith("rts") || value.StartsWith("rpg") => "",   // Game
                 _ when value.Contains("custom") || value.Contains("user") => "",                             // Edit
                 _ when value.Contains("reader") || value.Contains("read") => "",                            // ReadingMode
-                _ when value.Contains("photo") => "",                                                       // Photo
-                _ when value.Contains("cinema") || value.Contains("movie") => "",                           // Movies
+                _ when value.Contains("photo") || value.Contains("graphic") => "",                                                       // Photo
+                _ when value.Contains("cinema") || value.Contains("movie") || value.Contains("entertain") => "",                           // Movies
                 _ when value.Contains("hdr") => "",                                                         // Light
                 _ when value.Contains("weak") => "",                                                        // View
                 _ when value.Contains("productivity") => "",                                                // Work
+                _ when value.Contains("eco") => "\uE945",                                                  // Lightning: saves power
                 _ when value.Contains("sport") => "",                                                       // Walk
                 _ => ""                                                                                     // TVMonitor
+            };
+        if (feature.Code == 0xF3 && Named(feature, "response"))
+            return value switch
+            {
+                "standard" => "\uE76C", "faster" => "\uE76C\uE76C", _ when value.StartsWith("extreme") => "\uE76C\uE76C\uE76C", _ => null
             };
         if (feature.Code == 0xF7 && Named(feature, "response"))
             return value switch
@@ -168,7 +177,7 @@ public static class Icons
         if (feature.Code != VcpCode.ColorPreset) return null;
         string value = label.ToLowerInvariant();
         if (value.Contains("warm") || value.StartsWith("4000") || value.StartsWith("5000")) return Color.FromRgb(0xFF, 0xB8, 0x6B);
-        if (value.StartsWith("6500") || value.Contains("srgb") || value.Contains("native")) return Color.FromRgb(0xFF, 0xF1, 0xDE);
+        if (value.StartsWith("6500") || value.Contains("srgb") || value.Contains("native") || value == "standard") return Color.FromRgb(0xFF, 0xF1, 0xDE);
         if (value.Contains("cool") || value.StartsWith("7500") || value.StartsWith("8200") || value.StartsWith("9300")
             || value.StartsWith("10000") || value.StartsWith("11500")) return Color.FromRgb(0xA9, 0xC8, 0xFF);
         return null;

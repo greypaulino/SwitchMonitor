@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using System.Windows.Input;
 using System.Windows.Threading;
 using SwitchMonitor.Core;
@@ -68,7 +68,7 @@ public sealed class SceneViewModel : ObservableObject
     public System.Windows.Media.Brush EdgeBrush => Icons.Brush(Color, 0.55);
 }
 
-public enum AppTab { Displays, Advanced, Profiles, Shortcuts, Settings, Learn }
+public enum AppTab { Displays, Advanced, Profiles, Shortcuts, Apps, Settings, Learn }
 
 public sealed partial class MainViewModel : ObservableObject, IInputCoordinator
 {
@@ -141,6 +141,10 @@ public sealed partial class MainViewModel : ObservableObject, IInputCoordinator
         returnTimer.Tick += async (_, _) => await PollReturnWatchesAsync();
         Automation = AutomationStore.Load();
         Apps = new AppLinker(this, Automation, log);
+        var placements = new AppPlacementStore();
+        var usage = new AppUsage();
+        AppsTab = new AppsViewModel(this, placements, usage);
+        Placer = new AppPlacer(placements, usage, AppsTab.AreaOf);
     }
 
     /// <summary>Where displays come from: Windows by default, in-memory ones in demo mode (--demo).</summary>
@@ -207,6 +211,14 @@ public sealed partial class MainViewModel : ObservableObject, IInputCoordinator
     private Services.PhoneBridge? phone;
     /// <summary>Settings > Phone (control from a phone on the home Wi-Fi); null in demo mode.</summary>
     public Services.PhoneBridge? Phone { get => phone; set => Set(ref phone, value); }
+
+    private Services.PeerService? peers;
+    /// <summary>Settings > Computers (control other computers from this one, their displays in the brightness panel); null in demo mode.</summary>
+    public Services.PeerService? Peers { get => peers; set => Set(ref peers, value); }
+
+    /// <summary>One mouse and keyboard for two paired computers (Settings > Devices).</summary>
+    public Services.InputShareService? Share { get => share; set => Set(ref share, value); }
+    private Services.InputShareService? share;
     public ObservableCollection<MonitorViewModel> Monitors { get; } = [];
     public ObservableCollection<SceneViewModel> Scenes { get; } = [];
     public IReadOnlyList<SceneProfile> SceneProfiles { get; private set; } = [];
@@ -312,6 +324,7 @@ public sealed partial class MainViewModel : ObservableObject, IInputCoordinator
                 ResetShortcutEditor();
             }
             if (value == AppTab.Profiles) ResetProfileEditor();
+            if (value == AppTab.Apps) AppsTab.Reload();
             if (previous == AppTab.Learn && learn is { } wizard)
             {
                 Learn = null;
@@ -327,6 +340,7 @@ public sealed partial class MainViewModel : ObservableObject, IInputCoordinator
             Raise(nameof(IsAdvancedTab));
             Raise(nameof(IsProfilesTab));
             Raise(nameof(IsShortcutsTab));
+            Raise(nameof(IsAppsTab));
             Raise(nameof(IsSettingsTab));
             Raise(nameof(IsLearnTab));
             Raise(nameof(ShowsMonitorList));
@@ -337,6 +351,62 @@ public sealed partial class MainViewModel : ObservableObject, IInputCoordinator
     public bool IsAdvancedTab { get => tab == AppTab.Advanced; set { if (value) Tab = AppTab.Advanced; } }
     public bool IsProfilesTab { get => tab == AppTab.Profiles; set { if (value) Tab = AppTab.Profiles; } }
     public bool IsShortcutsTab { get => tab == AppTab.Shortcuts; set { if (value) Tab = AppTab.Shortcuts; } }
+    // ---- Pages inside Settings ----
+
+    private string settingsPage = "General";
+    public string SettingsPage
+    {
+        get => settingsPage;
+        set
+        {
+            if (!Set(ref settingsPage, value)) return;
+            foreach (string name in new[] { nameof(IsSettingsGeneral), nameof(IsSettingsAppearance), nameof(IsSettingsDevices), nameof(IsSettingsMonitors), nameof(IsSettingsUpdates), nameof(IsSettingsAbout) })
+                Raise(name);
+        }
+    }
+    public bool IsSettingsGeneral { get => settingsPage == "General"; set { if (value) SettingsPage = "General"; } }
+    public bool IsSettingsAppearance { get => settingsPage == "Appearance"; set { if (value) SettingsPage = "Appearance"; } }
+    public bool IsSettingsDevices { get => settingsPage == "Devices"; set { if (value) SettingsPage = "Devices"; } }
+    public bool IsSettingsMonitors { get => settingsPage == "Monitors"; set { if (value) SettingsPage = "Monitors"; } }
+    public bool IsSettingsUpdates { get => settingsPage == "Updates"; set { if (value) SettingsPage = "Updates"; } }
+    public bool IsSettingsAbout { get => settingsPage == "About"; set { if (value) SettingsPage = "About"; } }
+
+    // ---- Features ----
+
+    public IReadOnlyList<FeatureGroup> FeatureGroups => Features.Groups;
+
+    /// <summary>Opens the Settings page where a feature is set up.</summary>
+    public RelayCommand OpenFeaturePageCommand => openFeaturePage ??= new RelayCommand(p => { if (p is string page && page.Length > 0) SettingsPage = page; });
+    private RelayCommand? openFeaturePage;
+
+    /// <summary>Shows the welcome tour again, with every feature.</summary>
+    public RelayCommand ShowTourCommand => showTour ??= new RelayCommand(() => TourRequested?.Invoke(true));
+    private RelayCommand? showTour;
+    public event Action<bool>? TourRequested;
+
+    // ---- Language ----
+
+    public IReadOnlyList<string> Languages { get; } = ["English", "Español"];
+
+    /// <summary>The language of the app; applies to every open window at once and is kept in the settings.</summary>
+    public string LanguageName
+    {
+        get => Loc.Language == "es" ? "Español" : "English";
+        set
+        {
+            string code = value == "Español" ? "es" : "en";
+            if (code == Loc.Language) return;
+            UpdateSettings(Settings with { Language = code }, shortcutsChanged: false);
+            Loc.Set(code);
+            Raise();
+        }
+    }
+
+    public bool IsAppsTab { get => tab == AppTab.Apps; set { if (value) Tab = AppTab.Apps; } }
+
+    /// <summary>Which program opens on which display of this computer (the Apps tab), and the watch that moves their windows.</summary>
+    public AppsViewModel AppsTab { get; }
+    public AppPlacer Placer { get; }
 
     /// <summary>The app's own settings (gear button); pressing the gear again goes back to Displays.</summary>
     public bool IsSettingsTab
@@ -427,8 +497,8 @@ public sealed partial class MainViewModel : ObservableObject, IInputCoordinator
         var displays = DisplayInputsForEditor().Where(d => display is null || d.Key == display.Key).ToArray();
         var scenes = SceneProfiles.Where(s => display is null || s.AppliesTo(display.Device)).ToArray();
         var reserved = new Dictionary<Core.Hotkeys.HotkeyChord, string>();
-        foreach (var input in Settings.InputShortcuts.Where(i => display is null || i.MonitorKey != display.Key))
-            reserved.TryAdd(input.Chord, DescribeInputShortcut(input));
+        // Input shortcuts of the other displays do NOT reserve their combination: two displays may use the same one (Ctrl+Alt+1) and
+        // it acts on the display under the mouse. Profile shortcuts of other displays stay reserved.
         foreach (var scene in SceneProfiles.Except(scenes))
             if (scene.Hotkey is { } chord) reserved.TryAdd(chord, $"profile {scene.Name} (another display)");
         var editor = new ShortcutEditorViewModel(Settings, displays, scenes, IsShortcutFree, reserved, display?.Name);
@@ -500,6 +570,33 @@ public sealed partial class MainViewModel : ObservableObject, IInputCoordinator
         }
     }
 
+    /// <summary>A display of another computer joins the list (after the local ones).</summary>
+    public MonitorViewModel AddRemote(MonitorDevice device)
+    {
+        var monitor = new MonitorViewModel(device, Report, this) { TogglePreferred = TogglePreferred };   // no cover: it would black out THIS screen
+        Monitors.Add(monitor);
+        _ = LoadRemoteAsync(monitor);
+        return monitor;
+    }
+
+    /// <summary>Raised when a remote display has been read: the brightness panel picks up its slider.</summary>
+    public event Action? RemoteLoaded;
+
+    private async Task LoadRemoteAsync(MonitorViewModel monitor)
+    {
+        try { await monitor.EnsureLoadedAsync(); }
+        catch (Exception error) when (error is not OutOfMemoryException) { }
+        RemoteLoaded?.Invoke();
+    }
+
+    /// <summary>The display of another computer leaves the list (that computer is gone, or no longer offers it).</summary>
+    public void RemoveRemote(MonitorViewModel monitor)
+    {
+        if (!Monitors.Remove(monitor)) return;
+        if (ReferenceEquals(Selected, monitor)) Selected = Monitors.FirstOrDefault(m => m.IsControllable);
+        monitor.Dispose();
+    }
+
     public async Task RefreshAsync()
     {
         if (IsBusy) return;
@@ -508,15 +605,16 @@ public sealed partial class MainViewModel : ObservableObject, IInputCoordinator
         try
         {
             string? keep = Selected?.Device.Key;
-            foreach (var old in Monitors) old.Dispose();
-            Monitors.Clear();
+            // Displays of other computers stay: they come and go with their computer's connection, not with this search.
+            foreach (var old in Monitors.Where(m => !m.IsRemote).ToArray()) { old.Dispose(); Monitors.Remove(old); }
             Raise(nameof(ShowsSearchSkeleton));
             Selected = null;
             returnWatches.Clear();
 
             var devices = await Task.Run(() => DeviceSource?.Invoke() ?? MonitorEnumerator.Enumerate(CoreOptions.FromDataDirectory(), log: log));
+            int place = 0;
             foreach (var device in devices.OrderByDescending(d => d.IsControllable).ThenByDescending(d => d.Identity.IsPrimary))
-                Monitors.Add(new MonitorViewModel(device, Report, this) { TogglePreferred = TogglePreferred, TransitionSource = () => DeviceSource is null || CoverInDemo ? Transition : null });
+                Monitors.Insert(place++, new MonitorViewModel(device, Report, this) { TogglePreferred = TogglePreferred, TransitionSource = () => DeviceSource is null || CoverInDemo ? Transition : null });
             Raise(nameof(ShowsSearchSkeleton));
             // Panel names from the EDID for built-in screens (Windows display configuration, quick and read-only).
             var summaries = await Task.Run(() => BuiltInProbe.Displays());
@@ -948,9 +1046,43 @@ public sealed partial class MainViewModel : ObservableObject, IInputCoordinator
     }
 
     /// <summary>Ctrl+Alt+M: next marked input; pressed again within ten seconds, back to the previous one.</summary>
+    private string? lastPointerKey;
+
+    /// <summary>The controllable display under the mouse pointer (null on the taskbar or an unknown screen); remembers the last one.</summary>
+    public MonitorViewModel? MonitorUnderPointer()
+    {
+        string? source = Services.PointerMonitor.GdiNameUnderPointer();
+        var found = source is null ? null : Monitors.FirstOrDefault(m => m.IsControllable && string.Equals(m.Device.Identity.GdiName, source, StringComparison.OrdinalIgnoreCase));
+        if (found is not null) lastPointerKey = found.Key;
+        return found;
+    }
+
+    /// <summary>With several displays that have inputs, Next input acts on the one under the mouse (see ShortcutRouting).</summary>
+    private MonitorViewModel? PointerInputTarget()
+    {
+        var candidates = Monitors.Where(MayHaveInputs).ToList();
+        if (candidates.Count < 2) return null;
+        string? key = Core.Hotkeys.ShortcutRouting.Choose(candidates.Select(m => m.Key).ToList(), MonitorUnderPointer()?.Key, lastPointerKey);
+        return candidates.FirstOrDefault(m => m.Key == key);
+    }
+
+    /// <summary>An input shortcut several displays share (Ctrl+Alt+1): it switches the display under the mouse, as that display set it.</summary>
+    public async Task SwitchInputByChordAsync(Core.Hotkeys.HotkeyChord chord)
+    {
+        var matches = Settings.InputShortcuts.Where(s => s.Chord == chord).ToList();
+        var live = matches.Select(s => s.MonitorKey).Where(k => Monitors.Any(m => m.Key == k && m.IsControllable)).ToList();
+        string? key = Core.Hotkeys.ShortcutRouting.Choose(live, MonitorUnderPointer()?.Key, lastPointerKey);
+        if (key is null)
+        {
+            Report("That shortcut belongs to displays that are not connected or not controllable now.", false);
+            return;
+        }
+        await SwitchInputByKeyAsync(key, matches.First(s => s.MonitorKey == key).InputCode);
+    }
+
     public async Task NextInputAsync()
     {
-        if (InputTarget is not { } monitor) { Report("No display with selectable inputs.", false); return; }
+        if ((PointerInputTarget() ?? InputTarget) is not { } monitor) { Report("No display with selectable inputs.", false); return; }
         await monitor.EnsureLoadedAsync();
         var last = history.Last(monitor.Key);
         int? current = last is not null && DateTime.UtcNow - last.AtUtc <= InputCycle.ReturnWindow
@@ -1076,6 +1208,23 @@ public sealed partial class MainViewModel : ObservableObject, IInputCoordinator
         InputHistoryChanged?.Invoke();
     }
 
+    public int? HomeInput(MonitorViewModel monitor) =>
+        Settings.HomeInputs.TryGetValue(monitor.Key, out int code) ? code : null;
+
+    public void ForgetHomeInput(MonitorViewModel monitor)
+    {
+        if (!Settings.HomeInputs.ContainsKey(monitor.Key)) return;
+        UpdateSettings(Settings.WithoutHomeInput(monitor.Key), shortcutsChanged: false);
+        log.Write(LogLevel.Info, $"{monitor.Name}: the input learned for this computer was the other computer's; forgotten.");
+    }
+
+    public void LearnHomeInput(MonitorViewModel monitor, int code)
+    {
+        if (Settings.HomeInputs.ContainsKey(monitor.Key)) return;
+        UpdateSettings(Settings.WithHomeInput(monitor.Key, code), shortcutsChanged: false);
+        log.Write(LogLevel.Info, $"{monitor.Name}: {monitor.Device.DescribeInput(code)} is the input this computer uses (learned; homeInputs in settings.json).");
+    }
+
     public string DescribeInputShortcut(InputShortcut shortcut)
     {
         var monitor = Monitors.FirstOrDefault(m => m.Key == shortcut.MonitorKey);
@@ -1092,6 +1241,7 @@ public sealed partial class MainViewModel : ObservableObject, IInputCoordinator
     {
         learn?.CloseNow();
         Apps.Stop();
+        Placer.Stop();
         foreach (var monitor in Monitors) monitor.SoftwareColor?.Release();
         returnTimer.Stop();
         foreach (var monitor in Monitors) monitor.Dispose();

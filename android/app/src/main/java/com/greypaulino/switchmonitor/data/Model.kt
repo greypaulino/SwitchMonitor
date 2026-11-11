@@ -13,6 +13,8 @@ data class PcState(
     val modes: Modes?,
     /** The computer's Windows volume (default playback device); null when it has none or is an older version. */
     val volume: Volume? = null,
+    /** The display the volume belongs to (the one selected; its computer's sound). */
+    val volumeFor: String? = null,
 )
 
 data class Volume(val percent: Int, val muted: Boolean)
@@ -29,6 +31,8 @@ data class Display(
     val preferred: Boolean,
     val canBeMain: Boolean,
     val inputs: List<InputPort>,
+    /** The display belongs to another paired computer (shown with a REMOTE label). */
+    val remote: Boolean = false,
 )
 
 data class InputPort(val code: Int, val label: String, val current: Boolean, val inCycle: Boolean)
@@ -40,7 +44,7 @@ data class Modes(val display: String, val current: Int?, val options: List<ModeO
 data class ModeOption(val value: Int, val label: String)
 
 /** A computer that answered the Wi-Fi search. */
-data class Found(val name: String, val host: String, val port: Int)
+data class Found(val name: String, val host: String, val port: Int, val deviceId: String = "")
 
 internal fun parseState(o: JSONObject): PcState = PcState(
     computer = o.optString("computer"),
@@ -58,6 +62,7 @@ internal fun parseState(o: JSONObject): PcState = PcState(
             main = d.optBoolean("main"),
             preferred = d.optBoolean("preferred"),
             canBeMain = d.optBoolean("canBeMain"),
+            remote = d.optBoolean("remote"),
             inputs = d.optJSONArray("inputs").objects().map { i ->
                 InputPort(i.optInt("code"), i.optString("label"), i.optBoolean("current"), i.optBoolean("inCycle"))
             },
@@ -81,6 +86,7 @@ internal fun parseState(o: JSONObject): PcState = PcState(
         )
     },
     volume = o.optJSONObject("volume")?.let { Volume(it.optInt("percent"), it.optBoolean("muted")) },
+    volumeFor = if (o.isNull("volumeFor")) null else o.optString("volumeFor").ifBlank { null },
 )
 
 private fun JSONArray?.objects(): List<JSONObject> =

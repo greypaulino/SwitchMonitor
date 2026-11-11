@@ -86,11 +86,18 @@ public static class Theme
     /// </summary>
     public static bool RoundedBlur { get; } = Environment.OSVersion.Version.Build >= 22000;
 
-    /// <summary>Corner radius of the Translucent window frame: round on Windows 11, square on Windows 10.</summary>
-    public static double TranslucentCornerRadius => RoundedBlur ? CornerRadius : 0;
+    /// <summary>
+    /// The radius Windows 11 gives a window it rounds (DWMWCP_ROUND): 8 device-independent pixels. In Translucent the app's own frame
+    /// uses it too: with a larger one (14) the dark acrylic shows as a crescent in the gap between the two curves (seen on
+    /// Windows 11 build 26300, 08/11/2026: 69 of 765 of change at the corner pixels).
+    /// </summary>
+    public const double WindowsCornerRadius = 8;
+
+    /// <summary>Corner radius of the Translucent window frame: the one Windows 11 rounds with, square on Windows 10.</summary>
+    public static double TranslucentCornerRadius => RoundedBlur ? WindowsCornerRadius : 0;
 
     /// <summary>Corner radius of the panels (brightness, its side panels, the tray menu) in the given look.</summary>
-    public static double PanelCornerRadius(bool translucent) => translucent && !RoundedBlur ? 0 : 16;
+    public static double PanelCornerRadius(bool translucent) => translucent ? (RoundedBlur ? WindowsCornerRadius : 0) : 16;
 
     /// <summary>Turns Windows' acrylic blur behind the (see-through) window on or off; Windows adds no border or rounding.</summary>
     public static void FitWindow(Window window, bool translucent) => FitWindow(new WindowInteropHelper(window).Handle, translucent);
@@ -155,16 +162,31 @@ public static class Theme
     }
 
     /// <summary>The acrylic of the accent policy (works on see-through windows; square).</summary>
+    /// <summary>What Windows answered to the last blur request (non-zero = accepted); -1 before the first one.</summary>
+    internal static int LastAccentResult { get; private set; } = -1;
+
+    /// <summary>Lines for the translucency self-test: the Windows build and the settings that switch the blur off.</summary>
+    internal static IEnumerable<string> Diagnostics()
+    {
+        yield return $"Windows: {Environment.OSVersion.VersionString} (build {Environment.OSVersion.Version.Build}); Windows rounds the blur by itself: {RoundedBlur}";
+        object? effects = Microsoft.Win32.Registry.GetValue(@"HKEY_CURRENT_USER\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize", "EnableTransparency", null);
+        yield return $"Windows setting Transparency effects: {(effects is int value ? (value != 0 ? "on" : "OFF (Windows then gives every app a solid window instead of the blur)") : "not found")}";
+        yield return $"Blur request answered by Windows: {LastAccentResult} (non-zero = accepted, 0 = refused, -1 = never asked)";
+    }
+
     private static void SetAccent(IntPtr handle, bool on)
     {
-        var accent = new AccentPolicy { State = on ? AccentEnableAcrylicBlurBehind : AccentDisabled, Flags = 2, GradientColor = 0x01000000 };
+        // Windows 11: the plain blur-behind (state 3). Its acrylic (state 4) adds a dark luminosity layer on top of the app's own
+        // tint, so the window looked almost solid dark (build 26300, 08/11/2026); the plain blur lets the wallpaper's light through.
+        int state = !on ? AccentDisabled : RoundedBlur ? AccentEnableBlurBehind : AccentEnableAcrylicBlurBehind;
+        var accent = new AccentPolicy { State = state, Flags = 2, GradientColor = 0x01000000 };
         int size = Marshal.SizeOf(accent);
         IntPtr data = Marshal.AllocHGlobal(size);
         try
         {
             Marshal.StructureToPtr(accent, data, false);
             var attribute = new CompositionAttributeData { Attribute = WcaAccentPolicy, Data = data, SizeOfData = size };
-            SetWindowCompositionAttribute(handle, ref attribute);
+            LastAccentResult = SetWindowCompositionAttribute(handle, ref attribute);
         }
         catch (Exception error) when (error is EntryPointNotFoundException or DllNotFoundException) { }
         finally { Marshal.FreeHGlobal(data); }
@@ -235,6 +257,7 @@ public static class Theme
 
     private const int WcaAccentPolicy = 19;
     private const int AccentDisabled = 0;
+    private const int AccentEnableBlurBehind = 3;
     private const int AccentEnableAcrylicBlurBehind = 4;
 
     [StructLayout(LayoutKind.Sequential)]

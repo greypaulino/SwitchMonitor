@@ -62,6 +62,9 @@ import com.greypaulino.switchmonitor.ui.theme.Text
 
 @Composable
 fun ConnectScreen(ui: RemoteUi) {
+    // A phone that is not in the group yet joins it with the code of "My devices"; one that is (or prefers it) pairs with a phone code.
+    var wantGroup by rememberSaveable { mutableStateOf(true) }
+    val useGroup = wantGroup && !ui.inGroup
     Box(Modifier.fillMaxSize().background(Ground)) {
         Column(
             Modifier
@@ -77,7 +80,7 @@ fun ConnectScreen(ui: RemoteUi) {
                 }
                 Text(
                     when (ui.phase) {
-                        Phase.NeedCode -> "Pair this phone"
+                        Phase.NeedCode -> if (useGroup) "Add this phone" else "Pair this phone"
                         Phase.Connecting, Phase.Offline -> ui.computer ?: ui.host ?: "Connecting"
                         else -> "Connect to your computer"
                     },
@@ -85,7 +88,10 @@ fun ConnectScreen(ui: RemoteUi) {
                 )
                 Text(
                     when (ui.phase) {
-                        Phase.NeedCode -> "On the computer: SwitchMonitor › Settings › Phone › Pair a phone. Type the 6-digit code it shows; it lasts 2 minutes."
+                        Phase.NeedCode ->
+                            if (useGroup) "On the computer: SwitchMonitor › Settings › Devices › My devices. Type the 6-digit code it shows, then allow this phone there. Afterwards it connects to every computer of your group by itself."
+                            else if (ui.inGroup) "This computer is not in your group. On it: SwitchMonitor › Settings › Devices › Phone › Pair a phone, and type the 6-digit code it shows (it lasts 2 minutes)."
+                            else "On the computer: SwitchMonitor › Settings › Devices › Phone › Pair a phone. Type the 6-digit code it shows; it lasts 2 minutes."
                         Phase.Connecting -> "Connecting…"
                         Phase.Offline -> "Can't reach it right now. Check that the computer is on, SwitchMonitor is open with Phone turned on, and this phone is on the same Wi-Fi. Trying again…"
                         else -> "Your phone and the computer need to be on the same Wi-Fi, with Phone turned on in SwitchMonitor › Settings."
@@ -95,7 +101,7 @@ fun ConnectScreen(ui: RemoteUi) {
             }
 
             when (ui.phase) {
-                Phase.NeedCode -> CodePanel()
+                Phase.NeedCode -> CodePanel(ui, useGroup) { wantGroup = !wantGroup }
                 Phase.Connecting, Phase.Offline -> {
                     if (ui.phase == Phase.Connecting) CircularProgressIndicator(Modifier.padding(start = 8.dp).size(28.dp), color = Text, strokeWidth = 3.dp)
                     TextButton(onClick = { Remote.forget() }) { Text("Use another computer", color = Soft) }
@@ -111,7 +117,21 @@ fun ConnectScreen(ui: RemoteUi) {
 private fun FindPanel(ui: RemoteUi) {
     var typing by rememberSaveable { mutableStateOf(false) }
     var address by rememberSaveable { mutableStateOf("") }
-    // Paired computers first (no code needed), with the address the search found now when it differs.
+    // The computers of the group first: no code, they only need to be on this Wi-Fi.
+    if (ui.inGroup) {
+        Panel(padding = androidx.compose.foundation.layout.PaddingValues(14.dp)) {
+            Text("My devices", Modifier.padding(start = 4.dp, bottom = 10.dp), fontSize = 13.sp, color = Muted)
+            if (ui.group.isEmpty()) Text("No computer in the group yet.", Modifier.padding(4.dp), fontSize = 14.sp, color = Soft)
+            for (pc in ui.group) {
+                val here = ui.found.firstOrNull { it.deviceId == pc.deviceId }
+                ComputerRow(pc.name, here?.host ?: "Not on this Wi-Fi", if (here != null) "In your group · here" else "In your group", here != null) {
+                    if (here != null) Remote.choose(here.host, here.port, pc.name)
+                }
+            }
+            TextButton(onClick = { Remote.leaveGroup() }) { Text("Leave the group on this phone", color = Soft) }
+        }
+    }
+    // Paired computers (no code needed), with the address the search found now when it differs.
     if (ui.paired.isNotEmpty()) {
         Panel(padding = androidx.compose.foundation.layout.PaddingValues(14.dp)) {
             Text("Your computers", Modifier.padding(start = 4.dp, bottom = 10.dp), fontSize = 13.sp, color = Muted)
@@ -123,7 +143,7 @@ private fun FindPanel(ui: RemoteUi) {
             }
         }
     }
-    val others = ui.found.filter { f -> ui.paired.none { it.name.equals(f.name, ignoreCase = true) } }
+    val others = ui.found.filter { f -> ui.paired.none { it.name.equals(f.name, ignoreCase = true) } && ui.group.none { it.deviceId == f.deviceId } }
     Panel(padding = androidx.compose.foundation.layout.PaddingValues(14.dp)) {
         Row(Modifier.padding(start = 4.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
             Icon(Glyphs.Wifi, null, Modifier.size(16.dp), tint = Muted)
@@ -166,17 +186,18 @@ private fun FindPanel(ui: RemoteUi) {
 }
 
 @Composable
-private fun CodePanel() {
+private fun CodePanel(ui: RemoteUi, useGroup: Boolean, onSwitch: () -> Unit) {
     var code by rememberSaveable { mutableStateOf("") }
+    fun submit() { if (code.length == 6 && !ui.enrolling) { if (useGroup) Remote.enroll(code) else Remote.pair(code) } }
     val focus = remember { FocusRequester() }
     LaunchedEffect(Unit) { focus.requestFocus() }
     Panel {
-        Text("Pairing code", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = Text)
+        Text(if (useGroup) "Code of My devices" else "Pairing code", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = Text)
         BasicTextField(
             value = code,
-            onValueChange = { typed -> code = typed.filter { it.isDigit() }.take(6); if (code.length == 6) Remote.pair(code) },
+            onValueChange = { typed -> code = typed.filter { it.isDigit() }.take(6); if (code.length == 6) submit() },
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword, imeAction = ImeAction.Done),
-            keyboardActions = KeyboardActions(onDone = { if (code.length == 6) Remote.pair(code) }),
+            keyboardActions = KeyboardActions(onDone = { submit() }),
             textStyle = TextStyle(color = Ground),
             cursorBrush = androidx.compose.ui.graphics.SolidColor(Ground),
             modifier = Modifier.padding(top = 16.dp).fillMaxWidth().focusRequester(focus),
@@ -203,13 +224,26 @@ private fun CodePanel() {
         )
         Spacer(Modifier.height(16.dp))
         Button(
-            onClick = { Remote.pair(code) }, enabled = code.length == 6,
+            onClick = { submit() }, enabled = code.length == 6 && !ui.enrolling,
             colors = ButtonDefaults.buttonColors(containerColor = Text, contentColor = Ink),
             modifier = Modifier.fillMaxWidth().height(52.dp),
-        ) { Text("Pair", fontSize = 16.sp, fontWeight = FontWeight.SemiBold) }
+        ) { Text(if (useGroup) "Add this phone" else "Pair", fontSize = 16.sp, fontWeight = FontWeight.SemiBold) }
+        if (ui.enrolling) {
+            Row(Modifier.padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                CircularProgressIndicator(Modifier.size(16.dp), color = Muted, strokeWidth = 2.dp)
+                Text("Waiting for the computer to allow it…", Modifier.padding(start = 10.dp), fontSize = 13.sp, color = Muted)
+            }
+        }
         Row(Modifier.padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
             Icon(Glyphs.Check, null, Modifier.size(14.dp), tint = Green)
-            Text("Only phones paired with a code can control the displays.", Modifier.padding(start = 6.dp), fontSize = 12.sp, color = Muted)
+            Text(
+                if (useGroup) "The code changes every 30 seconds, and the computer asks its owner to allow this phone."
+                else "Only phones paired with a code can control the displays.",
+                Modifier.padding(start = 6.dp), fontSize = 12.sp, color = Muted,
+            )
+        }
+        if (!ui.inGroup) {
+            TextButton(onClick = { code = ""; onSwitch() }) { Text(if (useGroup) "Use a phone pairing code instead" else "Use the code of My devices", color = Soft) }
         }
         TextButton(onClick = { Remote.forget() }) { Text("Use another computer", color = Soft) }
     }

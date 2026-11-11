@@ -66,7 +66,7 @@ public partial class SunPanel : Window
         hoverTimer.Tick += (_, _) =>
         {
             hoverTimer.Stop();
-            if (hovered is { IsCustom: true, IsActive: true } && Model.ShowsModes && !ModesPopup.IsOpen) OpenModes();
+            if (modesHover && Model.ShowsModes && !ModesPopup.IsOpen) OpenModes();
         };
         // The window's look (Settings > Appearance) applies here too.
         SourceInitialized += (_, _) => FitLook();
@@ -142,7 +142,7 @@ public partial class SunPanel : Window
         for (; element is not null; element = element is Visual or System.Windows.Media.Media3D.Visual3D ? VisualTreeHelper.GetParent(element) : LogicalTreeHelper.GetParent(element))
         {
             if (element is FrameworkElement { Name: "InputsButton" }) return true;
-            if (element is FrameworkElement { Name: "Pill", DataContext: SceneViewModel { IsCustom: true, IsActive: true } }) return true;
+            if (element is FrameworkElement { Name: "ModesButton" }) return true;
         }
         return false;
     }
@@ -326,15 +326,34 @@ public partial class SunPanel : Window
         if ((sender as FrameworkElement)?.DataContext is not SceneViewModel scene) return;
         hoverTimer.Stop();
         CloseInputs();
-        if (scene.IsCustom && scene.IsActive && Model.ShowsModes)
-        {
-            if (ModesPopup.IsOpen && !modesClosing) CloseModes();
-            else OpenModes();
-            return;
-        }
         CloseModes();
         scene.ApplyCommand.Execute(null);
     }
+
+    /// <summary>The Picture mode button: opens (or closes) the picture modes beside the panel.</summary>
+    private void ModesButtonClick(object sender, RoutedEventArgs e)
+    {
+        hoverTimer.Stop();
+        CloseInputs();
+        if (ModesPopup.IsOpen && !modesClosing) CloseModes();
+        else if (Model.ShowsModes) OpenModes();
+    }
+
+    private void ModesButtonEnter(object sender, MouseEventArgs e)
+    {
+        hovered = null;
+        hoverTimer.Stop();
+        hoverTimer.Start();
+        modesHover = true;
+    }
+
+    private void ModesButtonLeave(object sender, MouseEventArgs e)
+    {
+        hoverTimer.Stop();
+        modesHover = false;
+    }
+
+    private bool modesHover;
 
     private void OpenModes()
     {
@@ -356,7 +375,6 @@ public partial class SunPanel : Window
     {
         hovered = (sender as FrameworkElement)?.DataContext as SceneViewModel;
         hoverTimer.Stop();
-        if (hovered?.IsCustom == true) hoverTimer.Start();
     }
 
     private void ProfileLeave(object sender, MouseEventArgs e)

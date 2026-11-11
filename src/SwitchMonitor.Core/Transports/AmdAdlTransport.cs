@@ -7,7 +7,7 @@ namespace SwitchMonitor.Core.Transports;
 /// <summary>
 /// DDC through AMD ADL2 (atiadlxx.dll, part of the installed AMD driver).
 /// Each command targets one display mapped to the requested Windows source and EDID product code.
-/// Reads are validated; writes stay disabled unless explicitly enabled (still unvalidated on hardware).
+/// Reads and brightness writes are validated on hardware; writes can be switched off with amd-writes-off.flag.
 /// </summary>
 internal sealed class AmdAdlTransport : IMonitorTransport
 {
@@ -59,7 +59,7 @@ internal sealed class AmdAdlTransport : IMonitorTransport
     public void Write(byte code, uint value)
     {
         if (!SupportsWrites)
-            throw new TransportException(Id, "AMD DDC writes are disabled until they are validated on hardware.");
+            throw new TransportException(Id, "AMD DDC writes are switched off here (amd-writes-off.flag in the data folder).");
         using var adl = new AdlSession();
         var target = adl.Select(gdiName, productCode);
         adl.Send(target, DdcPacket.Build(DdcPacket.WriteSourceFor(code), DdcPacket.SetVcpPayload(code, value)));

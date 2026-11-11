@@ -1,4 +1,4 @@
-using System.Net.Http;
+﻿using System.Net.Http;
 using System.Windows.Input;
 using SwitchMonitor.Core;
 using SwitchMonitor.Core.Diagnostics;
@@ -62,6 +62,9 @@ public sealed partial class MainViewModel
 
     /// <summary>Raised after a backup was restored: the app starts again with the restored settings.</summary>
     public event Action? RestartRequested;
+    /// <summary>The next restart asks Windows for administrator rights (so shared input can reach windows that run as administrator).</summary>
+    public bool RestartElevated { get; set; }
+    public void RequestRestart(bool elevated) { RestartElevated = elevated; RestartRequested?.Invoke(); }
 
     private void ExportBackup()
     {

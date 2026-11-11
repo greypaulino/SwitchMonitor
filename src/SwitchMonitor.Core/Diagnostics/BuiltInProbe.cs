@@ -99,6 +99,28 @@ public static class BuiltInProbe
         return lines;
     }
 
+    /// <summary>
+    /// How Windows connects this computer to the display on that GDI name ("HDMI", "DisplayPort", "DVI", "VGA"...), or null when
+    /// it is not an active output. Used to tell whether the input the monitor reports is the one this computer is plugged into.
+    /// </summary>
+    public static string? ConnectorOf(string? gdiName)
+    {
+        if (string.IsNullOrEmpty(gdiName) || !OperatingSystem.IsWindows()) return null;
+        try { return DisplayConfig.ActivePaths().FirstOrDefault(p => string.Equals(p.GdiName, gdiName, StringComparison.OrdinalIgnoreCase))?.Technology; }
+        catch (Exception error) when (error is System.ComponentModel.Win32Exception or DllNotFoundException or EntryPointNotFoundException) { return null; }
+    }
+
+    /// <summary>
+    /// Whether an input code (MCCS: 0x11 HDMI 1, 0x0F DisplayPort 1 ...) can be the picture of a connector: false when it is another
+    /// kind (the monitor shows its HDMI input, this computer is plugged into its DisplayPort); null when it cannot tell.
+    /// </summary>
+    public static bool? InputFitsConnector(string? connector, int input)
+    {
+        string? kind = connector switch { "HDMI" => "HDMI", "DisplayPort" => "DP", "DVI" => "DVI", "VGA" => "VGA", _ => null };
+        string? shown = input switch { 0x11 or 0x12 => "HDMI", 0x0F or 0x10 => "DP", 0x03 or 0x04 => "DVI", 0x01 or 0x02 => "VGA", _ => null };
+        return kind is null || shown is null ? null : kind == shown;
+    }
+
     // ---- Display configuration (connection type, HDR) ----
 
     internal sealed record DisplayPath(string GdiName, string FriendlyName, string Technology, bool IsBuiltIn, string EdidVendor,

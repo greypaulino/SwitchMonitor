@@ -1,8 +1,8 @@
-; SwitchMonitor v2 installer. Same AppId and folder as the 1.x installer, so a 1.x install is replaced in place and the
+﻿; SwitchMonitor v2 installer. Same AppId and folder as the 1.x installer, so a 1.x install is replaced in place and the
 ; 1.x updater (which looks for SwitchMonitor-Setup-<version>.exe + SHA256.json) can update to this version by itself.
 ; Build with run-installer.ps1 (passes AppVersion, SourceDir and OutputDir).
 #ifndef AppVersion
-#define AppVersion "2.0.0"
+#define AppVersion "2.0.1"
 #endif
 #ifndef SourceDir
 #define SourceDir SourcePath + "..\results\release-" + AppVersion + "\publish"

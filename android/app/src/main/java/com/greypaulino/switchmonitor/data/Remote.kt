@@ -1,4 +1,4 @@
-package com.greypaulino.switchmonitor.data
+﻿package com.greypaulino.switchmonitor.data
 
 import android.content.Context
 import android.content.SharedPreferences
@@ -44,6 +44,16 @@ data class RemoteUi(
     val paired: List<Found> = emptyList(),
     val searching: Boolean = false,
     val message: String? = null,
+    /** This phone belongs to "My devices" (the group of the person's computers and phones). */
+    val inGroup: Boolean = false,
+    /** The computers of that group (their address is found by the search). */
+    val group: List<Found> = emptyList(),
+    /** Waiting for the computer's person to allow this phone into the group. */
+    val enrolling: Boolean = false,
+    /** The device id of the computer this phone is connected through (a member of the group). */
+    val gateway: String = "",
+    /** The computer of the group the mouse and keyboard act on ("" = the one connected). */
+    val target: String = "",
 )
 
 /**
@@ -56,7 +66,18 @@ object Remote {
     private lateinit var appContext: Context
     private lateinit var prefs: SharedPreferences
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    // Small messages (a pointer step) go out at once instead of waiting to be bundled with the next one (Nagle's algorithm).
+    private val noDelay = object : javax.net.SocketFactory() {
+        private val base = javax.net.SocketFactory.getDefault()
+        private fun <T : java.net.Socket> T.fast(): T = apply { tcpNoDelay = true }
+        override fun createSocket() = base.createSocket().fast()
+        override fun createSocket(host: String?, port: Int) = base.createSocket(host, port).fast()
+        override fun createSocket(host: String?, port: Int, local: java.net.InetAddress?, localPort: Int) = base.createSocket(host, port, local, localPort).fast()
+        override fun createSocket(host: java.net.InetAddress?, port: Int) = base.createSocket(host, port).fast()
+        override fun createSocket(address: java.net.InetAddress?, port: Int, local: java.net.InetAddress?, localPort: Int) = base.createSocket(address, port, local, localPort).fast()
+    }
     private val client = OkHttpClient.Builder()
+        .socketFactory(noDelay)
         .connectTimeout(4, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.SECONDS)
         .pingInterval(15, TimeUnit.SECONDS)
@@ -74,6 +95,7 @@ object Remote {
         if (::appContext.isInitialized) return
         appContext = context.applicationContext
         prefs = appContext.getSharedPreferences("switchmonitor", Context.MODE_PRIVATE)
+        MyDevices.init(appContext)
         // 0.1 kept one token for the current computer only.
         prefs.getString("token", null)?.let { old ->
             val host = prefs.getString("host", null)
@@ -82,7 +104,7 @@ object Remote {
         }
         val host = prefs.getString("host", null)
         // A known computer starts as Connecting, so the first frame is already the control screen (not the search).
-        _ui.update { it.copy(phase = if (host != null) Phase.Connecting else it.phase, host = host, computer = prefs.getString("computer", null), paired = pairedList()) }
+        _ui.update { it.copy(phase = if (host != null) Phase.Connecting else it.phase, host = host, computer = prefs.getString("computer", null), paired = pairedList(), inGroup = MyDevices.inGroup(), group = groupList()) }
         latest = prefs.getString("lastState", null)?.let { try { parseState(JSONObject(it)) } catch (_: Exception) { null } }
     }
 
@@ -186,7 +208,37 @@ object Remote {
         socket = null
     }
 
-    val isPaired: Boolean get() = savedHost?.let { tokenFor(prefs.getString("computer", null), it) } != null
+    val isPaired: Boolean get() = savedHost != null && (MyDevices.inGroup() || savedHost?.let { tokenFor(prefs.getString("computer", null), it) } != null)
+
+    // ---- My devices: this phone in the group of the person's computers and phones ----
+
+    private fun groupList(): List<Found> = MyDevices.computers().map { Found(it.name, "", DEFAULT_PORT, it.deviceId) }
+
+    private fun refreshGroup() = _ui.update { it.copy(inGroup = MyDevices.inGroup(), group = groupList(), enrolling = false) }
+
+    /** Leaves the group on this phone only; the computers keep it (and the phone can be taken out there). */
+    fun leaveGroup() {
+        MyDevices.leave()
+        refreshGroup()
+    }
+
+    @Volatile private var challenge = ""
+    @Volatile private var memberNonce: String? = null
+    @Volatile private var enrollCode: String? = null
+
+    private fun deviceName(): String = listOfNotNull(Build.MANUFACTURER?.replaceFirstChar { it.uppercase() }, Build.MODEL)
+        .joinToString(" ").ifBlank { "Android phone" }
+
+    /** Joins the group of the computer this phone is connected to, with the code its Settings > Devices > My devices shows. */
+    fun enroll(code: String) {
+        val s = socket
+        if (s == null || challenge.isEmpty()) { show("Not connected to the computer."); return }
+        val clean = code.trim()
+        enrollCode = clean
+        _ui.update { it.copy(enrolling = true) }
+        s.send(JSONObject().put("type", "enroll").put("deviceId", MyDevices.deviceId).put("name", deviceName()).put("kind", "phone")
+            .put("key", MyDevices.publicKey).put("proof", MyDevices.enrollProof(clean, challenge)).toString())
+    }
 
     // ---- What the widgets, the notification and the tile show: the last state seen, kept across restarts ----
 
@@ -294,8 +346,7 @@ object Remote {
     }
 
     fun pair(code: String) {
-        val name = listOfNotNull(Build.MANUFACTURER?.replaceFirstChar { it.uppercase() }, Build.MODEL)
-            .joinToString(" ").ifBlank { "Android phone" }
+        val name = deviceName()
         send(JSONObject().put("type", "pair").put("code", code.trim()).put("name", name))
     }
 
@@ -348,6 +399,52 @@ object Remote {
     fun input(display: String, code: Int) = send(JSONObject().put("type", "input").put("display", display).put("code", code))
     fun cycle(display: String, code: Int, on: Boolean) =
         send(JSONObject().put("type", "cycle").put("display", display).put("code", code).put("on", on))
+    // ---- The phone as the computer's mouse and keyboard (dropped, never queued, when not connected) ----
+
+    private fun sendInput(op: JSONObject) {
+        val s = socket
+        val ui = _ui.value
+        // Aimed at another computer of the group: the one connected passes it on.
+        if (ui.target.isNotEmpty() && ui.target != ui.gateway) op.put("target", ui.target)
+        if (s != null && ui.phase == Phase.Connected) s.send(op.put("type", "input").toString())
+    }
+
+    /** The computer of the group the touchpad and keyboard act on. */
+    fun aim(deviceId: String) = _ui.update { it.copy(target = deviceId) }
+
+    // Moves pile up here and go out together every 8 ms (about 125 a second): even steps instead of bursts, and never a flood.
+    private val pendingX = java.util.concurrent.atomic.AtomicInteger()
+    private val pendingY = java.util.concurrent.atomic.AtomicInteger()
+    @Volatile private var pumping = false
+
+    private fun flushMoves() {
+        val x = pendingX.getAndSet(0)
+        val y = pendingY.getAndSet(0)
+        if (x != 0 || y != 0) sendInput(JSONObject().put("op", "move").put("dx", x).put("dy", y))
+    }
+
+    fun pointer(dx: Int, dy: Int) {
+        pendingX.addAndGet(dx); pendingY.addAndGet(dy)
+        if (pumping) return
+        pumping = true
+        scope.launch {
+            try {
+                var idle = 0
+                while (idle < 60) {
+                    delay(8)
+                    if (pendingX.get() != 0 || pendingY.get() != 0) { idle = 0; flushMoves() } else idle++
+                }
+            } finally { pumping = false }
+        }
+    }
+
+    // A click or key never overtakes the moves before it.
+    fun button(name: String, down: Boolean) { flushMoves(); sendInput(JSONObject().put("op", "btn").put("b", name).put("down", down)) }
+    fun click(name: String) { button(name, true); button(name, false) }
+    fun wheel(delta: Int) = sendInput(JSONObject().put("op", "wheel").put("d", delta).put("h", false))
+    fun key(code: Int, up: Boolean) = sendInput(JSONObject().put("op", "key").put("vk", code).put("up", up))
+    fun text(value: String) = sendInput(JSONObject().put("op", "text").put("s", value))
+
     fun main(display: String) = send(JSONObject().put("type", "main").put("display", display))
     fun preferred(display: String) = send(JSONObject().put("type", "preferred").put("display", display))
 
@@ -375,7 +472,7 @@ object Remote {
         override fun onOpen(webSocket: WebSocket, response: Response) {
             if (webSocket !== socket) return
             // The computer speaks first with a challenge; without a token for it, the code is needed.
-            if (savedHost?.let { tokenFor(prefs.getString("computer", null), it) } == null) _ui.update { it.copy(phase = Phase.NeedCode) }
+            if (!MyDevices.inGroup() && savedHost?.let { tokenFor(prefs.getString("computer", null), it) } == null) _ui.update { it.copy(phase = Phase.NeedCode) }
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
@@ -383,13 +480,59 @@ object Remote {
             val m = try { JSONObject(text) } catch (_: Exception) { return }
             when (m.optString("type")) {
                 "challenge" -> {
-                    // Prove we hold the token without sending it, and ask the computer to prove it holds it too, so a
-                    // device pretending to be the computer learns nothing.
+                    challenge = m.optString("nonce")
+                    if (MyDevices.inGroup()) {
+                        // A member of the group signs the challenge with its key: no token, no code. It tells what it knows of the
+                        // group, and checks the computer's answer the same way.
+                        val mine = nonce()
+                        memberNonce = mine
+                        val known = MyDevices.export()
+                        webSocket.send(JSONObject().put("type", "member").put("deviceId", MyDevices.deviceId).put("nonce", mine)
+                            .put("signature", MyDevices.sign("member:$challenge:$mine:${MyDevices.deviceId}"))
+                            .put("members", known.getJSONArray("members")).put("revoked", known.getJSONArray("revoked")).toString())
+                        return
+                    }
                     val t = savedHost?.let { tokenFor(prefs.getString("computer", null), it) } ?: return
-                    val mine = android.util.Base64.encodeToString(ByteArray(32).also { java.security.SecureRandom().nextBytes(it) }, android.util.Base64.NO_WRAP)
-                    val theirs = m.optString("nonce")
-                    expected = proof(t, "computer:$mine:$theirs")
-                    webSocket.send(JSONObject().put("type", "hello").put("nonce", mine).put("proof", proof(t, "phone:$theirs:$mine")).toString())
+                    signInWithToken(webSocket, t)
+                }
+                "memberWelcome" -> {
+                    MyDevices.merge(m.optJSONArray("members"), m.optJSONArray("revoked"))
+                    val theirs = m.optString("deviceId")
+                    val mine = memberNonce
+                    if (mine == null || !MyDevices.verify(theirs, "server:$mine:$challenge:$theirs", m.optString("signature"))) {
+                        show("This computer could not prove it is in your group.")
+                        webSocket.close(1000, null)
+                        return
+                    }
+                    val name = m.optString("computer")
+                    prefs.edit().putString("computer", name).apply()
+                    _ui.update { it.copy(phase = Phase.Connected, computer = name, group = groupList(), gateway = theirs) }
+                    flushQueue()
+                }
+                "enrolled" -> {
+                    val code = enrollCode
+                    val eco = m.optJSONObject("ecosystem")
+                    if (code == null || eco == null) return
+                    val answer = MyDevices.enrollAnswer(code, challenge, m.optString("deviceId"), eco.optString("id"))
+                    if (!java.security.MessageDigest.isEqual(answer.toByteArray(), m.optString("answer").toByteArray())) {
+                        show("That computer could not prove it showed the code.")
+                        _ui.update { it.copy(enrolling = false) }
+                        return
+                    }
+                    if (!MyDevices.join(eco)) {
+                        show("The group it sent is not valid.")
+                        _ui.update { it.copy(enrolling = false) }
+                        return
+                    }
+                    enrollCode = null
+                    refreshGroup()
+                    show("This phone is now one of your devices.")
+                    // The computer hangs up after letting us in: connect again, this time signing in as a member.
+                    val host = savedHost
+                    val port = savedPort
+                    socket = null
+                    webSocket.close(1000, null)
+                    if (host != null) open(host, port)
                 }
                 "paired" -> {
                     prefs.edit().putString("computer", m.optString("computer")).apply()
@@ -418,6 +561,13 @@ object Remote {
                     changed()
                 }
                 "error" -> {
+                    _ui.update { it.copy(enrolling = false) }
+                    if (m.optString("code") == "notMember") {
+                        // This computer is not in our group (or does not know us yet): its pairing token, if we have one, else a code.
+                        val t = savedHost?.let { tokenFor(prefs.getString("computer", null), it) }
+                        if (t != null) signInWithToken(webSocket, t) else _ui.update { it.copy(phase = Phase.NeedCode) }
+                        return
+                    }
                     if (m.optString("code") == "unpaired") {
                         savedHost?.let { dropToken(prefs.getString("computer", null), it) }
                         _ui.update { it.copy(phase = Phase.NeedCode, state = null) }
@@ -426,6 +576,16 @@ object Remote {
                 }
             }
         }
+
+        /** Proves we hold the token without sending it, and asks the computer to prove it holds it too (a device pretending to be the computer learns nothing). */
+        private fun signInWithToken(webSocket: WebSocket, token: String) {
+            val mine = nonce()
+            val theirs = challenge
+            expected = proof(token, "computer:$mine:$theirs")
+            webSocket.send(JSONObject().put("type", "hello").put("nonce", mine).put("proof", proof(token, "phone:$theirs:$mine")).toString())
+        }
+
+        private fun nonce(): String = android.util.Base64.encodeToString(ByteArray(32).also { java.security.SecureRandom().nextBytes(it) }, android.util.Base64.NO_WRAP)
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) = lost(webSocket)
 

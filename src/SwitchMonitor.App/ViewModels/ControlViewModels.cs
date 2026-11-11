@@ -522,6 +522,13 @@ public interface IInputCoordinator
     void SetInCycle(MonitorViewModel monitor, int code, bool included);
     void InputsLoaded(MonitorViewModel monitor);
 
+    /// <summary>The input this computer is plugged into on <paramref name="monitor"/>, when it has been learned.</summary>
+    int? HomeInput(MonitorViewModel monitor);
+
+    /// <summary>Remembers <paramref name="code"/> as the input this computer uses on <paramref name="monitor"/> (only the first time).</summary>
+    void LearnHomeInput(MonitorViewModel monitor, int code);
+    void ForgetHomeInput(MonitorViewModel monitor);
+
     /// <summary>
     /// A picture or sound setting was changed by hand (<paramref name="code"/>: which one, when known). A saved profile
     /// stays chosen and shows "custom" until its new values are saved into it or it is chosen again.

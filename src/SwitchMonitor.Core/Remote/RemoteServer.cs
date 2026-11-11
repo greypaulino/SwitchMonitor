@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
 using System.Net.WebSockets;
@@ -9,6 +9,9 @@ using System.Text.Json.Nodes;
 using SwitchMonitor.Core.Diagnostics;
 
 namespace SwitchMonitor.Core.Remote;
+
+/// <summary>A device that typed the right code and wants to join the ecosystem (see <see cref="RemoteServer.Enrolling"/>).</summary>
+public sealed record EnrollRequest(string DeviceId, string Name, string Kind, string Address);
 
 /// <summary>What the phone server shows and does; the app implements it on top of the brightness panel.</summary>
 public interface IRemoteHost
@@ -24,6 +27,12 @@ public interface IRemoteHost
 
     /// <summary>Runs one command from a paired phone; returns an error text for the phone, or null.</summary>
     Task<string?> CommandAsync(string type, JsonElement message);
+
+    /// <summary>Mouse and keyboard events of a paired COMPUTER that shares its input with this one (<paramref name="deviceId"/> is that computer).</summary>
+    void InputEvent(JsonElement message, string? deviceId) { }
+
+    /// <summary>Another computer reads or writes one of this computer's displays ("dev" request); the answer is sent back.</summary>
+    Task<JsonObject> DeviceRequestAsync(JsonElement message) => Task.FromResult(new JsonObject { ["ok"] = false, ["error"] = "Not supported." });
 }
 
 /// <summary>
@@ -37,6 +46,8 @@ public sealed class RemoteServer : IDisposable
 {
     public const int DefaultPort = 47820;
     public const int DiscoveryPort = 47821;
+    /// <summary>Version of the computer-to-computer protocol (the phone ignores it).</summary>
+    public const int Protocol = 1;
     public const string DiscoveryQuestion = "SWITCHMONITOR?";
     private const string WebSocketGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
     private const int MaxMessage = 64 * 1024;
@@ -53,6 +64,7 @@ public sealed class RemoteServer : IDisposable
     private readonly IRemoteHost host;
     private readonly ICoreLog log;
     private readonly int requestedPort;
+    private readonly int discoveryPort;
     private readonly ConcurrentDictionary<Guid, Client> clients = new();
     private TcpListener? listener;
     private UdpClient? discovery;
@@ -66,14 +78,33 @@ public sealed class RemoteServer : IDisposable
         public SemaphoreSlim Sending { get; } = sending;
     }
 
-    public RemoteServer(PhoneStore store, IRemoteHost host, ICoreLog? log = null, int port = DefaultPort)
+    public RemoteServer(PhoneStore store, IRemoteHost host, ICoreLog? log = null, int port = DefaultPort, int discoveryPort = DiscoveryPort, Ecosystem? ecosystem = null)
     {
+        this.discoveryPort = discoveryPort;
         this.store = store;
         this.host = host;
         this.log = log ?? NullLog.Instance;
+        this.ecosystem = ecosystem;
         requestedPort = port;
         store.Changed += DropRemovedPhones;
+        if (ecosystem is not null) ecosystem.Changed += DropRemovedPhones;
     }
+
+    private readonly Ecosystem? ecosystem;
+
+    /// <summary>
+    /// A device typed the right code and asks to join the ecosystem: the app asks the person (name, kind, address) and answers
+    /// true to let it in. No answer in a minute counts as no.
+    /// </summary>
+    public Func<EnrollRequest, Task<bool>>? Enrolling { get; set; }
+
+    /// <summary>Whether a connected client still has the right to be here (a paired phone, or a member of the ecosystem).</summary>
+    private bool StillAllowed(PairedPhone phone) =>
+        phone.Id.StartsWith(MemberPrefix, StringComparison.Ordinal)
+            ? ecosystem is not null && ecosystem.IsMember(phone.Id[MemberPrefix.Length..])
+            : store.IsPaired(phone.Id);
+
+    private const string MemberPrefix = "eco-";
 
     public bool IsRunning => listener is not null;
 
@@ -86,6 +117,23 @@ public sealed class RemoteServer : IDisposable
 
     /// <summary>Raised (on a worker thread) when a phone connects or disconnects.</summary>
     public event Action? ClientsChanged;
+
+    /// <summary>
+    /// A computer paired with this one by code and handed over a token for this computer to control it back: its address,
+    /// the port of its own server, its device id and name. The app stores it so the pairing works both ways.
+    /// </summary>
+    public event Action<CounterPairing>? ComputerPaired;
+
+    /// <summary>
+    /// Another computer asked to pair: this one made a pairing code at once and the app shows it on screen (name, code, when it
+    /// stops working), so nobody has to start the pairing here by hand. The code is typed on the computer that asked.
+    /// </summary>
+    public event Action<string, string, DateTimeOffset>? PairRequested;
+
+    private DateTimeOffset lastPairRequest = DateTimeOffset.MinValue;
+
+    /// <summary>A connected computer asked this one to forget it (it was removed over there): its device id.</summary>
+    public event Action<string>? ComputerForgot;
 
     public void Start(bool withDiscovery = true)
     {
@@ -101,7 +149,7 @@ public sealed class RemoteServer : IDisposable
         {
             try
             {
-                discovery = new UdpClient(new IPEndPoint(IPAddress.Any, DiscoveryPort)) { EnableBroadcast = true };
+                discovery = new UdpClient(new IPEndPoint(IPAddress.Any, discoveryPort)) { EnableBroadcast = true };
                 _ = DiscoveryLoop(discovery, stop.Token);
             }
             catch (SocketException error) { log.Write(LogLevel.Warning, "Phone: the computer cannot be found automatically (UDP port in use); the phone can still connect by address.", error); }
@@ -126,6 +174,7 @@ public sealed class RemoteServer : IDisposable
     public void Dispose()
     {
         store.Changed -= DropRemovedPhones;
+        if (ecosystem is not null) ecosystem.Changed -= DropRemovedPhones;
         Stop();
     }
 
@@ -166,6 +215,7 @@ public sealed class RemoteServer : IDisposable
     {
         using (connection)
         {
+            connection.NoDelay = true;   // small answers go out at once (a slider drag): no waiting to be bundled with the next one
             if (connection.Client.RemoteEndPoint is not IPEndPoint remote || !LocalNetwork.IsAllowed(remote.Address))
             {
                 log.Write(LogLevel.Warning, $"Phone: refused a connection from outside the home network ({connection.Client.RemoteEndPoint}).");
@@ -233,11 +283,31 @@ public sealed class RemoteServer : IDisposable
                 }
                 catch (JsonException) { errors++; await SendAsync(socket, sending, Error("Not a JSON message.")); continue; }
 
+                if (type == "pairRequest")
+                {
+                    var asked = DateTimeOffset.Now;
+                    if (asked - lastPairRequest < TimeSpan.FromSeconds(4))
+                    {
+                        await SendAsync(socket, sending, Error("A pairing request was just made. Wait a few seconds and try again."));
+                        continue;
+                    }
+                    lastPairRequest = asked;
+                    string who = message.TryGetProperty("name", out var rn) ? rn.GetString() ?? "" : "";
+                    who = string.IsNullOrWhiteSpace(who) ? remote.Address.ToString() : who.Trim();
+                    if (who.Length > 60) who = who[..60];
+                    string shown = store.NewCode(asked);
+                    log.Write(LogLevel.Info, $"Pairing requested by \"{who}\" ({remote.Address}); the code is on screen.");
+                    PairRequested?.Invoke(who, shown, store.CodeExpires);
+                    await SendAsync(socket, sending, Message("pairRequested", new JsonObject()));
+                    continue;
+                }
                 if (type == "pair")
                 {
                     string code = message.TryGetProperty("code", out var c) ? c.GetString() ?? "" : "";
                     string name = message.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "";
-                    string? token = store.Pair(code, name, DateTimeOffset.Now);
+                    string kind = message.TryGetProperty("kind", out var k) && k.GetString() == "computer" ? "computer" : "phone";
+                    string? otherDevice = message.TryGetProperty("deviceId", out var di) ? di.GetString() : null;
+                    string? token = store.Pair(code, name, DateTimeOffset.Now, kind, kind == "computer" ? otherDevice : null);
                     if (token is null)
                     {
                         errors++;
@@ -246,8 +316,31 @@ public sealed class RemoteServer : IDisposable
                         continue;
                     }
                     client = Join(id, socket, sending, store.Find(token)!);
-                    log.Write(LogLevel.Info, $"Phone \"{client.Phone.Name}\" paired ({remote.Address}).");
-                    await SendAsync(socket, sending, Message("paired", new JsonObject { ["token"] = token, ["computer"] = host.ComputerName }));
+                    log.Write(LogLevel.Info, $"{(kind == "computer" ? "Computer" : "Phone")} \"{client.Phone.Name}\" paired ({remote.Address}).");
+                    if (kind == "computer" && otherDevice is not null && message.TryGetProperty("counterToken", out var ct) && ct.GetString() is { Length: > 0 } counter
+                        && message.TryGetProperty("port", out var cp) && cp.TryGetInt32(out int counterPort))
+                        ComputerPaired?.Invoke(new CounterPairing(name, remote.Address.IsIPv4MappedToIPv6 ? remote.Address.MapToIPv4().ToString() : remote.Address.ToString(),
+                            counterPort, counter, otherDevice));
+                    await SendAsync(socket, sending, Message("paired", new JsonObject
+                    {
+                        ["token"] = token, ["computer"] = host.ComputerName, ["deviceId"] = DeviceIdentity.Id, ["protocol"] = Protocol, ["port"] = Port
+                    }));
+                    await SendAsync(socket, sending, Message("state", await host.StateAsync()));
+                    continue;
+                }
+                if (type == "enroll")
+                {
+                    if (await EnrollAsync(socket, sending, remote, message, nonce)) break;   // done: the newcomer signs in again as a member
+                    errors++;
+                    continue;
+                }
+                if (type == "member")
+                {
+                    // A member of the ecosystem signs in with its key: no token, no code. It sends what it knows of the ecosystem first.
+                    var joined = await MemberSignInAsync(socket, sending, message, nonce);
+                    if (joined is null) { errors++; continue; }
+                    client = Join(id, socket, sending, joined);
+                    log.Write(LogLevel.Debug, $"Ecosystem: \"{joined.Name}\" signed in ({remote.Address}).");
                     await SendAsync(socket, sending, Message("state", await host.StateAsync()));
                     continue;
                 }
@@ -269,10 +362,38 @@ public sealed class RemoteServer : IDisposable
                     await SendAsync(socket, sending, Message("state", await host.StateAsync()));
                     continue;
                 }
-                if (client is null || !store.IsPaired(client.Phone.Id))
+                if (client is null || !StillAllowed(client.Phone))
                 {
                     errors++;
                     await SendAsync(socket, sending, Error("Pair this phone first.", "unpaired"));
+                    continue;
+                }
+                if (type == "dev")
+                {
+                    // Only a paired COMPUTER may read and write VCP codes; a phone has its own, narrower commands.
+                    long requestId = message.TryGetProperty("id", out var ri) && ri.TryGetInt64(out long idValue) ? idValue : 0;
+                    JsonObject result = client.Phone.IsComputer
+                        ? await host.DeviceRequestAsync(message)
+                        : new JsonObject { ["ok"] = false, ["error"] = "Only a paired computer can do this." };
+                    result["id"] = requestId;
+                    await SendAsync(socket, sending, Message("devResult", result));
+                    continue;
+                }
+                if (type == "forget")
+                {
+                    // A computer that is removed over there tells us, so it cannot keep controlling this one.
+                    if (client.Phone is { IsComputer: true, DeviceId: { } gone })
+                    {
+                        store.RemoveByDevice(gone);
+                        ComputerForgot?.Invoke(gone);
+                    }
+                    continue;
+                }
+                if (type == "input")
+                {
+                    // A paired computer (sharing on) or a paired phone (when the person allowed it) may move the mouse and type here; the
+                    // host checks which. A phone has no device id.
+                    host.InputEvent(message, client.Phone.IsComputer ? client.Phone.DeviceId : null);
                     continue;
                 }
                 if (type == "get")
@@ -294,6 +415,101 @@ public sealed class RemoteServer : IDisposable
         }
     }
 
+    // ---- The ecosystem: joining it with the code, and signing in as a member ----
+
+    /// <summary>
+    /// "enroll": a device proves it knows this computer's current code, the person here says yes, and the device is vouched for.
+    /// True when it joined. Anything else is answered with an error and counts as a wrong try.
+    /// </summary>
+    private async Task<bool> EnrollAsync(WebSocket socket, SemaphoreSlim sending, IPEndPoint remote, JsonElement message, string nonce)
+    {
+        string Text(string name) => message.TryGetProperty(name, out var v) ? v.GetString() ?? "" : "";
+        if (ecosystem is null || Enrolling is null) { await SendAsync(socket, sending, Error("This computer cannot add devices.")); return false; }
+        string deviceId = Text("deviceId"), name = Text("name"), kind = Text("kind") == "phone" ? "phone" : "computer", publicKey = Text("key"), proof = Text("proof");
+        if (deviceId.Length is < 8 or > 64 || publicKey.Length is 0 or > 400)
+        {
+            await SendAsync(socket, sending, Error("Not a valid request."));
+            return false;
+        }
+        var now = DateTimeOffset.Now;
+        if (ecosystem.IsLocked(now))
+        {
+            await SendAsync(socket, sending, Error("Too many wrong codes. Wait a minute and try again."));
+            return false;
+        }
+        if (!ecosystem.CheckEnrollProof(proof, nonce, deviceId, publicKey, now, out string code))
+        {
+            log.Write(LogLevel.Warning, $"Ecosystem: wrong or expired code from {remote.Address}.");
+            await SendAsync(socket, sending, Error("The code is wrong or expired. Look at the one this computer shows now."));
+            return false;
+        }
+        var request = new EnrollRequest(deviceId, string.IsNullOrWhiteSpace(name) ? remote.Address.ToString() : name.Trim(), kind, remote.Address.ToString());
+        bool allowed;
+        try
+        {
+            var asking = Enrolling(request);
+            allowed = await Task.WhenAny(asking, Task.Delay(TimeSpan.FromSeconds(60))) == asking && await asking;
+        }
+        catch (Exception error) when (error is InvalidOperationException or OperationCanceledException)
+        {
+            allowed = false;
+        }
+        if (!allowed)
+        {
+            log.Write(LogLevel.Info, $"Ecosystem: \"{request.Name}\" was not allowed in.");
+            await SendAsync(socket, sending, Error("The person at that computer said no (or did not answer)."));
+            return false;
+        }
+        ecosystem.Admit(deviceId, request.Name, kind, publicKey, DateTimeOffset.UtcNow);
+        log.Write(LogLevel.Info, $"Ecosystem: \"{request.Name}\" ({kind}) joined.");
+        await SendAsync(socket, sending, Message("enrolled", new JsonObject
+        {
+            ["ecosystem"] = ecosystem.Export(),
+            ["computer"] = host.ComputerName,
+            ["deviceId"] = ecosystem.DeviceId,
+            ["answer"] = Ecosystem.EnrollAnswer(code, nonce, deviceId, ecosystem.DeviceId, ecosystem.Id!)
+        }));
+        return true;
+    }
+
+    /// <summary>
+    /// "member": the other device sends what it knows of the ecosystem and signs the challenge. This computer learns that, checks the
+    /// signature, and answers with its own signature and what it knows. Null (after an error was sent) when it is not a member.
+    /// </summary>
+    private async Task<PairedPhone?> MemberSignInAsync(WebSocket socket, SemaphoreSlim sending, JsonElement message, string nonce)
+    {
+        string Text(string name) => message.TryGetProperty(name, out var v) ? v.GetString() ?? "" : "";
+        if (ecosystem is null || ecosystem.Id is null)
+        {
+            await SendAsync(socket, sending, Error("This computer has no ecosystem.", "notMember"));
+            return null;
+        }
+        string deviceId = Text("deviceId"), theirNonce = Text("nonce"), signature = Text("signature");
+        JsonNode? members = null, revoked = null;
+        try
+        {
+            if (message.TryGetProperty("members", out var m)) members = JsonNode.Parse(m.GetRawText());
+            if (message.TryGetProperty("revoked", out var r)) revoked = JsonNode.Parse(r.GetRawText());
+        }
+        catch (JsonException) { }
+        ecosystem.Merge(members, revoked);
+        if (theirNonce.Length is < 16 or > 128 || !ecosystem.Verify(deviceId, $"member:{nonce}:{theirNonce}:{deviceId}", signature) || ecosystem.Find(deviceId) is not { } cert)
+        {
+            await SendAsync(socket, sending, Error("This device is not in the ecosystem (or was removed).", "notMember"));
+            return null;
+        }
+        var export = ecosystem.Export();
+        await SendAsync(socket, sending, Message("memberWelcome", new JsonObject
+        {
+            ["deviceId"] = ecosystem.DeviceId,
+            ["signature"] = ecosystem.SignText($"server:{theirNonce}:{nonce}:{ecosystem.DeviceId}"),
+            ["members"] = export["members"]!.DeepClone(),
+            ["revoked"] = export["revoked"]!.DeepClone(),
+            ["computer"] = host.ComputerName
+        }));
+        return new PairedPhone(MemberPrefix + cert.DeviceId, cert.Name, "", DateTimeOffset.Now, cert.IsComputer ? "computer" : "phone", cert.IsComputer ? cert.DeviceId : null);
+    }
+
     private Client Join(Guid id, WebSocket socket, SemaphoreSlim sending, PairedPhone phone)
     {
         var client = new Client(socket, phone, sending);
@@ -307,7 +523,7 @@ public sealed class RemoteServer : IDisposable
     private void DropRemovedPhones()
     {
         foreach (var (id, client) in clients)
-            if (!store.IsPaired(client.Phone.Id) && clients.TryRemove(id, out _))
+            if (!StillAllowed(client.Phone) && clients.TryRemove(id, out _))
             {
                 _ = CloseAsync(client, "This phone was removed in SwitchMonitor.");
                 ClientsChanged?.Invoke();
@@ -337,7 +553,8 @@ public sealed class RemoteServer : IDisposable
             if (Encoding.ASCII.GetString(received.Buffer).Trim() != DiscoveryQuestion) continue;
             byte[] answer = Encoding.UTF8.GetBytes(new JsonObject
             {
-                ["app"] = "SwitchMonitor", ["computer"] = host.ComputerName, ["port"] = Port
+                ["app"] = "SwitchMonitor", ["computer"] = host.ComputerName, ["port"] = Port,
+                ["deviceId"] = ecosystem?.DeviceId ?? DeviceIdentity.Id, ["protocol"] = Protocol, ["ecosystem"] = ecosystem?.Id
             }.ToJsonString());
             try { await udp.SendAsync(answer, received.RemoteEndPoint, cancel); }
             catch (Exception error) when (error is OperationCanceledException or ObjectDisposedException or SocketException) { return; }

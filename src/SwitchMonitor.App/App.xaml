@@ -1,4 +1,4 @@
-<Application x:Class="SwitchMonitor.App.App"
+﻿<Application x:Class="SwitchMonitor.App.App"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:app="clr-namespace:SwitchMonitor.App"
@@ -629,8 +629,9 @@
                                 <Setter TargetName="Box" Property="BorderBrush" Value="{StaticResource MutedBrush}" />
                             </Trigger>
                             <Trigger Property="IsChecked" Value="True">
-                                <Setter TargetName="Box" Property="Background" Value="{StaticResource AccentBrush}" />
-                                <Setter TargetName="Box" Property="BorderBrush" Value="{StaticResource AccentSolidBrush}" />
+                                <Setter TargetName="Box" Property="Background" Value="Transparent" />
+                                <Setter TargetName="Box" Property="BorderBrush" Value="Transparent" />
+                                <Setter TargetName="Mark" Property="Stroke" Value="{StaticResource AccentTextBrush}" />
                                 <Setter TargetName="Mark" Property="Visibility" Value="Visible" />
                             </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
@@ -701,6 +702,38 @@
                                 <Setter Property="Foreground" Value="{StaticResource PillOnTextBrush}" />
                                 <Setter Property="FontWeight" Value="SemiBold" />
                                 <Setter TargetName="Tab" Property="Background" Value="{StaticResource PillOnBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Sub-page tabs (Settings): text with a line under the current one, flat on a hairline; not the pills of the main tabs -->
+        <Style x:Key="SubTab" TargetType="RadioButton">
+            <Setter Property="Foreground" Value="{StaticResource MutedBrush}" />
+            <Setter Property="FontSize" Value="13.5" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Margin" Value="0,0,6,0" />
+            <Setter Property="FocusVisualStyle" Value="{StaticResource FocusRing}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="RadioButton">
+                        <Border x:Name="Tab" Background="Transparent" BorderBrush="Transparent" BorderThickness="0,0,0,2" Padding="12,10,12,9" Margin="0,0,0,-1">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="{TemplateBinding Tag}" FontFamily="{DynamicResource IconFont}" FontWeight="{DynamicResource IconWeight}" FontSize="13"
+                                           VerticalAlignment="Center" Margin="0,1,8,0" />
+                                <ContentPresenter VerticalAlignment="Center" />
+                            </StackPanel>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+                                <Setter Property="FontWeight" Value="SemiBold" />
+                                <Setter TargetName="Tab" Property="BorderBrush" Value="{StaticResource AccentSolidBrush}" />
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -946,7 +979,7 @@
                                 </Grid.ColumnDefinitions>
                                 <ContentPresenter x:Name="IconSlot" ContentSource="Icon" VerticalAlignment="Center" HorizontalAlignment="Left"
                                                   TextElement.Foreground="{StaticResource MutedBrush}" TextElement.FontFamily="{DynamicResource IconFont}" />
-                                <TextBlock x:Name="Check" Text="&#xE73E;" FontFamily="{DynamicResource IconFont}" FontWeight="{DynamicResource IconWeight}" FontSize="12"
+                                <TextBlock x:Name="Check" Text="&#xE73E;" Tag="NoRestyle" FontFamily="{DynamicResource IconFont}" FontWeight="{DynamicResource IconWeight}" FontSize="12"
                                            Foreground="{StaticResource AccentTextBrush}" VerticalAlignment="Center" Visibility="Hidden" />
                                 <ContentPresenter Grid.Column="1" ContentSource="Header" RecognizesAccessKey="True" VerticalAlignment="Center" />
                             </Grid>

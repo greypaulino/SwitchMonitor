@@ -9,13 +9,13 @@ namespace SwitchMonitor.Core;
 /// <summary>Settings that change which transports the enumerator may use.</summary>
 public sealed record CoreOptions
 {
-    /// <summary>Allows AMD ADL2 DDC writes, which are not yet validated on hardware.</summary>
+    /// <summary>Allows AMD ADL2 DDC writes (validated on an AMD Radeon 780M with the LG 29WK600, 08/11/2026: brightness).</summary>
     public bool AllowAmdWrites { get; init; }
 
-    /// <summary>Reads options from the v2 data directory: amd-experimental.flag enables AMD writes.</summary>
+    /// <summary>Reads options from the v2 data directory: AMD writes are on unless an empty amd-writes-off.flag file is there.</summary>
     public static CoreOptions FromDataDirectory(string? directory = null) => new()
     {
-        AllowAmdWrites = File.Exists(Path.Combine(directory ?? AppPaths.DataDirectory, "amd-experimental.flag"))
+        AllowAmdWrites = !File.Exists(Path.Combine(directory ?? AppPaths.DataDirectory, "amd-writes-off.flag"))
     };
 }
 

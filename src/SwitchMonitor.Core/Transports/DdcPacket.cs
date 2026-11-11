@@ -11,6 +11,9 @@ public static class DdcWriteSettings
     /// effect; with 0x51 brightness, contrast, volume, picture mode and response time all do.
     /// </summary>
     public static byte StandardWriteSource { get; set; } = 0x51;
+
+    /// <summary>Source address of the LG input switch (0xF4): 0x50 as in the 1.x. The probe's input test can try 0x51.</summary>
+    public static byte VendorWriteSource { get; set; } = 0x50;
 }
 
 /// <summary>DDC/CI wire format helpers shared by the GPU-driver transports.</summary>
@@ -21,7 +24,7 @@ internal static class DdcPacket
     internal const byte HostReadSource = 0x51;
     internal const byte HostWriteSource = 0x50;
 
-    internal static byte WriteSourceFor(byte code) => code == 0xF4 ? HostWriteSource : DdcWriteSettings.StandardWriteSource;
+    internal static byte WriteSourceFor(byte code) => code == 0xF4 ? DdcWriteSettings.VendorWriteSource : DdcWriteSettings.StandardWriteSource;
 
     /// <summary>Get VCP Feature request payload: length 0x82, opcode 0x01, feature.</summary>
     internal static byte[] GetVcpPayload(byte feature) => [0x82, 0x01, feature];

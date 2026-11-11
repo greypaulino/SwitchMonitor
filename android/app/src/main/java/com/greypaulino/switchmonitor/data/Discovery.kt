@@ -51,7 +51,7 @@ object Discovery {
                     try {
                         val answer = JSONObject(String(packet.data, 0, packet.length, Charsets.UTF_8))
                         if (answer.optString("app") != "SwitchMonitor") continue
-                        found[host] = Found(answer.optString("computer", host), host, answer.optInt("port", Remote.DEFAULT_PORT))
+                        found[host] = Found(answer.optString("computer", host), host, answer.optInt("port", Remote.DEFAULT_PORT), answer.optString("deviceId"))
                     } catch (_: Exception) { }
                 }
             }

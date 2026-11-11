@@ -6,7 +6,16 @@ using SwitchMonitor.Core.Scenes;
 namespace SwitchMonitor.App.Automation;
 
 /// <summary>A program installed for Windows: the name of its Start menu entry and the .exe it starts.</summary>
-public sealed record InstalledApp(string Name, string Exe, string Path);
+public sealed record InstalledApp(string Name, string Exe, string Path)
+{
+    private static readonly string Windows = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+    private static readonly string[] SystemFolders = [@"\Windows Defender\", @"\Windows Kits\", @"\Windows NT\", @"\Windows Media Player\",
+        @"\Windows Mail\", @"\Windows Photo Viewer\", @"\Windows Security\", @"\WindowsApps\", @"\Windows Sidebar\"];
+
+    /// <summary>A program of Windows itself (in the Windows folder or one of its own folders), not one the person installed.</summary>
+    public bool IsSystem => (Windows.Length > 0 && Path.StartsWith(Windows, StringComparison.OrdinalIgnoreCase))
+        || SystemFolders.Any(f => Path.Contains(f, StringComparison.OrdinalIgnoreCase));
+}
 
 /// <summary>
 /// The programs of the Start menu (all users and this user), read from their shortcuts: each one that starts an .exe,

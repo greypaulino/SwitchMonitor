@@ -87,15 +87,44 @@ public sealed class MonitorDevice : IDisposable
                 try
                 {
                     string? raw = ReadPolicy.Execute($"{Name}: capabilities", () => transport.ReadCapabilities(), delay, log);
+                    capabilitiesText = raw;
                     capabilities = MccsCapabilitiesParser.Parse(raw);
                 }
                 catch (Exception error) when (error is TransportException or NotSupportedException)
                 {
                     log.Write(LogLevel.Warning, $"{Name}: capabilities unavailable via {transport.Id}.", error);
                     capabilities = MonitorCapabilities.Empty;
+                    capabilitiesFailed = true;
                 }
                 return capabilities;
             }
+        }
+    }
+
+    private bool capabilitiesFailed;
+    private string? capabilitiesText;
+
+    /// <summary>The capabilities string as the monitor gave it (read now if needed), or null; other computers parse it themselves.</summary>
+    public string? ReadCapabilitiesText()
+    {
+        _ = Capabilities;
+        return capabilitiesText;
+    }
+
+    /// <summary>Whether the panel only has some brightness levels (laptop panels).</summary>
+    public bool SnapsToLevels => transport.SnapsToLevels;
+
+    /// <summary>
+    /// A monitor that another computer is using does not answer DDC/CI, so its capabilities fail once and would stay empty.
+    /// Called when it answers again: the next use reads them again.
+    /// </summary>
+    public void ForgetFailedCapabilities()
+    {
+        lock (gate)
+        {
+            if (!capabilitiesFailed) return;
+            capabilities = null;
+            capabilitiesFailed = false;
         }
     }
 
@@ -117,8 +146,9 @@ public sealed class MonitorDevice : IDisposable
         if (!IsControllable) return false;
         if (Quirk?.Controls.Any(c => c.Code == code && c.NotAdvertised) == true) return true;
         if (Capabilities.VcpCodes.Count > 0) return Capabilities.Supports(code) || (code == VcpCode.InputSource && Inputs.Count > 0);
-        // No capabilities string (GPU-driver transports): rely on the quirk's validated features.
-        return Quirk is not null && code is VcpCode.Brightness or VcpCode.InputSource;
+        // No capabilities string (GPU-driver transports, e.g. AMD ADL on the LG): offer the brightness, the input and every control
+        // the quirk lists for the model; a control the monitor does not answer shows as unavailable.
+        return Quirk is not null && (code is VcpCode.Brightness or VcpCode.InputSource || Quirk.Controls.Any(c => c.Code == code));
     }
 
     public VcpValue Read(byte code)
@@ -212,6 +242,14 @@ public sealed class MonitorDevice : IDisposable
                 result.Add(new MonitorFeature(definition, AllowedValues(definition)));
                 seen.Add(code);
             }
+            // No capabilities string: the quirk's own controls stand in for the advertised list.
+            if (Capabilities.VcpCodes.Count == 0 && Quirk is not null)
+                foreach (var control in Quirk.Controls.Where(c => !c.NotAdvertised && !seen.Contains(c.Code)
+                             && c.Code != VcpCode.InputSource && c.Code != Quirk.InputWriteVcp))
+                {
+                    result.Add(new MonitorFeature(control, AllowedValues(control)));
+                    seen.Add(control.Code);
+                }
             // Verified codes the monitor does not advertise, placed where the quirk says (black levels after blue).
             foreach (var hidden in quirkControls.Values.Where(c => c.NotAdvertised && !seen.Contains(c.Code)))
             {
@@ -300,9 +338,14 @@ public sealed class MonitorDevice : IDisposable
             EnsureWritable();
             if (!Inputs.Contains(inputCode))
                 throw new ArgumentOutOfRangeException(nameof(inputCode), $"{Name} does not advertise {InputSource.Describe(inputCode)}.");
-            var (vcp, value) = Quirk?.MapInputWrite(inputCode) ?? (VcpCode.InputSource, (uint)inputCode);
+            var (vcp, value) = Quirk is { } quirk && !quirk.UsesStandardInputOn(transport.Id)
+                ? quirk.MapInputWrite(inputCode)
+                : (VcpCode.InputSource, (uint)inputCode);
             InputPolicy.Execute($"{Name}: switch to {DescribeInput(inputCode)}", () => transport.Write(vcp, value), delay, log);
             log.Write(LogLevel.Info, $"{Name}: input switch to {DescribeInput(inputCode)} sent via {transport.Id}.");
+            // One write only. The LG's menu keeps reporting the old port after another computer moves it, so the read-back can
+            // disagree while the picture is already right; sending the command again made the display re-sync a second time
+            // (08/11/2026, laptop: two black flashes).
             return Verify(VcpCode.InputSource, (uint)inputCode, InputPolicy);
         }
     }
@@ -440,6 +483,12 @@ public sealed class MonitorDevice : IDisposable
     public bool ResendsInputOnReturn => Quirk?.ResendInputOnReturn.Contains(transport.Id, StringComparer.OrdinalIgnoreCase) == true;
 
     /// <summary>
+    /// The display keeps answering over DDC while it shows another computer's input (LG 29WK600): then only the input it
+    /// reports tells whether this computer has its picture.
+    /// </summary>
+    public bool AnswersOnOtherInputs => ResendsInputOnReturn || Quirk?.UsesStandardInputOn(transport.Id) == true;
+
+    /// <summary>
     /// One quiet read of the current input: no retries and no log lines, null when the display does not answer.
     /// Used for polling while another computer may own the monitor.
     /// </summary>
@@ -463,7 +512,8 @@ public sealed class MonitorDevice : IDisposable
         uint last = 0;
         for (int attempt = 1; attempt <= policy.MaxAttempts; attempt++)
         {
-            delay.Wait(policy.DelayBefore(attempt + 1));
+            // A display of another computer was already verified there (after its own settle time): no second wait here.
+            if (!Identity.IsRemote) delay.Wait(policy.DelayBefore(attempt + 1));
             try
             {
                 last = transport.Read(code).Current;
@@ -538,6 +588,11 @@ public sealed record MonitorIdentity(
 
     /// <summary>What the monitor says about itself (name, serial number, date), read from its EDID; null when unavailable.</summary>
     public Displays.EdidInfo? Edid { get; init; }
+
+    /// <summary>The computer that owns this display when it is another one's (its name); null for a display on this computer.</summary>
+    public string? RemoteComputer { get; init; }
+
+    public bool IsRemote => RemoteComputer is not null;
 }
 
 /// <summary>Placeholder for displays that Windows lists but that no transport can control.</summary>

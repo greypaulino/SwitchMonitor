@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using System.Net.Sockets;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -40,12 +40,16 @@ public sealed class PhoneBridge : ObservableObject, IRemoteHost, IDisposable
         this.log = log;
         dispatcher = Dispatcher.CurrentDispatcher;
         store = new PhoneStore();
-        server = new RemoteServer(store, this, log);
+        Eco = new Ecosystem();
+        server = new RemoteServer(store, this, log, ecosystem: Eco) { Enrolling = AskToAdmit };
         push = new DispatcherTimer(TimeSpan.FromMilliseconds(250), DispatcherPriority.Background, (_, _) => _ = PushIfChangedAsync(), dispatcher);
         codeClock = new DispatcherTimer(TimeSpan.FromSeconds(1), DispatcherPriority.Background, (_, _) => TickCode(), dispatcher);
         PairCommand = new RelayCommand(_ => NewCode(), _ => Enabled);
         CancelCodeCommand = new RelayCommand(_ => { store.CancelCode(); Code = null; });
         store.Changed += () => dispatcher.BeginInvoke(FillPhones);
+        server.ComputerPaired += paired => dispatcher.BeginInvoke(() => ComputerPaired?.Invoke(paired));
+        server.PairRequested += (who, shown, until) => dispatcher.BeginInvoke(() => PairRequested?.Invoke(who, shown, until));
+        server.ComputerForgot += device => dispatcher.BeginInvoke(() => ComputerForgot?.Invoke(device));
         System.Net.NetworkInformation.NetworkChange.NetworkAddressChanged += OnAddressChanged;
         server.ClientsChanged += () => dispatcher.BeginInvoke(() =>
         {
@@ -62,7 +66,70 @@ public sealed class PhoneBridge : ObservableObject, IRemoteHost, IDisposable
         if (main.Settings.PhoneAccess) TryStart();
     }
 
+    // ---- My devices: the group of computers and phones of one person ----
+
+    /// <summary>This device's place in the ecosystem (its key, its members, the code that lets a new one in).</summary>
+    public Ecosystem Eco { get; }
+
+    /// <summary>A device typed this computer's code: asks the person (a pop-up on top) and answers when they decided.</summary>
+    private Task<bool> AskToAdmit(EnrollRequest request)
+    {
+        var done = new TaskCompletionSource<bool>();
+        dispatcher.BeginInvoke(() =>
+        {
+            var window = new EnrollApproveWindow(request.Name, request.Kind, request.Address);
+            window.Closed += (_, _) => done.TrySetResult(window.Allowed);
+            window.Show();
+        });
+        return done.Task;
+    }
+
+    // ---- Pairing with other computers (the Devices panel) ----
+
+    /// <summary>The port this computer's server listens on (other computers need it to control this one back).</summary>
+    public int ServerPort => server.Port;
+
+    /// <summary>Another computer paired with this one by code and handed over a token to control it back.</summary>
+    public event Action<CounterPairing>? ComputerPaired;
+
+    /// <summary>Another computer asked to pair: its name, the code made for it, and when the code stops working.</summary>
+    public event Action<string, string, DateTimeOffset>? PairRequested;
+
+    /// <summary>When the code on screen stops working, or null once it was used, cancelled or has expired.</summary>
+    public DateTimeOffset? ActiveCodeExpiry() => store.CurrentCode(DateTimeOffset.Now) is null ? null : store.CodeExpires;
+
+    public void CancelPairCode() => store.CancelCode();
+
+    /// <summary>A computer that controls this one asked to be forgotten (it removed this computer).</summary>
+    public event Action<string>? ComputerForgot;
+
+    /// <summary>Turns the server on when it is off (pairing a computer needs it, so the other one can answer back). True when running.</summary>
+    public bool EnsureOn()
+    {
+        if (!server.IsRunning) Enabled = true;
+        return server.IsRunning;
+    }
+
+    /// <summary>The other computer may control this one with <paramref name="token"/> (this computer made it and handed it over).</summary>
+    public void AddComputer(string name, string token, string deviceId) =>
+        store.AddPaired(name, token, "computer", deviceId, DateTimeOffset.Now);
+
+    /// <summary>Stops a computer from controlling this one.</summary>
+    public void ForgetComputer(string deviceId) => store.RemoveByDevice(deviceId);
+
     // ---- Settings > Phone ----
+
+    /// <summary>A paired phone may be this computer's mouse and keyboard (Settings > Devices).</summary>
+    public bool PhoneInput
+    {
+        get => main.Settings.PhoneInput;
+        set
+        {
+            if (value == main.Settings.PhoneInput) return;
+            main.UpdateSettings(main.Settings with { PhoneInput = value }, shortcutsChanged: false);
+            Raise();
+        }
+    }
 
     public bool Enabled
     {
@@ -158,7 +225,7 @@ public sealed class PhoneBridge : ObservableObject, IRemoteHost, IDisposable
     {
         if (code is not null && store.CurrentCode(DateTimeOffset.Now) is null) Code = null;   // used by a phone
         Phones.Clear();
-        foreach (var phone in store.Phones)
+        foreach (var phone in store.Phones.Where(p => !p.IsComputer))   // computers are listed by the Computers service
             Phones.Add(new PhoneRow(phone.Id, phone.Name, $"Paired {phone.PairedAt.LocalDateTime:d}",
                 new RelayCommand(_ =>
                 {
@@ -175,7 +242,35 @@ public sealed class PhoneBridge : ObservableObject, IRemoteHost, IDisposable
 
     public string Page => PhonePage.Html;
 
+    /// <summary>Mouse and keyboard from a paired computer that shares its input (Settings > Devices).</summary>
+    public void InputEvent(JsonElement message, string? deviceId)
+    {
+        // A phone's input, or a phone's input another computer of the group passed on ("phone": true).
+        bool fromPhone = deviceId is null || (message.TryGetProperty("phone", out var relayed) && relayed.ValueKind == JsonValueKind.True);
+        if (!fromPhone) { main.Share?.OnInput(message, deviceId); return; }
+        // The phone may aim at any computer of the group ("target": its device id): this one passes it on.
+        if (deviceId is null && message.TryGetProperty("target", out var aim) && aim.GetString() is { Length: > 0 } target && target != Eco.DeviceId)
+        {
+            if (main.Peers?.ConnectedClient(target) is { } peer && JsonNode.Parse(message.GetRawText()) is JsonObject copy)
+            {
+                copy.Remove("target");
+                copy["phone"] = true;
+                _ = peer.SendAsync(copy);
+            }
+            return;
+        }
+        if (main.Settings.PhoneInput) main.Share?.OnPhoneInput(message);
+    }
+
     public Task<JsonObject> StateAsync() => dispatcher.InvokeAsync(BuildState).Task;
+
+    /// <summary>Another computer reads or writes one of this computer's displays: found here, run on a worker thread.</summary>
+    public async Task<JsonObject> DeviceRequestAsync(JsonElement message)
+    {
+        string key = message.TryGetProperty("device", out var d) ? d.GetString() ?? "" : "";
+        var device = await dispatcher.InvokeAsync(() => main.Monitors.FirstOrDefault(m => !m.IsRemote && m.Device.Key == key)?.Device);
+        return await Task.Run(() => DeviceHost.Handle(_ => device, message));
+    }
 
     private async Task PushIfChangedAsync()
     {
@@ -189,7 +284,7 @@ public sealed class PhoneBridge : ObservableObject, IRemoteHost, IDisposable
     private JsonObject BuildState()
     {
         var displays = new JsonArray();
-        foreach (var row in panel.Rows)
+        foreach (var row in panel.Rows)   // every display is the same to the phone: this computer's and the other computers'
         {
             if (row.IsOn && !row.IsReady) row.Attach();   // read since the panel was last open
             var inputs = new JsonArray();
@@ -201,6 +296,7 @@ public sealed class PhoneBridge : ObservableObject, IRemoteHost, IDisposable
                 ["id"] = row.Monitor.Key,
                 ["name"] = row.Name,
                 ["kind"] = row.Monitor.Device.Identity.IsBuiltIn ? "laptop" : "monitor",
+                ["remote"] = row.IsRemote,
                 ["on"] = row.IsOn,
                 ["ready"] = row.IsReady,
                 ["brightness"] = row.IsReady ? row.Percent : (int?)null,
@@ -232,15 +328,36 @@ public sealed class PhoneBridge : ObservableObject, IRemoteHost, IDisposable
         return new JsonObject
         {
             ["computer"] = ComputerName,
+            ["devices"] = DeviceHost.Inventory(main.Monitors.Where(m => !m.IsRemote && m.IsControllable && m.IsLoaded).Select(m => m.Device), Core.DisplayNames.For,
+                d => main.Monitors.FirstOrDefault(m => ReferenceEquals(m.Device, d)) is { } vm ? main.HomeInput(vm) : null),
             ["linked"] = panel.Linked,
             ["canLink"] = panel.HasSeveral,
             ["displays"] = displays,
             ["profiles"] = profiles,
             ["modes"] = modes,
-            ["volume"] = WindowsVolume.Read() is { } sound
-                ? new JsonObject { ["percent"] = sound.Percent, ["muted"] = sound.Muted }
-                : null
+            ["volume"] = VolumeState(),
+            ["volumeFor"] = panel.Rows.FirstOrDefault(r => r.IsSelected)?.Name
         };
+    }
+
+    /// <summary>
+    /// The computer whose sound the phone's volume slider moves: the one that owns the display selected on the phone (like the picture
+    /// modes, the volume follows the selection). Null for a display of this computer.
+    /// </summary>
+    private PeerClient? VolumeOwner()
+    {
+        var selected = panel.Rows.FirstOrDefault(r => r.IsSelected);
+        if (selected is not { IsRemote: true }) return null;
+        string key = selected.Monitor.Key;   // "peer:{device id}|{display}"
+        if (!key.StartsWith("peer:", StringComparison.Ordinal)) return null;
+        int bar = key.IndexOf('|');
+        return main.Peers?.ConnectedClient(bar > 5 ? key[5..bar] : key[5..]);
+    }
+
+    private JsonNode? VolumeState()
+    {
+        if (VolumeOwner() is { } owner) return owner.State?["volume"]?.DeepClone();
+        return WindowsVolume.Read() is { } sound ? new JsonObject { ["percent"] = sound.Percent, ["muted"] = sound.Muted } : null;
     }
 
     // ---- What the phone does ----
@@ -301,9 +418,11 @@ public sealed class PhoneBridge : ObservableObject, IRemoteHost, IDisposable
                 return null;
             case "volume":
                 if (Int("value") is not int level) return "Missing volume value.";
+                if (VolumeOwner() is { } volumeOwner) { _ = volumeOwner.SendAsync(new JsonObject { ["type"] = "volume", ["value"] = level }); return null; }
                 return WindowsVolume.SetPercent(level) ? null : "No sound output to set.";
             case "mute":
                 if (Bool("on") is not bool silent) return "Missing mute value.";
+                if (VolumeOwner() is { } muteOwner) { _ = muteOwner.SendAsync(new JsonObject { ["type"] = "mute", ["on"] = silent }); return null; }
                 return WindowsVolume.SetMuted(silent) ? null : "No sound output to set.";
             default:
                 return $"Unknown command \"{type}\".";

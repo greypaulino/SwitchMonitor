@@ -8,7 +8,12 @@ using System.Text.Json.Nodes;
 namespace SwitchMonitor.Core.Remote;
 
 /// <summary>A phone allowed to control the displays: its name and the hash of its secret token (the token stays on the phone).</summary>
-public sealed record PairedPhone(string Id, string Name, string TokenHash, DateTimeOffset PairedAt);
+/// <param name="Kind">"phone", or "computer" for another SwitchMonitor that controls this one.</param>
+/// <param name="DeviceId">The other computer's <see cref="DeviceIdentity.Id"/> (computers only).</param>
+public sealed record PairedPhone(string Id, string Name, string TokenHash, DateTimeOffset PairedAt, string Kind = "phone", string? DeviceId = null)
+{
+    public bool IsComputer => Kind == "computer";
+}
 
 /// <summary>
 /// Phones paired with this computer (phones.json in the data folder). A phone pairs once with the 6-digit code shown in
@@ -68,7 +73,7 @@ public sealed class PhoneStore
     /// Pairs a phone with the code. Returns its new token (to send to the phone once), or null when the code is wrong,
     /// expired or used up; after <see cref="MaxCodeTries"/> wrong tries the code stops working.
     /// </summary>
-    public string? Pair(string offeredCode, string phoneName, DateTimeOffset now)
+    public string? Pair(string offeredCode, string phoneName, DateTimeOffset now, string kind = "phone", string? deviceId = null)
     {
         string token;
         lock (gate)
@@ -83,13 +88,58 @@ public sealed class PhoneStore
             token = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
             string name = string.IsNullOrWhiteSpace(phoneName) ? "Phone" : phoneName.Trim();
             if (name.Length > 60) name = name[..60];
-            var phone = new PairedPhone(Guid.NewGuid().ToString("N")[..12], name, Hash(token), now);
+            var phone = new PairedPhone(Guid.NewGuid().ToString("N")[..12], name, Hash(token), now, kind, deviceId);
             phones.Add(phone);
             secrets[phone.Id] = Encoding.UTF8.GetBytes(token);
             Save();
         }
         Changed?.Invoke();
         return token;
+    }
+
+    /// <summary>
+    /// Pairs with a token this computer made itself (the other computer was given it): used when this computer starts the
+    /// pairing, so the other one can control it back with no second code.
+    /// </summary>
+    public PairedPhone AddPaired(string name, string token, string kind, string? deviceId, DateTimeOffset now)
+    {
+        PairedPhone phone;
+        lock (gate)
+        {
+            if (deviceId is not null) RemoveWhere(p => p.DeviceId == deviceId);
+            string clean = string.IsNullOrWhiteSpace(name) ? "Computer" : name.Trim();
+            phone = new PairedPhone(Guid.NewGuid().ToString("N")[..12], clean.Length > 60 ? clean[..60] : clean, Hash(token), now, kind, deviceId);
+            phones.Add(phone);
+            secrets[phone.Id] = Encoding.UTF8.GetBytes(token);
+            Save();
+        }
+        Changed?.Invoke();
+        return phone;
+    }
+
+    /// <summary>A fresh token to hand to another computer (see <see cref="AddPaired"/>).</summary>
+    public static string NewToken() => Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+
+    /// <summary>Removes the computer paired under this device id (it forgot us, or we forget it). True when there was one.</summary>
+    public bool RemoveByDevice(string deviceId)
+    {
+        bool removed;
+        lock (gate) removed = RemoveWhere(p => p.DeviceId == deviceId);
+        if (removed) Changed?.Invoke();
+        return removed;
+    }
+
+    private bool RemoveWhere(Func<PairedPhone, bool> match)
+    {
+        bool any = false;
+        foreach (var phone in phones.Where(match).ToArray())
+        {
+            secrets.Remove(phone.Id);
+            phones.Remove(phone);
+            any = true;
+        }
+        if (any) Save();
+        return any;
     }
 
     /// <summary>The paired phone that owns <paramref name="token"/>, or null.</summary>
@@ -162,7 +212,8 @@ public sealed class PhoneStore
                 byte[]? token = Dpapi.Unprotect(sealedToken);
                 if (token is null || Hash(Encoding.UTF8.GetString(token)) != hash) continue;   // another user or computer
                 phones.Add(new PairedPhone(id, (string?)item["name"] ?? "Phone", hash,
-                    DateTimeOffset.TryParse((string?)item["pairedAt"], out var at) ? at : DateTimeOffset.MinValue));
+                    DateTimeOffset.TryParse((string?)item["pairedAt"], out var at) ? at : DateTimeOffset.MinValue,
+                    (string?)item["kind"] ?? "phone", (string?)item["deviceId"]));
                 secrets[id] = token;
             }
         }
@@ -175,7 +226,9 @@ public sealed class PhoneStore
         {
             ["id"] = p.Id, ["name"] = p.Name, ["tokenHash"] = p.TokenHash,
             ["token"] = secrets.TryGetValue(p.Id, out var key) ? Dpapi.Protect(key) : null,
-            ["pairedAt"] = p.PairedAt.ToString("O")
+            ["pairedAt"] = p.PairedAt.ToString("O"),
+            ["kind"] = p.Kind,
+            ["deviceId"] = p.DeviceId
         }).ToArray());
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         string temporary = path + ".tmp";

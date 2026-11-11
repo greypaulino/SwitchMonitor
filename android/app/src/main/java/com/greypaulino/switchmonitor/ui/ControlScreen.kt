@@ -33,6 +33,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -81,27 +82,57 @@ import kotlin.math.roundToInt
 @Composable
 fun ControlScreen(ui: RemoteUi, state: PcState?, live: Boolean = true) {
     val dim by androidx.compose.animation.core.animateFloatAsState(if (live) 1f else 0.55f, label = "dim")
-    Box(Modifier.fillMaxSize().background(Ground)) {
-        Column(
-            Modifier
-                .fillMaxSize()
-                .safeDrawingPadding()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-            Header(state?.computer?.ifBlank { null } ?: ui.computer ?: ui.host ?: "Computer", ui.host, ui.phase)
-            if (state == null) SkeletonPanels()
-            else Column(Modifier.graphicsLayer { alpha = dim }, verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                BrightnessPanel(state)
-                // Volume: its folded card, or (still connecting) a placeholder the same height so nothing below moves.
-                if (state.volume != null) VolumePanel(state.volume) else if (!live) VolumeBone()
-                ProfilesPanel(state)
-                for (display in state.displays.filter { it.on && it.inputs.isNotEmpty() }) InputsPanel(display)
+    // The app is the whole group's, not one computer's: its name is "My devices", and the mouse has its own tab.
+    val title = if (ui.inGroup) "My devices" else state?.computer?.ifBlank { null } ?: ui.computer ?: ui.host ?: "Computer"
+    Column(Modifier.fillMaxSize().background(Ground).safeDrawingPadding()) {
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+            if (controlTab == 0) {
+                Column(
+                    Modifier
+                        .fillMaxSize()
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    Header(title, if (ui.inGroup) null else ui.host, ui.phase)
+                    if (state == null) SkeletonPanels()
+                    else Column(Modifier.graphicsLayer { alpha = dim }, verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                        BrightnessPanel(state)
+                        // Volume follows the selected display, like the picture modes do. While (re)connecting: a placeholder the
+                        // same height so nothing below moves.
+                        if (state.volume != null) VolumePanel(state.volume, state.volumeFor) else if (!live) VolumeBone()
+                        ProfilesPanel(state)
+                        for (display in state.displays.filter { it.on && it.inputs.isNotEmpty() }) InputsPanel(display)
+                    }
+                    Spacer(Modifier.height(8.dp))
+                }
+            } else {
+                TouchpadScreen(ui)
             }
-            Spacer(Modifier.height(8.dp))
+            ui.message?.let { Toast(it, Modifier.align(Alignment.BottomCenter)) }
         }
-        ui.message?.let { Toast(it, Modifier.align(Alignment.BottomCenter)) }
+        TabBar()
+    }
+}
+
+/** 0 = the controls, 1 = the mouse and keyboard. Kept outside the screen so it survives a reconnection. */
+private var controlTab by mutableIntStateOf(0)
+
+@Composable
+private fun TabBar() {
+    Row(
+        Modifier.fillMaxWidth().background(Ground).border(1.dp, Line).padding(horizontal = 16.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        for ((i, label) in listOf("Controls", "Mouse").withIndex()) {
+            val on = controlTab == i
+            Box(
+                Modifier.weight(1f).height(44.dp).clip(RoundedCornerShape(14.dp))
+                    .background(if (on) Raised else Color.Transparent)
+                    .clickable { controlTab = i },
+                contentAlignment = Alignment.Center,
+            ) { Text(label, fontSize = 15.sp, fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal, color = if (on) Text else Muted) }
+        }
     }
 }
 
@@ -365,7 +396,7 @@ private fun VolumeBone() {
 
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
-private fun VolumePanel(volume: com.greypaulino.switchmonitor.data.Volume) {
+private fun VolumePanel(volume: com.greypaulino.switchmonitor.data.Volume, forDisplay: String? = null) {
     var open by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
     val level = remember { mutableFloatStateOf(volume.percent.toFloat()) }
     val scope = rememberCoroutineScope()
@@ -382,7 +413,10 @@ private fun VolumePanel(volume: com.greypaulino.switchmonitor.data.Volume) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Icon(if (volume.muted) Glyphs.SpeakerOff else Glyphs.Speaker, null, Modifier.size(20.dp), tint = Text)
-            PanelTitle("Volume", Modifier.weight(1f).padding(start = 10.dp))
+            Column(Modifier.weight(1f).padding(start = 10.dp)) {
+                PanelTitle("Volume")
+                if (forDisplay != null) Text(forDisplay, fontSize = 12.sp, color = Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
             Text(if (volume.muted) "Muted" else "${level.floatValue.roundToInt()}%", Modifier.padding(end = 8.dp), fontSize = 15.sp, color = Soft)
             Icon(Glyphs.ChevronDown, null, Modifier.size(18.dp).graphicsLayer { rotationZ = turn }, tint = Muted)
         }

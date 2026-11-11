@@ -6,8 +6,8 @@ A rewrite of SwitchMonitor in C# / .NET 10 with **no third-party runtime depende
 
 | Path | Purpose |
 |---|---|
-| `src/SwitchMonitor.Core` | Monitor discovery, transports, capabilities parser, quirks, retries, logging |
-| `src/SwitchMonitor.App` | The WPF app (`SwitchMonitor.exe`): Displays and Shortcuts tabs, profiles, tray icon, global shortcuts |
+| `src/SwitchMonitor.Core` | Monitor discovery, transports, capabilities parser, quirks, retries, logging; `Remote/` (phone server, `Ecosystem`, peer client and store), `Sharing/` (mouse and keyboard protocol) |
+| `src/SwitchMonitor.App` | The WPF app (`SwitchMonitor.exe`): Displays, Apps, Profiles and Shortcuts tabs, Settings, tray icon, global shortcuts, phone bridge, peers and shared input |
 | `src/SwitchMonitor.Probe` | Read-only diagnostic console. Never writes to a monitor |
 | `tests/SwitchMonitor.Core.Tests` | Hardware-free tests with a built-in runner (no test packages) |
 
@@ -19,7 +19,7 @@ A rewrite of SwitchMonitor in C# / .NET 10 with **no third-party runtime depende
 |---|---|---|
 | `wmi` | Built-in laptop panels (brightness only) | `root\WMI` through the in-box WbemScripting COM object; falls back to the `\\.\LCD` brightness IOCTLs where WMI fails (Dell N5050, Intel HD 3000) |
 | `intel-cui` | Quirk-listed monitors on the validated Intel HD Graphics 3000 driver | Intel CUI COM interface in the driver |
-| `amd-adl` | Quirk-listed monitors on AMD without a standard handle | `atiadlxx.dll` (ADL2) in the driver. Writes need `amd-experimental.flag` |
+| `amd-adl` | Quirk-listed monitors on AMD without a standard handle | `atiadlxx.dll` (ADL2) in the driver. Writes are on; an empty `amd-writes-off.flag` in the data folder turns them off |
 | `ddc-ci` | Every other monitor | `dxva2.dll` Monitor Configuration API |
 
 ## Quirks
@@ -40,6 +40,15 @@ Writes use the MCCS host address `0x51`. The LG 29WK600 ignored every write exce
 - **Profiles** (`scenes.json`): named sets of settings applied together. A value list is tried in order (`"picture mode": ["FPS Game 1", "Games"]`), modes are applied before levels, and the panel is re-read afterwards.
 - **Shortcuts tab**: press keys to record; several shortcuts per action; duplicates block saving, shortcuts owned by another program are flagged. Global shortcuts pause while the tab is open.
 - **1.x behavior kept**: Ctrl+Alt+1..9 per input, Ctrl+Alt+M Next input (again within 10 s goes back; the previous input survives restarts), keypad and main-keyboard brightness keys with tap and hold acceleration, Ctrl+Alt+* next display, LG menu correction after returning from another computer on Intel. Settings live in `%LOCALAPPDATA%\SwitchMonitor-v2` (`settings.json`, `scenes.json`, `state.json`).
+
+## My devices (the ecosystem)
+
+`Remote/Ecosystem.cs` groups the computers and phones of one person without any server or account (home network only). Each device has an ECDSA P-256 key pair made at the first run (the private half is sealed with DPAPI on Windows, kept in the Keystore on Android). The first computer founds the group: its public key gives the group id. A computer already in the group signs a `MemberCert` for every device it lets in (certificates chain back to the founder); a removal is a signed `Revocation` that counts for certificates issued before it.
+
+- **Joining:** the joining device sends `enroll` with an HMAC of the 6-digit code (RFC 6238 TOTP, SHA-1, 30 s, so an authenticator app fed the setup key shows the same code) bound to the server's challenge, its id and its key. The code works once and five wrong tries lock it for a minute. The person on the computer then clicks *Allow*, and the answer carries the group (certificates and revocations) plus a proof that the computer knew the code.
+- **Signing in:** `member` carries a signature of the challenge, the device id and what the device knows of the group; `memberWelcome` answers the same way. Both sides merge the lists they receive, checking every certificate, so a new member becomes known to the others on their next connection. No token is stored per pair.
+- **Finding each other:** members answer the UDP discovery with their device id and group id; `PeerService` connects to each member computer it finds and drops those that were removed.
+- **A phone as a member** is a client with `kind: "phone"`. Its mouse and keyboard can aim at any computer of the group: the computer it is connected to passes `input` on (`target`, `phone: true`) to the one chosen.
 
 ## Reliability
 

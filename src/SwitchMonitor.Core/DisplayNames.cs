@@ -1,7 +1,8 @@
 namespace SwitchMonitor.Core;
 
 /// <summary>
-/// The short names the interface shows: type, brand and model only ("Monitor LG 29WK600", "Laptop DELL N5050").
+/// The short names the interface shows: brand and model ("LG 29WK600"); a laptop panel keeps "Laptop DELL N5050". The display
+/// icon beside every name already says it is a monitor, so the word is left out.
 /// The device's own <see cref="MonitorDevice.Name"/> stays as it was, since profiles saved "Only for" a display match it.
 /// </summary>
 public static class DisplayNames
@@ -20,11 +21,11 @@ public static class DisplayNames
     public static string? Brand(string? pnpId) =>
         pnpId is { Length: >= 3 } && Brands.TryGetValue(pnpId[..3], out var brand) ? brand : null;
 
-    /// <summary>"Monitor LG 29WK600", "Monitor Dell U2723QE", "Laptop DELL N5050".</summary>
+    /// <summary>"LG 29WK600", "Dell U2723QE", "Laptop DELL N5050"; plain "Monitor" only when nothing about it is known.</summary>
     public static string For(MonitorDevice device)
     {
         if (device.Identity.IsBuiltIn) return device.Identity.Label ?? "Laptop";
-        if (device.Quirk?.Name is { Length: > 0 } known) return "Monitor " + known;
+        if (device.Quirk?.Name is { Length: > 0 } known) return known;
         string? brand = Brand(device.Identity.PnpId);
         string? model = device.CachedModel;
         // The name the monitor reports in its EDID comes first ("Odyssey G5"): the capabilities model can be an internal
@@ -38,7 +39,7 @@ public static class DisplayNames
         // A series name followed by a short model ("Odyssey G5") keeps both; a plain model code keeps one.
         int keep = words.Count >= 2 && !words[0].Any(char.IsDigit) && words[1].Length <= 4 && words[1].Any(char.IsDigit) ? 2 : 1;
         string name = string.Join(' ', new[] { brand }.Concat(words.Take(keep)).Where(w => !string.IsNullOrEmpty(w)));
-        return name.Length == 0 ? "Monitor" : "Monitor " + name;
+        return name.Length == 0 ? "Monitor" : name;
     }
 
     /// <summary>"Dell Inc." + "Inspiron N5050" → "Laptop DELL N5050"; unknown parts are left out.</summary>

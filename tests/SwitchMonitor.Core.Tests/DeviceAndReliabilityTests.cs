@@ -254,16 +254,69 @@ internal static class InactiveDisplayTests
     }
 
     [Test]
-    public static void InterfaceNamesAreTypeBrandAndModel()
+    public static void InterfaceNamesAreBrandAndModel()
     {
         Assert.Equal("Laptop DELL N5050", DisplayNames.Laptop("Dell Inc.", "Inspiron N5050"));
         Assert.Equal("Laptop HP", DisplayNames.Laptop("Hewlett-Packard", "To Be Filled By O.E.M."));
         Assert.Equal("Laptop", DisplayNames.Laptop(null, null));
         var lg = new MonitorDevice(TestMonitors.Identity(@"MONITOR\GSM7714\{x}\0001"), new FakeTransport(),
             Quirks.QuirkDatabase.LoadEmbedded().Match(@"MONITOR\GSM7714\{x}\0001"), null, new RecordingDelay());
-        Assert.Equal("Monitor LG 29WK600", DisplayNames.For(lg));
+        Assert.Equal("LG 29WK600", DisplayNames.For(lg), "no word \"Monitor\": the display icon beside the name already says it");
         var dell = new MonitorDevice(TestMonitors.Identity() with { FriendlyName = "DELL U2723QE 27\" 4K USB-C Hub Monitor" },
             new FakeTransport(), null, null, new RecordingDelay());
-        Assert.Equal("Monitor Dell U2723QE", DisplayNames.For(dell));
+        Assert.Equal("Dell U2723QE", DisplayNames.For(dell));
+    }
+
+    [Test]
+    public static void HomeInputIsKeptInTheSettingsFile()
+    {
+        var settings = new Settings.AppSettings().WithHomeInput("lg|0", 0x11);
+        var again = Settings.AppSettings.Parse(settings.ToJson());
+        Assert.Equal(0x11, again.HomeInputs["lg|0"], "the learned input survives a save and a load");
+        Assert.Equal(0, Settings.AppSettings.Parse(new Settings.AppSettings().ToJson()).HomeInputs.Count, "none by default");
+    }
+
+    [Test]
+    public static void AnInputOfAnotherKindThanTheConnectorIsNotThisComputersPicture()
+    {
+        // 09/11/2026: the AMD PC is plugged into the LG by DisplayPort; the LG shows its HDMI 1 (the laptop) and still answers DDC.
+        Assert.Equal(false, Diagnostics.BuiltInProbe.InputFitsConnector("DisplayPort", 0x11) , "HDMI shown, plugged by DisplayPort");
+        Assert.Equal(true, Diagnostics.BuiltInProbe.InputFitsConnector("HDMI", 0x12), "HDMI 2 on an HDMI cable");
+        Assert.Equal(true, Diagnostics.BuiltInProbe.InputFitsConnector("DisplayPort", 0x0F), "DisplayPort 1");
+        Assert.True(Diagnostics.BuiltInProbe.InputFitsConnector("embedded DisplayPort (built-in)", 0x11) is null, "unknown connector: no verdict");
+        Assert.True(Diagnostics.BuiltInProbe.InputFitsConnector("HDMI", 0x1B) is null, "unknown input code: no verdict");
+    }
+
+    [Test]
+    public static void LgInputGoesByTheStandardCodeOnAmdOnly()
+    {
+        // 08/11/2026: on AMD ADL the LG ignored the vendor F4 every time and followed 0x60.
+        string id = @"MONITOR\GSM7714\{x}\0001";
+        var amd = new FakeTransport { Id = "amd-adl" };
+        amd.Values[VcpCode.InputSource] = new VcpValue(0x11, 0x11);
+        using (var onAmd = new MonitorDevice(TestMonitors.Identity(id), amd, QuirkDatabase.LoadEmbedded().Match(id), null, new RecordingDelay()))
+            onAmd.SetInput(0x11);
+        Assert.True(amd.Writes.Any(w => w.Code == VcpCode.InputSource && w.Value == 0x11), "AMD: 0x60 = 0x11");
+        Assert.True(!amd.Writes.Any(w => w.Code == 0xF4), "AMD: no vendor F4");
+
+        var intel = new FakeTransport { Id = "intel-cui" };
+        intel.Values[VcpCode.InputSource] = new VcpValue(0x11, 0x11);
+        using (var onIntel = new MonitorDevice(TestMonitors.Identity(id), intel, QuirkDatabase.LoadEmbedded().Match(id), null, new RecordingDelay()))
+            onIntel.SetInput(0x11);
+        Assert.True(intel.Writes.Any(w => w.Code == 0xF4 && w.Value == 0x90), "Intel keeps the vendor F4 = 0x90");
+    }
+
+    [Test]
+    public static void NoCapabilitiesStringStillOffersTheQuirkControls()
+    {
+        // AMD ADL could not read the LG's capabilities (08/11/2026): the model's own controls must still show.
+        var fake = new FakeTransport { Capabilities = null, Id = "amd-adl" };
+        string id = @"MONITOR\GSM7714\{x}\0001";
+        using var lg = new MonitorDevice(TestMonitors.Identity(id), fake,
+            QuirkDatabase.LoadEmbedded().Match(id), null, new RecordingDelay());
+        var codes = lg.Features.Select(f => f.Code).ToArray();
+        Assert.True(codes.Contains((byte)0xF7), "Response time (quirk control) is offered");
+        Assert.True(codes.Contains((byte)0x15), "Picture mode is offered");
+        Assert.Equal(3, lg.Inputs.Count, "and the three inputs");
     }
 }

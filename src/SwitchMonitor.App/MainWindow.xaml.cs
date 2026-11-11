@@ -414,6 +414,14 @@ public partial class MainWindow : Window
     }
 
     /// <summary>Moves the light pill under the current tab (it fades out on the Settings view, where no tab is current).</summary>
+    /// <summary>A button whose Tag is an address: opens it in the browser.</summary>
+    private void OpenLink(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.Tag is string { Length: > 0 } url && url.StartsWith("https://"))
+            try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(url) { UseShellExecute = true }); }
+            catch (Exception error) when (error is System.ComponentModel.Win32Exception or InvalidOperationException) { }
+    }
+
     private void PlaceNavIndicator(bool animate)
     {
         var current = NavTabs.Children.OfType<System.Windows.Controls.StackPanel>()

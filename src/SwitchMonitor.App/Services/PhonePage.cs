@@ -79,6 +79,7 @@ internal static class PhonePage
   .line .dot { width:8px; height:8px; border-radius:50%; background:#5a5a5a; flex:none; transition:background var(--t) var(--ease); }
   .line .dot.lit { background:var(--green); }
   .line .name { flex:1; min-width:0; font-weight:500; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .line .tag { flex:none; font-size:10px; font-weight:700; letter-spacing:.06em; padding:2px 7px; border-radius:9px; border:1px solid #ffffff33; color:var(--muted); }
   .line .val { width:48px; text-align:right; color:var(--soft); font-variant-numeric:tabular-nums; }
   .m { height:30px; min-width:34px; padding:0 10px; border-radius:15px; border:1px solid #ffffff33; background:none; color:var(--muted); font-size:12px; font-weight:700; }
   .m.on { background:var(--text); border-color:var(--text); color:var(--ink); }
@@ -405,9 +406,9 @@ internal static class PhonePage
   }
   function displayLine(d, lit, valueText) {
     const line = el('div', 'line');
-    line.append(el('div', 'dot' + (lit ? ' lit' : '')), icon(d.kind === 'laptop' ? 'laptop' : 'monitor', 18), el('div', 'name', d.name));
+    line.append(el('div', 'dot' + (lit ? ' lit' : '')), icon(d.kind === 'laptop' ? 'laptop' : 'monitor', 18), ...(d.remote ? [el('div', 'tag', 'REMOTE')] : []), el('div', 'name', d.name));
     line.lastChild.style.color = 'var(--text)';
-    line.children[1].style.color = 'var(--muted)';
+    line.querySelector('svg').style.color = 'var(--muted)';
     if (d.main || d.canBeMain) {
       const m = el('button', 'm' + (d.main ? ' on' : ''), d.preferred ? 'M ★' : 'M');
       hold(m, () => { if (!d.main) send({type:'main', display:d.id}); }, () => send({type:'preferred', display:d.id}));

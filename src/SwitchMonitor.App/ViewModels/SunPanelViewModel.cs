@@ -8,6 +8,12 @@ using SwitchMonitor.Core.Settings;
 
 namespace SwitchMonitor.App.ViewModels;
 
+/// <summary>A display the panel does not list (asleep, off, held by another computer): shown in the hint of the moon icon.</summary>
+public sealed record InactiveDisplay(string Glyph, string Model, string? Computer, string Reason)
+{
+    public string Detail => Computer is null ? Reason : $"{Computer} · {Reason}";
+}
+
 /// <summary>One display in the sun panel: its brightness slider (the same one the window shows), or an OFF row.</summary>
 public sealed class SunRow : ObservableObject
 {
@@ -21,11 +27,13 @@ public sealed class SunRow : ObservableObject
         this.owner = owner;
         SelectCommand = new RelayCommand(() => owner.Select(this));
         MakeMainCommand = new RelayCommand(() => owner.MakeMain(this));
+        monitor.PropertyChanged += OnMonitorChanged;
         Attach();
     }
 
     public MonitorViewModel Monitor { get; }
     public string Name => Monitor.Name;
+    public bool IsRemote => Monitor.IsRemote;
     public string Glyph => Monitor.DisplayGlyph;
 
     /// <summary>The inputs popup's DataContext is this row: it shows the panel's "Next Input: shortcut" line.</summary>
@@ -111,8 +119,19 @@ public sealed class SunRow : ObservableObject
         Raise(nameof(ValueText));
     }
 
+    /// <summary>The display stopped answering (another computer has it) or answers again: the row turns OFF or back on.</summary>
+    private void OnMonitorChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName != nameof(MonitorViewModel.IsControllable)) return;
+        Attach();
+        foreach (string name in new[] { nameof(IsOff), nameof(IsOn), nameof(IsReady), nameof(HasInputs), nameof(Glyph), nameof(ValueText), nameof(IsLit) })
+            Raise(name);
+        owner.AvailabilityChanged();
+    }
+
     public void Detach()
     {
+        Monitor.PropertyChanged -= OnMonitorChanged;
         if (slider is not null) slider.PropertyChanged -= OnSliderChanged;
     }
 
@@ -160,6 +179,7 @@ public sealed class SunPanelViewModel : ObservableObject
         typingTimer.Tick += (_, _) => CommitTyped();
         modeTimer.Tick += (_, _) => CommitMode();
         main.Monitors.CollectionChanged += (_, _) => Rebuild();
+        main.RemoteLoaded += () => _ = RefreshAsync();   // a display of another computer was read: its slider joins the panel
         main.Scenes.CollectionChanged += (_, _) => WatchScenes();
         main.PropertyChanged += (_, e) =>
         {
@@ -181,6 +201,9 @@ public sealed class SunPanelViewModel : ObservableObject
         : "Next Input: Not assigned";
 
     public ObservableCollection<SunRow> Rows { get; } = [];
+
+    /// <summary>Other computers' displays (brightness panel, under "Devices"); null in demo mode.</summary>
+    public Services.PeerService? Peers => main.Peers;
     public ObservableCollection<SceneViewModel> Scenes => main.Scenes;
     public ICommand OpenWindowCommand { get; }
     public event Action? OpenWindowRequested;
@@ -188,8 +211,32 @@ public sealed class SunPanelViewModel : ObservableObject
     /// <summary>Raised when the highlight should move (selection or layout changed).</summary>
     public event Action? SelectionMoved;
 
+    /// <summary>A display became unavailable or came back: what depends on how many displays are on is worked out again.</summary>
+    internal void AvailabilityChanged()
+    {
+        Raise(nameof(HasSeveral));
+        RaiseInactive();
+        RaiseLinked();
+        SelectionMoved?.Invoke();
+    }
+
     private IEnumerable<SunRow> OnRows => Rows.Where(r => r.IsOn);
-    public bool HasRows => Rows.Count > 0;
+    public bool HasRows => OnRows.Any();
+
+    /// <summary>Some display is asleep, switched off, on another computer's input or not answering: it is not listed, an icon says so.</summary>
+    public bool HasInactive => Rows.Any(r => r.IsOff);
+
+    /// <summary>The names of the displays that are not listed, and why (hint of the icon).</summary>
+    public IReadOnlyList<InactiveDisplay> InactiveItems => Rows.Where(r => r.IsOff).Select(r => new InactiveDisplay(
+        r.Monitor.DisplayGlyph, r.Monitor.Name, r.Monitor.ComputerName,
+        r.Monitor.IsUnavailable ? (r.Monitor.IsRemote ? Loc.T("Unavailable") : Loc.T("In use by another computer")) : Loc.T("Asleep or off"))).ToArray();
+
+    private void RaiseInactive()
+    {
+        Raise(nameof(HasRows));
+        Raise(nameof(HasInactive));
+        Raise(nameof(InactiveItems));
+    }
 
     /// <summary>Linking and the main display need two displays Windows is using.</summary>
     public bool HasSeveral => OnRows.Count() > 1;
@@ -199,6 +246,40 @@ public sealed class SunPanelViewModel : ObservableObject
     // ---- Picture mode dropdown (Custom only) ----
 
     private ChoiceControlViewModel? watchedMode;
+    private readonly Core.Displays.ModeEquivalence equivalence = Core.Displays.ModeEquivalence.Load();
+    private List<ChoiceControlViewModel> unifiedControls = [];
+    private List<ChoiceOption> logicalOptions = [];
+
+    /// <summary>Linked with two or more displays that have picture modes: the list holds logical modes shared between them.</summary>
+    private bool IsUnified => unifiedControls.Count > 1 && logicalOptions.Count > 0;
+
+    private void BuildUnified()
+    {
+        unifiedControls = [];
+        logicalOptions = [];
+        if (!Linked) return;
+        var controls = Rows.Where(r => r.IsOn).Select(r => PictureModeOf(r.Monitor)).OfType<ChoiceControlViewModel>().ToList();
+        if (controls.Count < 2) return;
+        var shared = equivalence.SharedModes([.. controls.Select(c => (IReadOnlyList<string>)[.. c.Options.Select(o => o.Label)])]);
+        if (shared.Count == 0) return;
+        unifiedControls = controls;
+        uint index = 0;
+        foreach (string logical in shared)
+        {
+            var glyphFrom = controls.Select(c => c.Options.FirstOrDefault(o => equivalence.NativeFor(logical, [o.Label]) is not null))
+                .FirstOrDefault(o => o is not null);
+            logicalOptions.Add(new ChoiceOption(index++, logical) { Glyph = glyphFrom?.Glyph, Swatch = glyphFrom?.Swatch });
+        }
+    }
+
+    /// <summary>The logical mode the lead display is in now (the shared list's entry), or its own option when not unified.</summary>
+    private ChoiceOption? CurrentModeOption()
+    {
+        if (!IsUnified) return PictureMode?.Selected;
+        string? label = PictureMode?.Selected?.Label;
+        string? logical = label is null ? null : equivalence.LogicalOf(label) ?? label;
+        return logicalOptions.FirstOrDefault(o => string.Equals(o.Label, logical, StringComparison.OrdinalIgnoreCase));
+    }
 
     private static ChoiceControlViewModel? PictureModeOf(MonitorViewModel monitor) => monitor.Controls.OfType<ChoiceControlViewModel>()
         .FirstOrDefault(c => c.Feature.Code == Core.Vcp.VcpCode.DisplayMode || c.Name.Contains("picture mode", StringComparison.OrdinalIgnoreCase));
@@ -212,12 +293,13 @@ public sealed class SunPanelViewModel : ObservableObject
         ?? Rows.Where(r => r.IsOn).Select(r => PictureModeOf(r.Monitor)).FirstOrDefault(m => m is not null);
 
     /// <summary>Name of the display whose picture modes are listed.</summary>
-    public string ModesDisplayName => Rows.FirstOrDefault(r => ReferenceEquals(PictureModeOf(r.Monitor), PictureMode))?.Name ?? "";
+    public string ModesDisplayName => IsUnified ? "Linked displays" : Rows.FirstOrDefault(r => ReferenceEquals(PictureModeOf(r.Monitor), PictureMode))?.Name ?? "";
 
     /// <summary>Custom (the person's own settings) is in use: the picture mode can be chosen here.</summary>
     public bool IsCustomActive => Scenes.FirstOrDefault(s => s.IsCustom)?.IsActive == true;
 
-    public bool ShowsModes => IsCustomActive && PictureMode is { Options.Count: > 1 };
+    /// <summary>The display has picture modes to choose from: the Picture mode button is shown (any profile; Custom is just another one).</summary>
+    public bool ShowsModes => PictureMode is { Options.Count: > 1 };
     public ObservableCollection<ModeItem> ModeItems { get; } = [];
 
     /// <summary>The mode picked in the dropdown. It is sent to the display 1 second after the last pick.</summary>
@@ -231,7 +313,7 @@ public sealed class SunPanelViewModel : ObservableObject
             Raise();
             MarkPicked();
             modeTimer.Stop();
-            if (!ReferenceEquals(value, watchedMode?.Selected)) modeTimer.Start();
+            if (!ReferenceEquals(value, CurrentModeOption())) modeTimer.Start();
         }
     }
 
@@ -246,6 +328,18 @@ public sealed class SunPanelViewModel : ObservableObject
     private void CommitMode()
     {
         modeTimer.Stop();
+        if (IsUnified && pendingMode is not null)
+        {
+            // Linked: every display takes its own equivalent of the logical mode; one without it is left as it is.
+            foreach (var control in unifiedControls)
+            {
+                string? native = equivalence.NativeFor(pendingMode.Label, control.Options.Select(o => o.Label));
+                if (native is not null && control.Options.FirstOrDefault(o => o.Label == native) is { } option
+                    && !ReferenceEquals(control.Selected, option))
+                    control.Selected = option;
+            }
+            return;
+        }
         // To the display it was picked for (watchedMode), even if the selection has moved since.
         if (watchedMode is { } mode && pendingMode is not null && !ReferenceEquals(mode.Selected, pendingMode))
             mode.Selected = pendingMode;
@@ -254,7 +348,7 @@ public sealed class SunPanelViewModel : ObservableObject
     private void ShowCurrentMode()
     {
         if (modeTimer.IsEnabled) return;
-        pendingMode = PictureMode?.Selected;
+        pendingMode = CurrentModeOption();
         Raise(nameof(PendingMode));
         MarkPicked();
     }
@@ -268,11 +362,12 @@ public sealed class SunPanelViewModel : ObservableObject
             watchedMode = PictureMode;
             if (watchedMode is not null) watchedMode.PropertyChanged += OnModeChanged;
         }
+        BuildUnified();
         Raise(nameof(PictureMode));
         Raise(nameof(ModesDisplayName));
         Raise(nameof(IsCustomActive));
         Raise(nameof(ShowsModes));
-        var options = PictureMode?.Options;
+        IList<ChoiceOption>? options = IsUnified ? logicalOptions : PictureMode?.Options;
         if (options is null || ModeItems.Count != options.Count || ModeItems.Where((m, i) => !ReferenceEquals(m.Option, options[i])).Any())
         {
             ModeItems.Clear();
@@ -335,6 +430,7 @@ public sealed class SunPanelViewModel : ObservableObject
         Raise(nameof(LinkToolTip));
         Raise(nameof(LeadRow));
         Raise(nameof(LinkedRows));
+        RaiseModes();
         foreach (var row in Rows) row.RaiseLit();
         SelectionMoved?.Invoke();
     }
@@ -515,7 +611,7 @@ public sealed class SunPanelViewModel : ObservableObject
         Rows.Clear();
         selected = null;
         foreach (var monitor in main.Monitors) Rows.Add(new SunRow(monitor, this));
-        Raise(nameof(HasRows));
+        RaiseInactive();
         Raise(nameof(HasSeveral));
         SyncSelection();
         RaiseLinked();

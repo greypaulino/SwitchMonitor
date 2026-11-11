@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using System.Text.Json.Nodes;
 using SwitchMonitor.Core.Hotkeys;
 
@@ -70,6 +70,18 @@ public sealed record AppSettings
     /// </summary>
     public IReadOnlyDictionary<string, IReadOnlyList<int>> CycleInputs { get; init; } = new Dictionary<string, IReadOnlyList<int>>();
 
+    /// <summary>
+    /// The input this computer is plugged into, per display key, learned the first time the display answers here. When another
+    /// computer hands the display to this one, this input is sent again so the monitor's own menu stops showing the old port.
+    /// </summary>
+    public IReadOnlyDictionary<string, int> HomeInputs { get; init; } = new Dictionary<string, int>();
+
+    public AppSettings WithHomeInput(string monitorKey, int code) =>
+        this with { HomeInputs = new Dictionary<string, int>(HomeInputs) { [monitorKey] = code } };
+
+    public AppSettings WithoutHomeInput(string monitorKey) =>
+        this with { HomeInputs = HomeInputs.Where(p => p.Key != monitorKey).ToDictionary(p => p.Key, p => p.Value) };
+
     /// <summary>Brightness change for one isolated key tap, in percent (1.x: one point).</summary>
     public int BrightnessStep { get; init; } = 1;
 
@@ -83,6 +95,21 @@ public sealed record AppSettings
 
     /// <summary>A paired phone on the home Wi-Fi may control the displays (off until turned on in Settings).</summary>
     public bool PhoneAccess { get; init; }
+
+    /// <summary>Share this computer's mouse and keyboard with the paired computer (off until turned on in Settings).</summary>
+    public bool ShareInput { get; init; }
+
+    /// <summary>"en" or "es"; null until chosen (then the language of Windows decides).</summary>
+    public string? Language { get; init; }
+
+    /// <summary>The newest feature the welcome tour has shown (0: it never ran, so the whole tour shows).</summary>
+    public int WelcomeSeen { get; init; }
+
+    /// <summary>A paired phone may act as this computer's mouse and keyboard (off until the person turns it on).</summary>
+    public bool PhoneInput { get; init; }
+
+    /// <summary>Where the other computer sits, seen from this one: Right, Left, Above or Below.</summary>
+    public Sharing.ShareSide ShareSide { get; init; } = Sharing.ShareSide.Right;
 
     /// <summary>
     /// Key of the preferred main display: whenever it is connected and Windows uses it, it is made the main display
@@ -170,6 +197,11 @@ public sealed record AppSettings
             ? parsed : defaults.BrightnessStep;
         if (step is < 1 or > 50) throw new FormatException("settings.json: brightnessStep must be between 1 and 50.");
 
+        var homeInputs = new Dictionary<string, int>();
+        if (root.TryGetProperty("homeInputs", out var homeObject) && homeObject.ValueKind == JsonValueKind.Object)
+            foreach (var entry in homeObject.EnumerateObject())
+                if (entry.Value.TryGetInt32(out int homeCode)) homeInputs[entry.Name] = homeCode;
+
         return new AppSettings
         {
             Hotkeys = hotkeys,
@@ -177,11 +209,18 @@ public sealed record AppSettings
             InputShortcutsAssigned = inputShortcuts.Count > 0 ||
                 root.TryGetProperty("inputShortcutsAssigned", out var assigned) && assigned.ValueKind == JsonValueKind.True,
             CycleInputs = cycle,
+            HomeInputs = homeInputs,
             BrightnessStep = step,
             StartMinimized = root.TryGetProperty("startMinimized", out var min) && min.ValueKind == JsonValueKind.True,
             ShowAdvanced = root.TryGetProperty("showAdvanced", out var adv) && adv.ValueKind == JsonValueKind.True,
             LinkBrightness = root.TryGetProperty("linkBrightness", out var link) && link.ValueKind == JsonValueKind.True,
             PhoneAccess = root.TryGetProperty("phoneAccess", out var phone) && phone.ValueKind == JsonValueKind.True,
+            Language = root.TryGetProperty("language", out var lang) && lang.ValueKind == JsonValueKind.String && lang.GetString() is "en" or "es" ? lang.GetString() : null,
+            PhoneInput = root.TryGetProperty("phoneInput", out var phoneInput) && phoneInput.ValueKind == JsonValueKind.True,
+            WelcomeSeen = root.TryGetProperty("welcomeSeen", out var welcome) && welcome.TryGetInt32(out int seenValue) ? Math.Max(0, seenValue) : 0,
+            ShareInput = root.TryGetProperty("shareInput", out var share) && share.ValueKind == JsonValueKind.True,
+            ShareSide = root.TryGetProperty("shareSide", out var shareSide) && shareSide.ValueKind == JsonValueKind.String
+                && Enum.TryParse<Sharing.ShareSide>(shareSide.GetString(), true, out var side) ? side : Sharing.ShareSide.Right,
             PreferredMain = root.TryGetProperty("preferredMain", out var preferred) && preferred.ValueKind == JsonValueKind.String
                 && preferred.GetString() is { Length: > 0 } preferredKey ? preferredKey : null
         };
@@ -222,6 +261,8 @@ public sealed record AppSettings
         var cycle = new JsonObject();
         foreach (var (key, codes) in CycleInputs)
             cycle[key] = new JsonArray(codes.Select(c => (JsonNode)JsonValue.Create(c)!).ToArray());
+        var home = new JsonObject();
+        foreach (var (key, code) in HomeInputs) home[key] = code;
         var root = new JsonObject
         {
             ["version"] = CurrentVersion,
@@ -229,11 +270,17 @@ public sealed record AppSettings
             ["inputShortcuts"] = inputs,
             ["inputShortcutsAssigned"] = InputShortcutsAssigned || InputShortcuts.Count > 0,
             ["cycleInputs"] = cycle,
+            ["homeInputs"] = home,
             ["brightnessStep"] = BrightnessStep,
             ["startMinimized"] = StartMinimized,
             ["showAdvanced"] = ShowAdvanced,
             ["linkBrightness"] = LinkBrightness,
             ["phoneAccess"] = PhoneAccess,
+            ["shareInput"] = ShareInput,
+            ["welcomeSeen"] = WelcomeSeen,
+            ["phoneInput"] = PhoneInput,
+            ["language"] = Language,
+            ["shareSide"] = ShareSide.ToString(),
             ["preferredMain"] = PreferredMain
         };
         return root.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
@@ -287,15 +334,23 @@ public sealed record AppSettings
             yield return (describeInput(input), input.Chord);
     }
 
-    /// <summary>Shortcuts used twice across settings and scenes, as readable messages.</summary>
+    /// <summary>
+    /// Shortcuts used twice across settings and scenes, as readable messages. Input shortcuts of DIFFERENT displays may share a
+    /// combination (it acts on the display under the mouse, see <see cref="Hotkeys.ShortcutRouting"/>); the same display twice, or
+    /// an input shortcut against any other kind of shortcut, is still a conflict.
+    /// </summary>
     public IReadOnlyList<string> FindConflicts(IEnumerable<(string Owner, HotkeyChord? Chord)> others,
         Func<InputShortcut, string>? describeInput = null)
     {
         describeInput ??= i => $"Input {i.InputCode:X2}";
-        var all = AllShortcuts(describeInput).ToList();
+        var all = new List<(string Owner, HotkeyChord Chord, string? Display)>();
+        foreach (string action in HotkeyAction.All)
+            foreach (var chord in For(action)) all.Add((HotkeyAction.Describe(action), chord, null));
+        foreach (var input in InputShortcuts) all.Add((describeInput(input), input.Chord, input.MonitorKey));
         foreach (var (owner, chord) in others)
-            if (chord is HotkeyChord c) all.Add((owner, c));
-        return all.GroupBy(x => x.Chord).Where(g => g.Count() > 1)
+            if (chord is HotkeyChord c) all.Add((owner, c, null));
+        return all.GroupBy(x => x.Chord)
+            .Where(g => g.Count() > 1 && !(g.All(x => x.Display is not null) && g.Select(x => x.Display).Distinct().Count() == g.Count()))
             .Select(g => $"{g.Key} is used by {string.Join(" and ", g.Select(x => x.Owner))}.").ToArray();
     }
 }

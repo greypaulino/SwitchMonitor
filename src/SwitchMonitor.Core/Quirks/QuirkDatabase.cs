@@ -33,6 +33,15 @@ public sealed class MonitorQuirk
     /// </summary>
     public IReadOnlyList<string> ResendInputOnReturn { get; init; } = [];
 
+    /// <summary>
+    /// Transports on which the standard input code (VCP 0x60) is sent instead of the vendor command. LG 29WK600 on AMD ADL
+    /// (08/11/2026, probe on a Radeon 780M): the vendor F4 was ignored in every try, 0x60 with source 0x51 moved the display.
+    /// </summary>
+    public IReadOnlyList<string> StandardInputOn { get; init; } = [];
+
+    /// <summary>Whether the standard input code is used on <paramref name="transportId"/> in place of the vendor command.</summary>
+    public bool UsesStandardInputOn(string transportId) => StandardInputOn.Contains(transportId, StringComparer.OrdinalIgnoreCase);
+
     /// <summary>Vendor controls this model is known to have (e.g. LG picture mode on VCP 0x15).</summary>
     public IReadOnlyList<FeatureDefinition> Controls { get; init; } = [];
 
@@ -98,6 +107,7 @@ public sealed partial class QuirkDatabase
                 InputWriteValues = baseQuirk.InputWriteValues,
                 Transports = baseQuirk.Transports,
                 ResendInputOnReturn = baseQuirk.ResendInputOnReturn,
+                StandardInputOn = baseQuirk.StandardInputOn,
                 Notes = baseQuirk.Notes,
                 Controls = controls
             };
@@ -190,6 +200,9 @@ public sealed partial class QuirkDatabase
                 : [],
             ResendInputOnReturn = entry.TryGetProperty("resendInputOnReturn", out var resend)
                 ? resend.EnumerateArray().Select(e => e.GetString() ?? "").ToArray()
+                : [],
+            StandardInputOn = entry.TryGetProperty("standardInputOn", out var standardOn)
+                ? standardOn.EnumerateArray().Select(e => e.GetString() ?? "").ToArray()
                 : [],
             Notes = entry.TryGetProperty("notes", out var notes) ? notes.GetString() : null,
             Controls = entry.TryGetProperty("controls", out var controls)
