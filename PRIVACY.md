@@ -9,7 +9,3 @@ The only internet connection is the optional download of the shared monitor data
 **Phone access** is off until you turn it on in *Settings → Phone*. While it is on, the computer listens on TCP port 47820 and answers discovery on UDP port 47821, only for devices on private (home) network addresses. Only phones paired with a one-time code can control the displays. The pairing secret is kept encrypted for your Windows account (and with the Android Keystore on the phone) and is not sent again after pairing. The phone receives the display names, brightness, profiles, picture modes, inputs and the Windows volume; it is not sent anything else, and the Android app sends nothing outside your network. Removing a phone in Settings disconnects it immediately.
 
 Startup shortcuts are created only when you enable **Start with Windows**. To remove SwitchMonitor 2, delete its folder and, if you also want to remove its settings, `%LOCALAPPDATA%\SwitchMonitor-v2`. On Android, uninstall the app.
-
-## SwitchMonitor 1.x (AutoHotkey)
-
-The AutoHotkey edition stores its settings in `%LOCALAPPDATA%\SwitchMonitor`. By default it checks `api.github.com/repos/greypaulino/SwitchMonitor/releases/latest` for updates at startup, periodically and when you choose **Check for updates**. If you choose to install an update, it downloads release files from GitHub and checks their published SHA-256 hash. It does not send monitor names, brightness values or shortcut settings to GitHub. You can remove it with its uninstaller.
