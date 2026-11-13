@@ -480,8 +480,12 @@ public sealed class SunPanelViewModel : ObservableObject
 
     private void SyncSelection()
     {
-        var target = Rows.FirstOrDefault(r => r.Monitor == main.BrightnessTarget && r.IsOn) ?? OnRows.FirstOrDefault();
+        // What the person picked wins when it is a display of another computer: hovering it must not send the highlight back to a local one.
+        var target = Rows.FirstOrDefault(r => r.IsRemote && r.IsOn && r.Monitor == main.Selected)
+                     ?? Rows.FirstOrDefault(r => r.Monitor == main.BrightnessTarget && r.IsOn) ?? OnRows.FirstOrDefault();
         if (target == selected && target?.IsSelected == true) return;
+        if (target?.Monitor != main.Selected)
+            Services.Trace.Write($"highlight goes to {target?.Name ?? "none"}, but the chosen display is {main.Selected?.Name ?? "none"} (on: {main.Selected?.IsControllable}, unavailable: {main.Selected?.IsUnavailable})");
         foreach (var row in Rows) row.IsSelected = row == target;
         selected = target;
         Raise(nameof(Selected));

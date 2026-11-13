@@ -38,7 +38,10 @@ public static class Theme
         Color Tone(double lightness, byte alpha = 255) => WithAlpha(FromHsl(hue, s, lightness), alpha);
 
         // Translucent: 60 % opaque (was 55 %), so what shows through is 5 % darker and text keeps more contrast.
-        byte glass = look.Appearance == Appearance.Translucent ? (byte)0x99 : (byte)0xFF;
+        // Windows 11 shows the wallpaper without blurring it (host backdrop): a detailed wallpaper under 50 % tint made the text hard to read
+        // (photographed 11/11/2026: 50 % showed too much, 78 % still made the Displays page hard to read), so its tint is 95 % (a last
+        // step up from 90 %: still too clear for the person); Windows 10's blurred acrylic keeps 60 %.
+        byte glass = look.Appearance == Appearance.Translucent ? (RoundedBlur ? (byte)0xF2 : (byte)0x99) : (byte)0xFF;
         resources["WindowBrush"] = Freeze(new SolidColorBrush(Tone(0.08, glass)));
         resources["PopupBrush"] = Freeze(new SolidColorBrush(Tone(0.15)));
         if (look.Appearance == Appearance.Matte)
@@ -174,11 +177,39 @@ public static class Theme
         yield return $"Blur request answered by Windows: {LastAccentResult} (non-zero = accepted, 0 = refused, -1 = never asked)";
     }
 
+    /// <summary>For the glass test: a blur request with any state and tint (AABBGGRR). Returns what Windows answered (non-zero = accepted).</summary>
+    internal static int SetAccentRaw(IntPtr handle, int state, int gradient)
+    {
+        var accent = new AccentPolicy { State = state, Flags = 2, GradientColor = gradient };
+        int size = Marshal.SizeOf(accent);
+        IntPtr data = Marshal.AllocHGlobal(size);
+        try
+        {
+            Marshal.StructureToPtr(accent, data, false);
+            var attribute = new CompositionAttributeData { Attribute = WcaAccentPolicy, Data = data, SizeOfData = size };
+            return SetWindowCompositionAttribute(handle, ref attribute);
+        }
+        catch (Exception error) when (error is EntryPointNotFoundException or DllNotFoundException) { return -2; }
+        finally { Marshal.FreeHGlobal(data); }
+    }
+
+    /// <summary>For the glass test: Windows 11's own backdrop (2 = Mica, 3 = acrylic, 4 = Mica Alt) on a window that is not see-through by itself. Returns the HRESULT.</summary>
+    internal static int SetBackdrop(IntPtr handle, int type)
+    {
+        int dark = 1, round = 2;
+        DwmSetWindowAttribute(handle, DwmDarkMode, ref dark, sizeof(int));
+        DwmSetWindowAttribute(handle, DwmCornerPreference, ref round, sizeof(int));
+        var margins = new Margins { Left = -1, Right = -1, Top = -1, Bottom = -1 };
+        DwmExtendFrameIntoClientArea(handle, ref margins);
+        return DwmSetWindowAttribute(handle, DwmSystemBackdrop, ref type, sizeof(int));
+    }
+
     private static void SetAccent(IntPtr handle, bool on)
     {
-        // Windows 11: the plain blur-behind (state 3). Its acrylic (state 4) adds a dark luminosity layer on top of the app's own
-        // tint, so the window looked almost solid dark (build 26300, 08/11/2026); the plain blur lets the wallpaper's light through.
-        int state = !on ? AccentDisabled : RoundedBlur ? AccentEnableBlurBehind : AccentEnableAcrylicBlurBehind;
+        // Windows 11: the host backdrop (state 5). Photographed on build 26300 (11/11/2026, --glass-test): the plain blur-behind (3) and
+        // the acrylic (4) of the accent policy show as solid black there, the system's own backdrops need a window that is not
+        // see-through and fall back to a flat gray, and only the host backdrop lets the wallpaper show through the rounded window.
+        int state = !on ? AccentDisabled : RoundedBlur ? AccentEnableHostBackdrop : AccentEnableAcrylicBlurBehind;
         var accent = new AccentPolicy { State = state, Flags = 2, GradientColor = 0x01000000 };
         int size = Marshal.SizeOf(accent);
         IntPtr data = Marshal.AllocHGlobal(size);
@@ -258,6 +289,7 @@ public static class Theme
     private const int WcaAccentPolicy = 19;
     private const int AccentDisabled = 0;
     private const int AccentEnableBlurBehind = 3;
+    private const int AccentEnableHostBackdrop = 5;
     private const int AccentEnableAcrylicBlurBehind = 4;
 
     [StructLayout(LayoutKind.Sequential)]

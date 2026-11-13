@@ -10,6 +10,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <!-- Updates: installs the new APK it downloaded (Android asks the person once to allow this app to install apps); checked once a day. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <application
         android:name=".SwitchMonitorApp"
@@ -49,6 +52,8 @@
             android:grantUriPermissions="true">
             <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/file_paths" />
         </provider>
+
+        <service android:name=".data.UpdateJob" android:exported="false" android:permission="android.permission.BIND_JOB_SERVICE" />
 
         <receiver android:name=".surfaces.ControlReceiver" android:exported="false" />
 

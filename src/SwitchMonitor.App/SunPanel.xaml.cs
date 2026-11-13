@@ -85,6 +85,21 @@ public partial class SunPanel : Window
         };
         PreviewKeyUp += OnKeyUp;
         model.SelectionMoved += () => Dispatcher.BeginInvoke(() => MoveHighlight(animate: true), DispatcherPriority.Loaded);
+        // A row changes height when its slider appears (a display of another computer is read a moment after it is listed): the highlight follows it.
+        Rows.SizeChanged += (_, _) => { MarkLayoutShift(); MoveHighlight(animate: false); };
+        model.Rows.CollectionChanged += (_, _) => MarkLayoutShift();
+    }
+
+    // The rows move under a pointer that stays still when a display of another computer is read (its slider appears) or the list is
+    // rebuilt: WPF then reports "mouse entered" on whichever row is there now, which must not select it (the highlight jumped to the
+    // local display right after something was done on a remote one). Only a pointer that moved afterwards selects by hovering.
+    private long layoutShiftAt;
+    private Point pointerAtShift;
+
+    private void MarkLayoutShift()
+    {
+        layoutShiftAt = Environment.TickCount64;
+        pointerAtShift = Mouse.GetPosition(this);
     }
 
     private SunPanelViewModel Model => (SunPanelViewModel)DataContext;
@@ -596,6 +611,7 @@ public partial class SunPanel : Window
 
     private void RowHover(object sender, MouseEventArgs e)
     {
+        if (Environment.TickCount64 - layoutShiftAt < 1500 && (Mouse.GetPosition(this) - pointerAtShift).Length < 2) return;   // the rows moved, not the pointer
         if (sender is FrameworkElement { Tag: SunRow row }) Model.Select(row);
     }
 

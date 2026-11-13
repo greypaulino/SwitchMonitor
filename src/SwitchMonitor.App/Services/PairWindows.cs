@@ -43,6 +43,13 @@ internal sealed class PairCodeWindow : PairWindow
 
     public string? Code { get; private set; }
 
+    /// <summary>The number of this connection: it must be the same one the other computer shows when it asks to allow it.</summary>
+    public void ShowVerification(string number)
+    {
+        status.Foreground = Muted;
+        status.Text = Loc.T($"Check that the other computer shows {number}.");
+    }
+
     /// <param name="pair">Pairs with the typed code and returns the reason it failed, or null when it worked.</param>
     public PairCodeWindow(string otherName, Func<string, Task<string?>>? pair = null) : base("Pair with " + otherName)
     {
@@ -172,16 +179,23 @@ internal sealed class EnrollApproveWindow : PairWindow
 
     public bool Allowed { get; private set; }
 
-    public EnrollApproveWindow(string name, string kind, string address) : base("Add a device")
+    public EnrollApproveWindow(string name, string kind, string address, string verification = "", bool pairing = false) : base(pairing ? "Pair a device" : "Add a device")
     {
         Topmost = true;
         var panel = new StackPanel { Margin = new Thickness(26, 22, 26, 22), MinWidth = 320 };
-        panel.Children.Add(Text("Add a device", 12, FontWeights.SemiBold, Muted));
-        panel.Children.Add(Text($"{name} wants to join your devices", 17, FontWeights.SemiBold, null, new Thickness(0, 4, 0, 0)));
+        panel.Children.Add(Text(pairing ? "Pair a device" : "Add a device", 12, FontWeights.SemiBold, Muted));
+        panel.Children.Add(Text(pairing ? $"{name} wants to pair with this computer" : $"{name} wants to join your devices", 17, FontWeights.SemiBold, null, new Thickness(0, 4, 0, 0)));
         panel.Children.Add(Text(kind == "phone"
             ? $"It is a phone ({address}) and typed the code of this computer. Only allow it if it is yours."
             : $"It is a computer ({address}) and typed the code of this computer. Only allow it if it is yours.",
             13, FontWeights.Normal, Muted, new Thickness(0, 6, 0, 14)));
+        if (verification.Length > 0)
+        {
+            // The same number must show on the other device: if it does not, somebody is in between.
+            panel.Children.Add(Text("Verification number", 12, FontWeights.Normal, Muted));
+            panel.Children.Add(Text(verification, 34, FontWeights.SemiBold, null, new Thickness(0, 0, 0, 4)));
+            panel.Children.Add(Text("It must be the same number the other device shows. If it is not, press Don't allow.", 12, FontWeights.Normal, Muted, new Thickness(0, 0, 0, 14)));
+        }
         countdown = Text("", 12, FontWeights.Normal, Muted, new Thickness(0, 0, 0, 14));
         panel.Children.Add(countdown);
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center };
@@ -220,6 +234,13 @@ internal sealed class JoinGroupWindow : PairWindow
     private bool busy;
 
     public bool Joined { get; private set; }
+
+    /// <summary>The number of this connection: it must be the same one the other computer shows when it asks to allow it.</summary>
+    public void ShowVerification(string number)
+    {
+        status.Foreground = Muted;
+        status.Text = Loc.T($"Waiting for the other computer to allow it… It must show {number}.");
+    }
 
     /// <param name="join">Joins that computer's group with the code and returns the reason it failed, or null when it worked.</param>
     public JoinGroupWindow(IReadOnlyList<Core.Remote.DiscoveredComputer> nearby, Func<Core.Remote.DiscoveredComputer, string, Task<string?>> join) : base("Join a group")

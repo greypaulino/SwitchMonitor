@@ -11,6 +11,9 @@ using SwitchMonitor.Core.Settings;
 
 namespace SwitchMonitor.App.ViewModels;
 
+/// <summary>A display that cannot be used now, as the "lost displays" screen lists it.</summary>
+public sealed record LostDisplay(string Glyph, string Name, string Reason);
+
 /// <summary>A button of the profile bar: a saved profile, or Custom (null scene) = the person's own settings.</summary>
 public sealed class SceneViewModel : ObservableObject
 {
@@ -137,6 +140,9 @@ public sealed partial class MainViewModel : ObservableObject, IInputCoordinator
         UndoProfileCommand = new RelayCommand(() => _ = RestoreCustomAsync());
         statusTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(8) };
         statusTimer.Tick += (_, _) => { statusTimer.Stop(); Status = ""; };
+        availabilityTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+        availabilityTimer.Tick += (_, _) => WatchAvailability();
+        availabilityTimer.Start();
         returnTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
         returnTimer.Tick += async (_, _) => await PollReturnWatchesAsync();
         Automation = AutomationStore.Load();
@@ -219,6 +225,10 @@ public sealed partial class MainViewModel : ObservableObject, IInputCoordinator
     /// <summary>The clipboard shared with the group (Settings > Devices); null in demo mode.</summary>
     public Services.ClipboardSync? Clipboard { get; set; }
     public Services.FileTransfer? Transfers { get; set; }
+    public Services.ProfileSync? ProfileSync { get; set; }
+
+    /// <summary>The person changed profiles here (saved, removed, imported): the other computers are told.</summary>
+    public event Action? ProfilesEdited;
 
     /// <summary>A Windows notification (title, text, what a click does); set by the app once the tray icon exists.</summary>
     public Action<string, string, Action>? Notify { get; set; }
@@ -488,11 +498,19 @@ public sealed partial class MainViewModel : ObservableObject, IInputCoordinator
     }
 
     /// <summary>Called by the profile editor after scenes.json changed: reload profiles and shortcuts.</summary>
-    public void ProfilesChanged(string? select)
+    public void ProfilesChanged(string? select, bool fromAnotherComputer = false)
     {
         LoadScenes();
         if (tab == AppTab.Profiles) ResetProfileEditor(select);
+        if (!fromAnotherComputer) ProfilesEdited?.Invoke();
     }
+
+    /// <summary>The key of the display on this computer whose EDID is <paramref name="edid"/> (profiles of a shared display are tied to it again).</summary>
+    public string? LocalKeyOfEdid(string edid) =>
+        Monitors.FirstOrDefault(m => !m.IsRemote && Core.Scenes.SceneSync.EdidKey(m.Device.Identity) == edid)?.Key;
+
+    public string? EdidOfLocalKey(string key) =>
+        Monitors.Where(m => !m.IsRemote && m.Key == key).Select(m => Core.Scenes.SceneSync.EdidKey(m.Device.Identity)).FirstOrDefault();
 
     /// <summary>The editor shown on the Shortcuts tab; replaced after Save or Cancel.</summary>
     public ShortcutEditorViewModel? ShortcutEditor { get => shortcutEditor; private set => Set(ref shortcutEditor, value); }
@@ -519,7 +537,9 @@ public sealed partial class MainViewModel : ObservableObject, IInputCoordinator
         get => selected;
         set
         {
+            var before = selected;
             if (!Set(ref selected, value)) return;
+            Services.Trace.Write($"selected: {before?.Name ?? "none"}{(before?.IsRemote == true ? " (remote)" : "")} -> {value?.Name ?? "none"}{(value?.IsRemote == true ? " (remote)" : "")}; from {new System.Diagnostics.StackFrame(1).GetMethod()?.DeclaringType?.Name}.{new System.Diagnostics.StackFrame(1).GetMethod()?.Name}");
             ShowProfilesForSelected();
             if (value is not null) _ = value.EnsureLoadedAsync();
         }
@@ -527,10 +547,45 @@ public sealed partial class MainViewModel : ObservableObject, IInputCoordinator
 
     public string Status { get => status; private set => Set(ref status, value); }
     public bool StatusIsError { get => statusIsError; private set => Set(ref statusIsError, value); }
-    public bool IsBusy { get => isBusy; private set { if (Set(ref isBusy, value)) Raise(nameof(ShowsSearchSkeleton)); } }
+    public bool IsBusy { get => isBusy; private set { if (Set(ref isBusy, value)) { Raise(nameof(ShowsSearchSkeleton)); Raise(nameof(ShowsCapture)); Raise(nameof(ShowsLost)); Raise(nameof(LostDisplays)); } } }
 
     /// <summary>Looking for displays with none listed yet: the list and the page show placeholders instead of an empty window.</summary>
     public bool ShowsSearchSkeleton => isBusy && Monitors.Count == 0;
+
+    // ---- Lost displays and capture mode ----
+
+    private readonly DispatcherTimer availabilityTimer;
+    private long lastScanAt = Environment.TickCount64;
+    private string lostSignature = "";
+
+    /// <summary>Capture mode: Windows reported no display at all; the app keeps looking by itself.</summary>
+    public bool ShowsCapture => Monitors.Count == 0 && !isBusy;
+
+    /// <summary>There are displays in the list but none can be used now (asleep, off, in use by another computer, its computer gone).</summary>
+    public bool ShowsLost => Monitors.Count > 0 && !isBusy && !Monitors.Any(m => m.IsActive && !m.IsUnavailable);
+
+    public IReadOnlyList<LostDisplay> LostDisplays => ShowsLost
+        ? Monitors.Select(m => new LostDisplay(m.DisplayGlyph, m.Name, m.Subtitle)).ToArray()
+        : [];
+
+    /// <summary>
+    /// Every second: the two screens above follow what the displays are now, and while one of them is shown the displays are looked
+    /// for again every few seconds (a display waking up or coming back needs no click).
+    /// </summary>
+    private void WatchAvailability()
+    {
+        string now = $"{ShowsCapture}|{ShowsLost}|" + string.Join(",", Monitors.Select(m => $"{m.Key}:{m.IsActive}:{m.IsUnavailable}"));
+        if (now != lostSignature)
+        {
+            lostSignature = now;
+            Raise(nameof(ShowsCapture));
+            Raise(nameof(ShowsLost));
+            Raise(nameof(LostDisplays));
+        }
+        if (DeviceSource is not null || isBusy || !(ShowsCapture || ShowsLost)) return;
+        if (Environment.TickCount64 - lastScanAt < (ShowsCapture ? 5000 : 8000)) return;
+        _ = RefreshAsync();
+    }
 
     /// <summary>Shortcut problems stay visible (unlike the status line) until they are fixed.</summary>
     public string? ShortcutWarning
@@ -600,6 +655,7 @@ public sealed partial class MainViewModel : ObservableObject, IInputCoordinator
     public void RemoveRemote(MonitorViewModel monitor)
     {
         if (!Monitors.Remove(monitor)) return;
+        Services.Trace.Write($"{monitor.Name} left the list (its computer stopped offering it or disconnected)");
         if (ReferenceEquals(Selected, monitor)) Selected = Monitors.FirstOrDefault(m => m.IsControllable);
         monitor.Dispose();
     }
@@ -608,6 +664,7 @@ public sealed partial class MainViewModel : ObservableObject, IInputCoordinator
     {
         if (IsBusy) return;
         IsBusy = true;
+        lastScanAt = Environment.TickCount64;
         Report("Looking for displays…", true);
         try
         {
@@ -645,7 +702,7 @@ public sealed partial class MainViewModel : ObservableObject, IInputCoordinator
             }
 
             Selected = Monitors.FirstOrDefault(m => m.Device.Key == keep) ?? Monitors.FirstOrDefault(m => m.IsControllable);
-            Report(Monitors.Count == 0 ? "No displays found." : $"{Monitors.Count(m => m.IsControllable)} of {Monitors.Count} display(s) can be controlled.", Monitors.Count > 0);
+            Report(Monitors.Count == 0 ? "No displays found: looking again…" : $"{Monitors.Count(m => m.IsControllable)} of {Monitors.Count} display(s) can be controlled.", Monitors.Count > 0);
             LoadScenes();
             MarkPreferred();
             // Load every controllable display in the background so shortcuts respond at once.
@@ -657,6 +714,7 @@ public sealed partial class MainViewModel : ObservableObject, IInputCoordinator
         }
         finally
         {
+            lastScanAt = Environment.TickCount64;
             IsBusy = false;
             CommandManager.InvalidateRequerySuggested();   // Refresh displays is enabled again now, not at the next mouse move
         }
@@ -992,7 +1050,7 @@ public sealed partial class MainViewModel : ObservableObject, IInputCoordinator
     /// <summary>The display brightness shortcuts act on: the selected one when it has brightness, else the first that does.</summary>
     /// <remarks>Uses what the panel already loaded, so the UI thread never waits for a capabilities read.</remarks>
     public MonitorViewModel? BrightnessTarget =>
-        Selected is { } chosen && MayHaveBrightness(chosen)
+        Selected is { } chosen && (MayHaveBrightness(chosen) || chosen is { IsRemote: true, IsControllable: true })   // a display of another computer the person picked stays picked, even while it is being (re)read
             ? chosen
             : Monitors.FirstOrDefault(m => m.Brightness is not null) ?? Monitors.FirstOrDefault(MayHaveBrightness);
 

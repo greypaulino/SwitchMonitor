@@ -17,6 +17,8 @@ data class PcState(
     val volumeFor: String? = null,
     /** The computer whose displays the "link brightness" button moves together ("" = all of them). */
     val linkOwner: String = "",
+    /** The computer is a laptop (it has a battery). */
+    val portable: Boolean = false,
 )
 
 data class Volume(val percent: Int, val muted: Boolean)
@@ -99,6 +101,7 @@ internal fun parseState(o: JSONObject): PcState = PcState(
     },
     volume = o.optJSONObject("volume")?.let { Volume(it.optInt("percent"), it.optBoolean("muted")) },
     volumeFor = if (o.isNull("volumeFor")) null else o.optString("volumeFor").ifBlank { null },
+    portable = o.optBoolean("portable"),
 )
 
 private fun JSONArray?.objects(): List<JSONObject> =

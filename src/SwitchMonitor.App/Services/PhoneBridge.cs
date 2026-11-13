@@ -41,6 +41,7 @@ public sealed class PhoneBridge : ObservableObject, IRemoteHost, IDisposable
         dispatcher = Dispatcher.CurrentDispatcher;
         store = new PhoneStore();
         Eco = new Ecosystem();
+        Task.Run(CheckFirewall);
         server = new RemoteServer(store, this, log, ecosystem: Eco) { Enrolling = AskToAdmit, AllowUnencryptedPage = main.Settings.PhoneWebPage };
         push = new DispatcherTimer(TimeSpan.FromMilliseconds(250), DispatcherPriority.Background, (_, _) => _ = PushIfChangedAsync(), dispatcher);
         codeClock = new DispatcherTimer(TimeSpan.FromSeconds(1), DispatcherPriority.Background, (_, _) => TickCode(), dispatcher);
@@ -54,6 +55,7 @@ public sealed class PhoneBridge : ObservableObject, IRemoteHost, IDisposable
         server.ClientsChanged += () => dispatcher.BeginInvoke(() =>
         {
             RaiseWhere();
+            DevicesChanged?.Invoke();
             if (server.ConnectedCount > 0)
             {
                 push.Start();
@@ -77,7 +79,7 @@ public sealed class PhoneBridge : ObservableObject, IRemoteHost, IDisposable
         var done = new TaskCompletionSource<bool>();
         dispatcher.BeginInvoke(() =>
         {
-            var window = new EnrollApproveWindow(request.Name, request.Kind, request.Address);
+            var window = new EnrollApproveWindow(request.Name, request.Kind, request.Address, request.Verification, request.Pairing);
             window.Closed += (_, _) => done.TrySetResult(window.Allowed);
             window.Show();
         });
@@ -212,6 +214,55 @@ public sealed class PhoneBridge : ObservableObject, IRemoteHost, IDisposable
     public string CodeHint => code is null ? "" : $"Type it in the phone within {Math.Max(0, (int)(store.CodeExpires - DateTimeOffset.Now).TotalSeconds)} s.";
 
     public ICommand PairCommand { get; }
+
+    // ---- Windows Firewall: reachable on home networks only ----
+
+    private string firewallStatus = "";
+
+    /// <summary>What the firewall rule says now (read when asked: reading needs no permission).</summary>
+    public string FirewallStatus { get => firewallStatus; private set { if (firewallStatus == value) return; firewallStatus = value; Raise(); } }
+
+    private ICommand? firewallCommand;
+    public ICommand FirewallCommand => firewallCommand ??= new RelayCommand(_ => _ = SetFirewallAsync());
+
+    private bool firewallOn;
+
+    /// <summary>The switch: on while the rule (home networks only) is set; turning it on or off asks Windows for permission.</summary>
+    public bool FirewallOn
+    {
+        get => firewallOn;
+        set
+        {
+            if (value == firewallOn) return;
+            _ = value ? SetFirewallAsync() : RemoveFirewallAsync();
+        }
+    }
+
+    public void CheckFirewall()
+    {
+        bool set = FirewallRule.IsSet();
+        FirewallStatus = set
+            ? "Done: other devices can reach this program on home networks only."
+            : "Not set: on a public network (a café, a hotel) other devices could try to reach it.";
+        if (firewallOn != set) { firewallOn = set; Raise(nameof(FirewallOn)); }
+        else Raise(nameof(FirewallOn));   // a refused change puts the switch back
+    }
+
+    private async Task RemoveFirewallAsync()
+    {
+        FirewallStatus = "Waiting for Windows to allow the change…";
+        bool ok = await FirewallRule.RemoveAsync();
+        CheckFirewall();
+        if (!ok && FirewallRule.IsSet()) FirewallStatus = "It was not changed (the permission was refused or Windows could not do it).";
+    }
+
+    private async Task SetFirewallAsync()
+    {
+        FirewallStatus = "Waiting for Windows to allow the change…";
+        bool ok = await FirewallRule.SetAsync();
+        CheckFirewall();
+        if (!ok && !FirewallRule.IsSet()) FirewallStatus = "It was not changed (the permission was refused or Windows could not do it).";
+    }
     public ICommand CancelCodeCommand { get; }
     public ObservableCollection<PhoneRow> Phones { get; } = [];
     public bool HasPhones => Phones.Count > 0;
@@ -251,6 +302,21 @@ public sealed class PhoneBridge : ObservableObject, IRemoteHost, IDisposable
     // ---- What the phone sees ----
 
     public string ComputerName => Environment.MachineName;
+
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+    private struct PowerStatus { public byte AcLine; public byte BatteryFlag; public byte BatteryPercent; public byte SystemFlag; public int LifeTime; public int FullLifeTime; }
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+    private static extern bool GetSystemPowerStatus(out PowerStatus status);
+
+    private static readonly Lazy<bool> portable = new(() =>
+    {
+        try { return GetSystemPowerStatus(out var power) && power.BatteryFlag != 128 && power.BatteryFlag != 255; }   // 128 = no battery
+        catch { return false; }
+    });
+
+    /// <summary>Whether this is a laptop (it has a battery): the phone draws a laptop or a PC next to the name.</summary>
+    public static bool IsPortable => portable.Value;
 
     public string Page => PhonePage.Html;
 
@@ -340,7 +406,8 @@ public sealed class PhoneBridge : ObservableObject, IRemoteHost, IDisposable
         return new JsonObject
         {
             ["computer"] = ComputerName,
-            ["devices"] = DeviceHost.Inventory(main.Monitors.Where(m => !m.IsRemote && m.IsControllable && m.IsLoaded).Select(m => m.Device), Core.DisplayNames.For,
+            ["portable"] = IsPortable,
+            ["devices"] = DeviceHost.Inventory(main.Monitors.Where(m => !m.IsRemote && m.IsControllable && m.IsLoaded && !m.IsUnavailable && m.Device.IsActive).Select(m => m.Device), Core.DisplayNames.For,
                 d => main.Monitors.FirstOrDefault(m => ReferenceEquals(m.Device, d)) is { } vm ? main.HomeInput(vm) : null),
             ["linked"] = panel.Linked,
             ["canLink"] = panel.HasSeveral,
@@ -419,6 +486,25 @@ public sealed class PhoneBridge : ObservableObject, IRemoteHost, IDisposable
     public Task SendToPhonesAsync(JsonObject message) => server.SendToPhonesAsync(message);
 
     public void ClipboardEvent(JsonElement message, string? deviceId) => main.Clipboard?.OnClip(message);
+
+    /// <summary>A device signed in to this computer's server or left it (a computer that opened after this one shows up here first).</summary>
+    public event Action? DevicesChanged;
+
+    public void ProfilesEvent(JsonElement message, string deviceId) => main.ProfileSync?.OnProfiles(message);
+
+    public void ShareEvent(JsonElement message, string deviceId) => main.Share?.OnShare(message, deviceId);
+
+    public bool SyncProfiles
+    {
+        get => main.Settings.SyncProfiles;
+        set
+        {
+            if (value == main.Settings.SyncProfiles) return;
+            main.UpdateSettings(main.Settings with { SyncProfiles = value }, shortcutsChanged: false);
+            Raise();
+            if (value) main.ProfileSync?.Push();
+        }
+    }
 
     public void BlobEvent(JsonElement message, string? deviceId) => main.Transfers?.OnBlob(message);
 
@@ -538,9 +624,14 @@ public sealed class PhoneBridge : ObservableObject, IRemoteHost, IDisposable
                 // The media keys of a phone's Remote tab (like a keyboard's): needs the phone to be allowed as mouse and keyboard.
                 if (!main.Settings.PhoneInput) return "Turn on \"Phone as mouse and keyboard\" in SwitchMonitor > Settings > Devices on that computer first.";
                 string key = message.TryGetProperty("key", out var mk) ? mk.GetString() ?? "" : "";
-                int vk = key switch { "playpause" => 0xB3, "next" => 0xB0, "prev" => 0xB1, "stop" => 0xB2, "volup" => 0xAF, "voldown" => 0xAE, "mute" => 0xAD, _ => 0 };
+                int vk = key switch { "playpause" => 0xB3, "next" => 0xB0, "prev" => 0xB1, "stop" => 0xB2, "volup" => 0xAF, "voldown" => 0xAE, "mute" => 0xAD, "seekfwd" or "seekback" => -1, _ => 0 };
                 if (vk == 0) return "Unknown media key.";
-                main.Share?.Tap(vk);
+                // The program that is playing (Brave on YouTube, Spotify…) first; with none, the media keys and the Windows volume.
+                _ = Task.Run(async () =>
+                {
+                    bool handled = key is "volup" or "voldown" or "mute" ? await ActiveMedia.VolumeAsync(key) : await ActiveMedia.CommandAsync(key);
+                    if (!handled && vk > 0) main.Share?.Tap(vk);
+                });
                 return null;
             }
             case "mode":

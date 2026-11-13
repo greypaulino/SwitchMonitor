@@ -36,6 +36,7 @@ public sealed class FileTransfer
     {
         public Task Work = Task.CompletedTask;
         public bool Rejected;
+        public bool Started;
         public FileStream? File;
         public MemoryStream? Image;
         public string Path = "";
@@ -209,10 +210,22 @@ public sealed class FileTransfer
             bool clip = purpose == "clipfile";
             if (purpose != "file" && !clip) { Drop(id, t); return; }
             string name = CleanName(Str(message, "name"));
+            // The first piece of a transfer arrives once: a second one would open another file and leave the first one open.
+            if (index == 0 && (t.File is not null || t.Started)) { Drop(id, t); return; }
+            if (index == 0) t.Started = true;
             if (clip && index == 0)
             {
                 // Files copied on another computer: kept in a temporary folder and offered on this clipboard once all of them are here.
                 if (!main.Settings.SharedClipboard || size > MaxClipFiles || !HasSpace(ClipFolder, size)) { t.Rejected = true; return; }
+                // A program or script copied on another computer is asked about too, like a file that is sent.
+                if (IsProgram(name))
+                {
+                    string sender = Str(message, "fromName") is { Length: > 0 } from ? from : "another device";
+                    bool yes = await dispatcher.InvokeAsync(() => MessageBox.Show(
+                        Loc.T($"{sender} copied {name}, a program or script that can run code. Keep it on your clipboard only if you expected it. Keep it?"),
+                        "SwitchMonitor", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No) == MessageBoxResult.Yes).Task;
+                    if (!yes) { t.Rejected = true; return; }
+                }
                 t.SetId = CleanName(Str(message, "setId"));
                 t.SetCount = (int)Math.Clamp(Num(message, "setCount"), 1, 50);
                 string dir = Path.Combine(ClipFolder, t.SetId);

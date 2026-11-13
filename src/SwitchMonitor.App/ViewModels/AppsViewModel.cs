@@ -14,6 +14,9 @@ public sealed record AppChip(string Exe, string Name, string Path, ImageSource? 
     public Brush Fill => colors.Fill;
     public Brush Ink => colors.Ink;
 
+    /// <summary>The full name and where the program is (the pill itself shortens long names).</summary>
+    public string Tip => $"{Name}\n{Path}";
+
     /// <summary>How the program opens on its display (see <see cref="OpenMode"/>); only used in a display's column.</summary>
     public string Mode { get; init; } = OpenMode.Normal;
 }
@@ -59,9 +62,9 @@ public sealed class AppsViewModel : ObservableObject
 
     public ObservableCollection<AppColumn> Columns { get; } = [];
 
-    public string Search { get => search; set { if (Set(ref search, value)) Rebuild(); } }
+    public string Search { get => search; set { if (Set(ref search, value)) RefreshPool(); } }
     /// <summary>Which programs the list shows: All, Used (the most used), System (Windows' own) or User (installed by the person).</summary>
-    public string Category { get => category; set { if (Set(ref category, value)) { Raise(nameof(IsAll)); Raise(nameof(IsUsed)); Raise(nameof(IsSystem)); Raise(nameof(IsUser)); Rebuild(); } } }
+    public string Category { get => category; set { if (Set(ref category, value)) { Raise(nameof(IsAll)); Raise(nameof(IsUsed)); Raise(nameof(IsSystem)); Raise(nameof(IsUser)); RefreshPool(); } } }
     public bool IsAll { get => category == "All"; set { if (value) Category = "All"; } }
     public bool IsUsed { get => category == "Used"; set { if (value) Category = "Used"; } }
     public bool IsSystem { get => category == "System"; set { if (value) Category = "System"; } }
@@ -105,6 +108,23 @@ public sealed class AppsViewModel : ObservableObject
         var assigned = store.All;
 
         var pool = new AppColumn("Apps", null, "");
+        FillPool(pool, keys, assigned);
+        var columns = new List<AppColumn> { pool };
+        foreach (var display in displays)
+        {
+            var column = new AppColumn(display.Name, display.Key, display.DisplayGlyph, display.Device.Identity.IsBuiltIn ? "This computer's screen" : null);
+            foreach (var app in installed.Where(a => assigned.TryGetValue(a.Exe, out var place) && string.Equals(place.Display, display.Key, StringComparison.OrdinalIgnoreCase)
+                         ))
+                column.Items.Add(app with { Mode = assigned[app.Exe].Mode });
+            columns.Add(column);
+        }
+        Columns.Clear();
+        foreach (var column in columns) Columns.Add(column);
+    }
+
+    /// <summary>The list of programs not placed on a display, as the search and the kind select them (the search never touches the displays' columns).</summary>
+    private void FillPool(AppColumn pool, HashSet<string> keys, IReadOnlyDictionary<string, AppPlace> assigned)
+    {
         string filter = search.Trim();
         IEnumerable<AppChip> source = category switch
         {
@@ -119,17 +139,15 @@ public sealed class AppsViewModel : ObservableObject
             if (filter.Length > 0 && !app.Name.Contains(filter, StringComparison.CurrentCultureIgnoreCase)) continue;
             pool.Items.Add(app);
         }
-        var columns = new List<AppColumn> { pool };
-        foreach (var display in displays)
-        {
-            var column = new AppColumn(display.Name, display.Key, display.DisplayGlyph, display.Device.Identity.IsBuiltIn ? "This computer's screen" : null);
-            foreach (var app in installed.Where(a => assigned.TryGetValue(a.Exe, out var place) && string.Equals(place.Display, display.Key, StringComparison.OrdinalIgnoreCase)
-                         && (filter.Length == 0 || a.Name.Contains(filter, StringComparison.CurrentCultureIgnoreCase))))
-                column.Items.Add(app with { Mode = assigned[app.Exe].Mode });
-            columns.Add(column);
-        }
-        Columns.Clear();
-        foreach (var column in columns) Columns.Add(column);
+    }
+
+    /// <summary>Only the list changes (typing in the search must not rebuild the columns: the box would lose the focus after each letter).</summary>
+    private void RefreshPool()
+    {
+        if (Columns.Count == 0 || Columns[0].Key is not null) { Rebuild(); return; }
+        var keys = LocalDisplays().Select(d => d.Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        Columns[0].Items.Clear();
+        FillPool(Columns[0], keys, store.All);
     }
 
     /// <summary>A program dropped on a column: on a display it opens there from now on; on the list it opens wherever Windows puts it.</summary>

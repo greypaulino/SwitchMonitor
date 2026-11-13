@@ -8,11 +8,8 @@
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
-        <DockPanel Margin="2,0,2,12">
-            <TextBlock Text="&#xE897;" Style="{StaticResource Glyph}" Margin="0,0,10,0" VerticalAlignment="Top" />
-            <TextBlock Style="{StaticResource Hint}" FontSize="13" Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap"
-                       Text="Drag a program onto a display: from then on it opens only there. Drag it back to the list to let Windows choose again. Each program can open as it is, maximized, in half the screen or minimized. Windows already open stay where they are." />
-        </DockPanel>
+        <TextBlock Margin="2,0,2,14" HorizontalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap" FontSize="14" Foreground="{StaticResource MutedBrush}"
+                   Text="Set up your programs on the display you prefer. Just drag them." />
         <!-- One column for the programs, one for each display of this computer -->
         <ItemsControl x:Name="ColumnsList" Grid.Row="1" ItemsSource="{Binding Columns}">
             <ItemsControl.ItemsPanel>
@@ -33,8 +30,9 @@
                             <StackPanel DockPanel.Dock="Top" Margin="0,0,0,10" Visibility="{Binding IsPool, Converter={StaticResource BoolToVisibility}}">
                                 <Grid>
                                     <TextBox x:Name="SearchBox" Text="{Binding DataContext.Search, RelativeSource={RelativeSource AncestorType=UserControl}, UpdateSourceTrigger=PropertyChanged}"
-                                             AutomationProperties.Name="Search programs" />
-                                    <TextBlock Text="Search programs" IsHitTestVisible="False" VerticalAlignment="Center" Margin="12,0,0,0" Foreground="{StaticResource MutedBrush}">
+                                             Padding="34,0,8,0" AutomationProperties.Name="Search programs" ToolTip="Search programs" />
+                                    <TextBlock Text="&#xE721;" FontFamily="{DynamicResource IconFont}" FontWeight="{DynamicResource IconWeight}" FontSize="13" IsHitTestVisible="False" VerticalAlignment="Center" Margin="12,0,0,0" Foreground="{StaticResource MutedBrush}" />
+                                    <TextBlock Text="Search" IsHitTestVisible="False" VerticalAlignment="Center" Margin="34,0,0,0" Foreground="{StaticResource MutedBrush}">
                                         <TextBlock.Style>
                                             <Style TargetType="TextBlock">
                                                 <Setter Property="Visibility" Value="Collapsed" />
@@ -48,19 +46,38 @@
                                     </TextBlock>
                                 </Grid>
                                 <WrapPanel Margin="0,8,0,0" DataContext="{Binding DataContext, RelativeSource={RelativeSource AncestorType=UserControl}}">
-                                    <RadioButton Style="{StaticResource TabButton}" Content="All" GroupName="AppKind" IsChecked="{Binding DataContext.IsAll, RelativeSource={RelativeSource AncestorType=UserControl}, Mode=TwoWay}" Margin="0,0,4,4" />
-                                    <RadioButton Style="{StaticResource TabButton}" Content="Most used" GroupName="AppKind" IsChecked="{Binding DataContext.IsUsed, RelativeSource={RelativeSource AncestorType=UserControl}, Mode=TwoWay}" Margin="0,0,4,4" />
-                                    <RadioButton Style="{StaticResource TabButton}" Content="System" GroupName="AppKind" IsChecked="{Binding DataContext.IsSystem, RelativeSource={RelativeSource AncestorType=UserControl}, Mode=TwoWay}" Margin="0,0,4,4" />
-                                    <RadioButton Style="{StaticResource TabButton}" Content="User apps" GroupName="AppKind" IsChecked="{Binding DataContext.IsUser, RelativeSource={RelativeSource AncestorType=UserControl}, Mode=TwoWay}" Margin="0,0,4,4" />
+                                    <RadioButton Style="{StaticResource TabButton}" ToolTip="All" GroupName="AppKind" IsChecked="{Binding DataContext.IsAll, RelativeSource={RelativeSource AncestorType=UserControl}, Mode=TwoWay}" Margin="0,0,4,4">
+                                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE71D;" FontFamily="{DynamicResource IconFont}" FontWeight="{DynamicResource IconWeight}" FontSize="13" VerticalAlignment="Center" Margin="0,1,7,0" /><TextBlock Text="All" VerticalAlignment="Center" /></StackPanel>
+                                    </RadioButton>
+                                    <RadioButton Style="{StaticResource TabButton}" ToolTip="Most used" GroupName="AppKind" IsChecked="{Binding DataContext.IsUsed, RelativeSource={RelativeSource AncestorType=UserControl}, Mode=TwoWay}" Margin="0,0,4,4">
+                                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE734;" FontFamily="{DynamicResource IconFont}" FontWeight="{DynamicResource IconWeight}" FontSize="13" VerticalAlignment="Center" Margin="0,1,7,0" /><TextBlock Text="Most used" VerticalAlignment="Center" /></StackPanel>
+                                    </RadioButton>
+                                    <RadioButton Style="{StaticResource TabButton}" ToolTip="System" GroupName="AppKind" IsChecked="{Binding DataContext.IsSystem, RelativeSource={RelativeSource AncestorType=UserControl}, Mode=TwoWay}" Margin="0,0,4,4">
+                                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE770;" FontFamily="{DynamicResource IconFont}" FontWeight="{DynamicResource IconWeight}" FontSize="13" VerticalAlignment="Center" Margin="0,1,7,0" /><TextBlock Text="System" VerticalAlignment="Center" /></StackPanel>
+                                    </RadioButton>
+                                    <RadioButton Style="{StaticResource TabButton}" ToolTip="User apps" GroupName="AppKind" IsChecked="{Binding DataContext.IsUser, RelativeSource={RelativeSource AncestorType=UserControl}, Mode=TwoWay}" Margin="0,0,4,4">
+                                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE77B;" FontFamily="{DynamicResource IconFont}" FontWeight="{DynamicResource IconWeight}" FontSize="13" VerticalAlignment="Center" Margin="0,1,7,0" /><TextBlock Text="User apps" VerticalAlignment="Center" /></StackPanel>
+                                    </RadioButton>
                                 </WrapPanel>
                             </StackPanel>
                             <TextBlock DockPanel.Dock="Bottom" Text="{Binding Hint}" Style="{StaticResource Hint}" FontSize="11" TextAlignment="Center" TextWrapping="Wrap" Margin="0,8,0,0" />
                             <ScrollViewer VerticalScrollBarVisibility="Auto" Background="Transparent">
                                 <ItemsControl ItemsSource="{Binding Items}">
+                                    <ItemsControl.Style>
+                                        <Style TargetType="ItemsControl">
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsPool}" Value="True">
+                                                    <Setter Property="ItemsPanel">
+                                                        <Setter.Value><ItemsPanelTemplate><UniformGrid Columns="2" /></ItemsPanelTemplate></Setter.Value>
+                                                    </Setter>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </ItemsControl.Style>
                                     <ItemsControl.ItemTemplate>
                                         <DataTemplate DataType="{x:Type vm:AppChip}">
-                                            <Border Margin="0,2" Padding="8,6" CornerRadius="10" Background="{Binding Fill}" Cursor="Hand"
-                                                    PreviewMouseLeftButtonDown="ChipDown" ToolTip="{Binding Path}">
+                                            <Border Margin="2" Padding="8,6" CornerRadius="10" Background="{Binding Fill}" Cursor="Hand"
+                                                    PreviewMouseLeftButtonDown="ChipDown" ToolTip="{Binding Tip}">
                                                 <DockPanel>
                                                     <ComboBox DockPanel.Dock="Right" Width="124" Height="26" FontSize="11" Margin="8,0,0,0" ItemsSource="{Binding DataContext.Modes, RelativeSource={RelativeSource AncestorType=UserControl}}"
                                                               SelectedValuePath="Name" SelectedValue="{Binding Mode, Mode=OneWay}" SelectionChanged="ModePicked" ToolTip="How it opens on this display"

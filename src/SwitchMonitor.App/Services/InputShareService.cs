@@ -17,7 +17,9 @@ namespace SwitchMonitor.App.Services;
 /// Sending side: two low-level hooks (on their own thread, so a busy window never stalls the system's input) swallow the
 /// mouse and keyboard while the other computer has them, and queue what happened. Receiving side: the events are injected
 /// with SendInput; the pointer position is tracked here (not the sender's), so the other computer's own speed settings apply.
-/// Safe exits: the connection dropping, no word for four seconds, the pointer leaving, or Ctrl+Alt+Shift+Esc on the sender.
+/// Safe exits: the connection dropping, no word for four seconds, the pointer leaving, Ctrl+Alt+Shift+Esc on the sender, or the
+/// receiving computer's own mouse being moved by hand. While the pointer is over there, the sender's own pointer stays hidden until one
+/// of those happens.
 /// </summary>
 public sealed class InputShareService : ObservableObject, IDisposable
 {
@@ -31,6 +33,13 @@ public sealed class InputShareService : ObservableObject, IDisposable
         mouseProc = MouseHook;
         keyProc = KeyHook;
         watchdog = new Timer(_ => Watch(), null, 1000, 1000);
+        myScreens = CurrentScreens();
+        Microsoft.Win32.SystemEvents.DisplaySettingsChanged += (_, _) => Dispatch(Recompute);
+        // A display that starts or stops showing another computer changes nothing in Windows: look again every few seconds.
+        new System.Windows.Threading.DispatcherTimer(TimeSpan.FromSeconds(5), System.Windows.Threading.DispatcherPriority.Background, (_, _) => Recompute(), System.Windows.Threading.Dispatcher.CurrentDispatcher).Start();
+        if (main.Peers is { } peers) peers.ComputerConnected += () => SendScreens();
+        CursorHider.RestoreAtStart();   // a run that was closed while the pointer was hidden must not leave it hidden
+        AppDomain.CurrentDomain.ProcessExit += (_, _) => CursorHider.ShowNow();
         if (Enabled) StartHooks();
     }
 
@@ -58,6 +67,12 @@ public sealed class InputShareService : ObservableObject, IDisposable
         ? "Running as administrator: windows that run as administrator can be controlled too."
         : "Windows that run as administrator do not accept shared input unless this program runs as administrator too.");
 
+    private RelayCommand? arrange;
+
+    /// <summary>Opens the map: boxes for the screens of each computer, to drag where they really are.</summary>
+    public RelayCommand ArrangeCommand => arrange ??= new RelayCommand(() =>
+        ArrangeWindow.Open(this, id => Peers()?.ConnectedClients.FirstOrDefault(c => c.Computer.DeviceId == id)?.Computer.Name));
+
     public string SideName
     {
         get => main.Settings.ShareSide.ToString();
@@ -81,12 +96,257 @@ public sealed class InputShareService : ObservableObject, IDisposable
     private uint hookThreadId;
     private volatile bool remote;                  // this computer's mouse and keyboard are on the other computer now
     private PeerClient? target;
-    private int anchorX, anchorY, lastX, lastY, settle;
+    private int anchorX, anchorY, lastX, lastY, settle, hookPushX, hookPushY;
     private double entryFraction;
     private ShareSide mySide;
     private readonly HashSet<int> down = [];       // keys held down on this computer (hook thread)
     private int[] heldAtEntry = [];
     private Channel<JsonObject>? outbox;
+
+    // ---- The map: where the screens of the other computers sit next to this one's ----
+
+    private readonly object mapLock = new();
+    private ShareRect[] myScreens = [];
+    private readonly Dictionary<string, ShareRect[]> peerScreens = [];
+    private (int X, int Y)? returnPoint;       // where this pointer comes back to when it left through the map (this computer's pixels)
+
+    /// <summary>Raised when the screens of a computer or the map changed (the arranging window redraws).</summary>
+    public event Action? MapChanged;
+
+    /// <summary>This computer's screens that count for the map: the ones showing this computer (a display that shows another computer is not one).</summary>
+    public IReadOnlyList<ShareRect> MyScreens { get { lock (mapLock) return myScreens; } }
+
+    /// <summary>The computers whose screens are known now, with their screens (their own pixels).</summary>
+    public IReadOnlyDictionary<string, ShareRect[]> PeerScreens { get { lock (mapLock) return new Dictionary<string, ShareRect[]>(peerScreens); } }
+
+    private string layoutText = "";
+    private Dictionary<string, ShareArrangement> layoutCache = [];
+
+    private Dictionary<string, ShareArrangement> SavedLayout()
+    {
+        string text = main.Settings.ShareLayout;
+        lock (mapLock)
+        {
+            if (text != layoutText) { layoutText = text; layoutCache = ShareMap.ParseLayout(text); }
+            return layoutCache;
+        }
+    }
+
+    /// <summary>How this computer's screens and <paramref name="deviceId"/>'s are placed on the map: what was arranged, or side by side when nobody did.</summary>
+    public ShareArrangement ArrangementFor(string deviceId)
+    {
+        var saved = SavedLayout().TryGetValue(deviceId, out var a) ? a : ShareArrangement.Empty;
+        lock (mapLock)
+        {
+            if (!peerScreens.TryGetValue(deviceId, out var theirs)) return saved;
+            // A screen the arrangement does not know (it came after) sits where side by side would put it.
+            return saved.Completed(myScreens, theirs, ShareMap.Default(myScreens, theirs, DeviceIdentity.Id, deviceId));
+        }
+    }
+
+    public bool HasArranged(string deviceId) => SavedLayout().ContainsKey(deviceId);
+
+    private void Store(string deviceId, ShareArrangement? arrangement)
+    {
+        var saved = new Dictionary<string, ShareArrangement>(SavedLayout());
+        if (arrangement is null) saved.Remove(deviceId); else saved[deviceId] = arrangement;
+        main.UpdateSettings(main.Settings with { ShareLayout = ShareMap.ToJson(saved) }, shortcutsChanged: false);
+    }
+
+    /// <summary>The person arranged the screens: kept here and told to that computer, which keeps the same map the other way round.</summary>
+    public void SetArrangement(string deviceId, ShareArrangement arrangement)
+    {
+        var stamped = arrangement with { At = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() };
+        Store(deviceId, stamped);
+        SendLayout(deviceId);
+        MapChanged?.Invoke();
+    }
+
+    /// <summary>The arrangement kept for that computer, as it sees it (the other way round), goes to it; the newest of the two ends is kept.</summary>
+    private void SendLayout(string deviceId)
+    {
+        if (!SavedLayout().TryGetValue(deviceId, out var a)) return;
+        var theirs = a.Swapped();
+        var message = ShareMap.ToJson(theirs);
+        message["type"] = "share";
+        message["op"] = "layout";
+        Tell(deviceId, message);
+    }
+
+    /// <summary>Back to side by side (here and there).</summary>
+    public void ResetArrangement(string deviceId)
+    {
+        if (SavedLayout().ContainsKey(deviceId)) Store(deviceId, null);
+        Tell(deviceId, new JsonObject { ["type"] = "share", ["op"] = "reset" });
+        MapChanged?.Invoke();
+    }
+
+    private void Tell(string deviceId, JsonObject message)
+    {
+        if (Peers()?.ConnectedClient(deviceId) is { } client) _ = client.SendAsync(message);
+    }
+
+    /// <summary>This computer's screens go to every connected computer (when one connects and when the screens change).</summary>
+    public void SendScreens(string? only = null)
+    {
+        var rects = new JsonArray();
+        foreach (var s in MyScreens) rects.Add(new JsonArray(s.Left, s.Top, s.Right, s.Bottom));
+        foreach (var client in Peers()?.ConnectedClients ?? [])
+            if (only is null || client.Computer.DeviceId == only)
+            {
+                _ = client.SendAsync(new JsonObject { ["type"] = "share", ["op"] = "screens", ["rects"] = rects.DeepClone() });
+                if (client.Computer.DeviceId is { } id) SendLayout(id);   // after the screens, so the other end can place them
+            }
+    }
+
+    /// <summary>A "share" message from a computer of the group: its screens, or how it arranged the screens of both.</summary>
+    public void OnShare(JsonElement message, string deviceId)
+    {
+        string op = message.TryGetProperty("op", out var o) ? o.GetString() ?? "" : "";
+        switch (op)
+        {
+            case "screens" when message.TryGetProperty("rects", out var list) && list.ValueKind == JsonValueKind.Array:
+                var rects = new List<ShareRect>();
+                foreach (var item in list.EnumerateArray().Take(16))
+                    if (item.ValueKind == JsonValueKind.Array && item.GetArrayLength() == 4)
+                    {
+                        var v = item.EnumerateArray().Select(n => n.TryGetInt32(out int i) ? i : 0).ToArray();
+                        if (v[2] > v[0] && v[3] > v[1] && v[2] - v[0] <= 20000 && v[3] - v[1] <= 20000) rects.Add(new ShareRect(v[0], v[1], v[2], v[3]));
+                    }
+                bool first, changed;
+                lock (mapLock)
+                {
+                    first = !peerScreens.TryGetValue(deviceId, out var before);
+                    changed = first || !before!.SequenceEqual(rects);
+                    peerScreens[deviceId] = [.. rects];
+                }
+                if (first) SendScreens(deviceId);   // it may not know this computer's yet
+                if (changed) MapChanged?.Invoke();
+                break;
+            case "holds" when message.TryGetProperty("names", out var heldNames) && heldNames.ValueKind == JsonValueKind.Array:
+                main.Peers?.OnHolds(deviceId, heldNames.EnumerateArray().Take(32).Select(n => n.GetString() ?? "").Where(n => n.Length > 0).ToArray());
+                break;
+            case "layout":
+                var arranged = ShareMap.ParseArrangement(System.Text.Json.Nodes.JsonNode.Parse(message.GetRawText()));
+                Dispatch(() =>
+                {
+                    // The newest arrangement of the two computers is the one both keep (nobody lost an arrangement by reconnecting).
+                    if (SavedLayout().TryGetValue(deviceId, out var mine) && mine.At >= arranged.At) { if (mine.At > arranged.At) SendLayout(deviceId); return; }
+                    Store(deviceId, arranged);
+                    MapChanged?.Invoke();
+                });
+                break;
+            case "reset":
+                Dispatch(() =>
+                {
+                    if (!SavedLayout().ContainsKey(deviceId)) return;
+                    Store(deviceId, null);
+                    MapChanged?.Invoke();
+                });
+                break;
+        }
+    }
+
+    private static void Dispatch(Action action) => System.Windows.Application.Current?.Dispatcher.BeginInvoke(action);
+
+    /// <summary>Looks at the screens again (a screen came or went, or one started or stopped showing another computer); tells the others when they changed.</summary>
+    private void Recompute()
+    {
+        var now = CurrentScreens();
+        bool changed;
+        lock (mapLock) { changed = !myScreens.SequenceEqual(now); if (changed) myScreens = now; }
+        if (!changed) return;
+        SendScreens();
+        MapChanged?.Invoke();
+    }
+
+    /// <summary>The screens of this computer that show this computer: Windows lists a display that is plugged in but showing another computer too, and the map must not.</summary>
+    private ShareRect[] CurrentScreens()
+    {
+        var all = EnumerateScreens();
+        var aside = main.Monitors.Where(m => !m.IsRemote && (m.IsUnavailable || !m.Device.IsActive))
+            .Select(m => m.Device.Identity.GdiName).Where(n => !string.IsNullOrEmpty(n)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var kept = all.Where(s => !aside.Contains(s.Name)).Select(s => s.Rect).ToArray();
+        return kept.Length > 0 ? kept : all.Select(s => s.Rect).ToArray();
+    }
+
+    /// <summary>The pointer is pushing out of this computer's screens where, on the map, a screen of a connected computer is: it goes there.</summary>
+    private bool TryMapEnter(int x, int y, int dx, int dy)
+    {
+        ShareRect[] mine;
+        lock (mapLock) { mine = myScreens; if (peerScreens.Count == 0) return false; }
+        // Cheap test first (this runs for every move): the pointer must be pushing out of the screens.
+        int sx = Math.Sign(dx), sy = Math.Sign(dy);
+        if ((sx == 0 || mine.Any(s => s.Contains(x + sx, y))) && (sy == 0 || mine.Any(s => s.Contains(x, y + sy)))) return false;
+        foreach (var client in Peers()?.ConnectedClients ?? [])
+        {
+            if (client.Computer.DeviceId is not { } id) continue;
+            ShareRect[]? theirs;
+            lock (mapLock) peerScreens.TryGetValue(id, out theirs);
+            if (theirs is null) continue;
+            var a = ArrangementFor(id);
+            var landing = ShareMap.Cross(ShareMap.Place(mine, a.MineAt), ShareMap.Place(theirs, a.TheirsAt), x, y, dx, dy);
+            if (landing is not { } at) continue;
+            // Back here, the pointer comes in a little inside the screen it left from.
+            bool wide = Math.Abs(dx) >= Math.Abs(dy);
+            returnPoint = (x - (wide ? sx * 8 : 0), y - (wide ? 0 : sy * 8));
+            return EnterAt(client, at.X, at.Y);
+        }
+        return false;
+    }
+
+    /// <summary>The screens of a connected computer are known: the map is used (and nothing else).</summary>
+    private bool MapKnown()
+    {
+        lock (mapLock) if (peerScreens.Count == 0) return false;
+        foreach (var client in Peers()?.ConnectedClients ?? [])
+            if (client.Computer.DeviceId is { } id) { lock (mapLock) if (peerScreens.ContainsKey(id)) return true; }
+        return false;
+    }
+
+    private bool EnterAt(PeerClient client, int landX, int landY)
+    {
+        target = client;
+        anchorX = GetSystemMetrics(SmCxScreen) / 2;
+        anchorY = GetSystemMetrics(SmCyScreen) / 2;
+        settle = 2;
+        lock (down) heldAtEntry = down.ToArray();
+        remote = true;
+        SetCursorPos(anchorX, anchorY);
+        CursorHider.Hide();
+        Send(new JsonObject { ["op"] = "enter", ["x"] = landX, ["y"] = landY });
+        log.Write(LogLevel.Info, $"Share input: the pointer went to {client.Computer.Name} (map).");
+        return true;
+    }
+
+    private sealed record NamedScreen(string Name, ShareRect Rect);
+
+    private static List<NamedScreen> EnumerateScreens()
+    {
+        var list = new List<NamedScreen>();
+        bool Callback(IntPtr monitor, IntPtr dc, ref RectStruct rect, IntPtr data)
+        {
+            var info = new MonitorInfoEx { Size = Marshal.SizeOf<MonitorInfoEx>() };
+            string name = GetMonitorInfo(monitor, ref info) ? info.Device : "";
+            list.Add(new NamedScreen(name, new ShareRect(rect.Left, rect.Top, rect.Right, rect.Bottom)));
+            return true;
+        }
+        EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, Callback, IntPtr.Zero);
+        return list;
+    }
+
+    [StructLayout(LayoutKind.Sequential)] private struct RectStruct { public int Left, Top, Right, Bottom; }
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct MonitorInfoEx
+    {
+        public int Size;
+        public RectStruct Monitor, Work;
+        public int Flags;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string Device;
+    }
+    private delegate bool MonitorEnumProc(IntPtr monitor, IntPtr dc, ref RectStruct rect, IntPtr data);
+    [DllImport("user32.dll")] private static extern bool EnumDisplayMonitors(IntPtr dc, IntPtr clip, MonitorEnumProc callback, IntPtr data);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern bool GetMonitorInfo(IntPtr monitor, ref MonitorInfoEx info);
 
     private void StartHooks()
     {
@@ -113,6 +373,7 @@ public sealed class InputShareService : ObservableObject, IDisposable
 
     private void StopHooks()
     {
+        Reveal();
         LeaveLocal(null);
         outbox?.Writer.TryComplete();
         outbox = null;
@@ -131,14 +392,19 @@ public sealed class InputShareService : ObservableObject, IDisposable
 
         if (!remote)
         {
+            if (message == WmMouseMove && controlled) TakeBackIfMovedByHand(x, y);
             if (message == WmMouseMove)
             {
                 int dx = x - lastX, dy = y - lastY;
                 lastX = x; lastY = y;
+                if (handoffHidden) RevealIfMoved(dx, dy);
+                // The map decides where the way to the other computer is; before its screens are known, the edge the pointer is pushed
+                // against (right or left) is the way (the first version's rule).
+                if (dx != 0) hookPushX = dx; if (dy != 0) hookPushY = dy;
+                if (Environment.TickCount64 - leftLocalAt > 400 && TryMapEnter(x, y, dx != 0 ? dx : hookPushX, dy != 0 ? dy : hookPushY)) return (IntPtr)1;
                 var area = Screens();
-                // The side is not set: the edge the pointer is pushed against (right or left) is the way to the other computer.
                 foreach (var side in new[] { ShareSide.Right, ShareSide.Left })
-                    if (ShareEdge.Crossed(side, x, y, dx, dy, area) && Enter(side, x, y, area)) return (IntPtr)1;
+                    if (ShareEdge.Crossed(side, x, y, dx, dy, area) && !MapKnown() && Enter(side, x, y, area)) return (IntPtr)1;
             }
             return CallNextHookEx(IntPtr.Zero, code, wParam, lParam);
         }
@@ -169,6 +435,51 @@ public sealed class InputShareService : ObservableObject, IDisposable
         return (IntPtr)1;
     }
 
+    /// <summary>
+    /// This computer is being controlled by the other one and its own mouse was moved by hand (the hook only sees real movement, never what
+    /// was injected): the person here wants it back, so control returns to this computer and the other one's pointer shows again.
+    /// </summary>
+    private void TakeBackIfMovedByHand(int x, int y)
+    {
+        // Never wait for the lock here: the thread that holds it may be injecting a move, and Windows waits for THIS hook to answer that.
+        if (!Monitor.TryEnter(gate)) return;
+        try
+        {
+            if (!controlled) return;
+            // A real event right after the pointer arrived is a stale one (it was queued before): it counts for nothing.
+            if (Environment.TickCount64 - controlledAt < 250) { physical = 0; physicalEvents = 0; return; }
+            // How far the real pointer is from where the other computer put it, added up over a moment: a slow push counts as much as a fast one.
+            long now = Environment.TickCount64;
+            if (now - physicalAt > 400) physical = 0;
+            physicalAt = now;
+            if (now - physicalAt > 400 || physical == 0) physicalEvents = 0;
+            physical += Math.Abs(x - (int)posX) + Math.Abs(y - (int)posY);
+            physicalEvents++;
+            // A hand on the mouse is many events that add up; one jittery event is not.
+            if (physical < 24 || physicalEvents < 3) return;
+            controlled = false;
+            ReleaseAll();
+            var area = Screens();
+            if (mapped)
+            {
+                // Back where it was on the other computer's map.
+                ShareRect[]? senderScreens;
+                lock (mapLock) peerScreens.TryGetValue(from ?? "", out senderScreens);
+                var layout = ArrangementFor(from ?? "");
+                var back = senderScreens is null ? null : ShareMap.Cross(ShareMap.Place(MyScreens, layout.MineAt), ShareMap.Place(senderScreens, layout.TheirsAt), (int)posX, (int)posY, pushX, pushY);
+                Leave(from, back is { } at ? new JsonObject { ["op"] = "leave", ["x"] = at.X, ["y"] = at.Y } : new JsonObject { ["op"] = "leave" });
+            }
+            else Leave(from, new JsonObject { ["op"] = "leave", ["f"] = ShareEdge.Fraction(entrySide, (int)posX, (int)posY, area) });
+            log.Write(LogLevel.Info, "Share input: the mouse here was moved by hand; the pointer is back on this computer.");
+        }
+        finally { Monitor.Exit(gate); }
+    }
+
+    private int physical, physicalEvents;
+    private long controlledAt;
+    private long leftLocalAt;
+    private long physicalAt;
+
     private void Button(string button, bool pressed) => Send(new JsonObject { ["op"] = "btn", ["b"] = button, ["down"] = pressed });
 
     private IntPtr KeyHook(int code, IntPtr wParam, IntPtr lParam)
@@ -180,6 +491,11 @@ public sealed class InputShareService : ObservableObject, IDisposable
         if (!remote)
         {
             lock (down) { if (up) down.Remove(vk); else down.Add(vk); }
+            if (!up && vk == 0x1B && Held(0xA2, 0xA3) && Held(0xA4, 0xA5) && Held(0xA0, 0xA1))
+            {
+                Reveal();
+                foreach (var peer in Peers()?.ConnectedClients ?? []) _ = peer.SendAsync(new JsonObject { ["type"] = "input", ["op"] = "reveal" });
+            }
             return CallNextHookEx(IntPtr.Zero, code, wParam, lParam);
         }
         // Ctrl+Alt+Shift+Esc: the way back, whatever the other computer is doing.
@@ -208,25 +524,31 @@ public sealed class InputShareService : ObservableObject, IDisposable
         settle = 2;
         lock (down) heldAtEntry = down.ToArray();
         remote = true;
+        returnPoint = null;
         SetCursorPos(anchorX, anchorY);
+        CursorHider.Hide();   // one pointer, and it is on the other computer now
         Send(new JsonObject { ["op"] = "enter", ["side"] = side.ToString(), ["f"] = entryFraction });
-        log.Write(LogLevel.Debug, $"Share input: the pointer went to {client.Computer.Name}.");
+        log.Write(LogLevel.Info, $"Share input: the pointer went to {client.Computer.Name}.");
         return true;
     }
 
     /// <summary>The mouse and keyboard are back on this computer: the pointer comes in at the edge where it left.</summary>
-    private void LeaveLocal(double? fraction)
+    private void LeaveLocal(double? fraction, (int X, int Y)? at = null)
     {
         if (!remote) return;
         remote = false;
-        var (x, y) = ShareEdge.Landing(mySide, fraction ?? entryFraction, Screens());
+        CursorHider.Show();
+        leftLocalAt = Environment.TickCount64;
+        // Through the map: where the other computer's map says (or, when it just stopped, where the pointer left from).
+        var (x, y) = at ?? returnPoint ?? ShareEdge.Landing(mySide, fraction ?? entryFraction, Screens());
+        returnPoint = null;
         SetCursorPos(x, y);
         lastX = x; lastY = y;
         // A key that was down when the pointer left and was let go meanwhile must not stay pressed here.
         foreach (int vk in heldAtEntry)
             if ((GetAsyncKeyState(vk) & 0x8000) == 0) KeyEvent(vk, 0, false, true);
         lock (down) down.Clear();
-        log.Write(LogLevel.Debug, "Share input: the pointer is back.");
+        log.Write(LogLevel.Info, $"Share input: the pointer is back (at {x},{y}).");
     }
 
     private void Send(JsonObject message)
@@ -255,7 +577,14 @@ public sealed class InputShareService : ObservableObject, IDisposable
                         message["dx"] = dx; message["dy"] = dy;
                     }
                     var client = target;
-                    if (client is null || !await client.SendAsync(message)) { if (remote) LeaveLocal(null); }
+                    if (client is null || !await client.SendAsync(message))
+                    {
+                        // One more try before giving up: a single hiccup of the link must not throw the pointer back.
+                        await Task.Delay(80);
+                        client = target;
+                        if (client is not null && await client.SendAsync(message)) continue;
+                        log.Write(LogLevel.Info, $"Share input: a message ({(string?)message["op"]}) could not be sent; the pointer comes back."); if (remote) LeaveLocal(null);
+                    }
                 }
             }
         }
@@ -270,6 +599,40 @@ public sealed class InputShareService : ObservableObject, IDisposable
     private bool controlled;
     private string? from;
     private ShareSide entrySide;
+    // The computer that does not have the pointer hides its own: after it hands the pointer back, it stays hidden until a way out happens
+    // (Ctrl+Alt+Shift+Esc on either computer, the connection dropping, or this computer's own mouse being moved by hand).
+    private volatile bool handoffHidden;
+    private string? handoffFrom;
+    private int revealMoved;
+    private long revealAt;
+
+    private void HideAfterHandoff(string? deviceId)
+    {
+        handoffFrom = deviceId;
+        revealMoved = 0;
+        handoffHidden = true;
+        CursorHider.Hide();
+    }
+
+    private void Reveal()
+    {
+        if (!handoffHidden) return;
+        handoffHidden = false;
+        CursorHider.Show();
+    }
+
+    /// <summary>The real mouse of this computer moved while its pointer is hidden: it takes it back once the movement adds up to a hand on the mouse.</summary>
+    private void RevealIfMoved(int dx, int dy)
+    {
+        long now = Environment.TickCount64;
+        if (now - revealAt > 400) revealMoved = 0;
+        revealAt = now;
+        revealMoved += Math.Abs(dx) + Math.Abs(dy);
+        if (revealMoved >= 12) Reveal();
+    }
+
+    private int pushX, pushY;          // the last push of the pointer that came in (its direction), for sliding along an edge
+    private bool mapped;               // this computer was entered through the map (not by the first version's edge rule)
     private double posX, posY;
     private long lastHeard;
     private readonly HashSet<int> pressedKeys = [];
@@ -287,9 +650,13 @@ public sealed class InputShareService : ObservableObject, IDisposable
             {
                 if (controlled && from == deviceId) { controlled = false; ReleaseAll(); }
                 if (remote && target?.Computer.DeviceId == deviceId)
-                    LeaveLocal(message.TryGetProperty("f", out var f) && f.TryGetDouble(out double fraction) ? fraction : null);
+                {
+                    (int, int)? at = message.TryGetProperty("x", out var lx) && message.TryGetProperty("y", out var ly) && lx.TryGetInt32(out int ax) && ly.TryGetInt32(out int ay) ? (ax, ay) : null;
+                    LeaveLocal(message.TryGetProperty("f", out var f) && f.TryGetDouble(out double fraction) ? fraction : null, at);
+                }
                 return;
             }
+            if (op == "reveal") { Reveal(); return; }
             if (op == "deny")
             {
                 if (remote && target?.Computer.DeviceId == deviceId) LeaveLocal(null);
@@ -305,13 +672,23 @@ public sealed class InputShareService : ObservableObject, IDisposable
             {
                 case "enter":
                     if (remote) { Reply(deviceId, new JsonObject { ["op"] = "deny" }); return; }
+                    Reveal();
                     ReleaseAll();
                     entrySide = Enum.TryParse<ShareSide>(message.TryGetProperty("side", out var s) ? s.GetString() : null, out var theirs)
                         ? ShareEdge.Opposite(theirs) : ShareEdge.Opposite(main.Settings.ShareSide);
                     double along = message.TryGetProperty("f", out var fr) && fr.TryGetDouble(out double value) ? value : 0.5;
                     var (x, y) = ShareEdge.Landing(entrySide, along, area);
+                    // Through the map the other computer says exactly where the pointer appears here.
+                    int landX = 0, landY = 0;
+                    mapped = message.TryGetProperty("x", out var mx) && message.TryGetProperty("y", out var my) && mx.TryGetInt32(out landX) && my.TryGetInt32(out landY);
+                    if (mapped) (x, y) = (Math.Clamp(landX, area.Left, area.Right - 1), Math.Clamp(landY, area.Top, area.Bottom - 1));
                     posX = x; posY = y;
                     controlled = true;
+                    leftMessage = null;
+                    controlledAt = Environment.TickCount64;
+                    physicalEvents = 0;
+                    pushX = pushY = 0;
+                    physical = 0;
                     from = deviceId;
                     MoveTo(x, y, area);
                     break;
@@ -319,12 +696,44 @@ public sealed class InputShareService : ObservableObject, IDisposable
                     int dx = Int("dx"), dy = Int("dy");
                     posX = Math.Clamp(posX + dx, area.Left, area.Right - 1);
                     posY = Math.Clamp(posY + dy, area.Top, area.Bottom - 1);
+                    if (mapped)
+                    {
+                        // Only the screens that show this computer: Windows also lets the pointer onto a display that shows another one.
+                        var inside = ShareMap.Confine(MyScreens, (int)posX, (int)posY);
+                        posX = inside.X; posY = inside.Y;
+                    }
                     MoveTo((int)posX, (int)posY, area);
-                    if (ShareEdge.Crossed(entrySide, (int)posX, (int)posY, dx, dy, area))
+                    // Sliding along an edge sends no push (dx or dy is 0): the last push still counts, as it does for a real mouse.
+                    if (dx != 0) pushX = dx; if (dy != 0) pushY = dy;
+                    int cdx = dx != 0 ? dx : pushX, cdy = dy != 0 ? dy : pushY;
+                    if (mapped)
+                    {
+                        // The way back is wherever the map has the other computer's screens.
+                        ShareRect[]? senderScreens;
+                        lock (mapLock) peerScreens.TryGetValue(deviceId ?? "", out senderScreens);
+                        var layout = ArrangementFor(deviceId ?? "");
+                        if (senderScreens is not null && ShareMap.Cross(ShareMap.Place(MyScreens, layout.MineAt), ShareMap.Place(senderScreens, layout.TheirsAt), (int)posX, (int)posY, cdx, cdy) is { } back)
+                        {
+                            controlled = false;
+                            ReleaseAll();
+                            Leave(deviceId, new JsonObject { ["op"] = "leave", ["x"] = back.X, ["y"] = back.Y });
+                            HideAfterHandoff(deviceId);
+                        }
+                    }
+                    else if (ShareEdge.Crossed(entrySide, (int)posX, (int)posY, dx, dy, area))
                     {
                         controlled = false;
                         ReleaseAll();
-                        Reply(deviceId, new JsonObject { ["op"] = "leave", ["f"] = ShareEdge.Fraction(entrySide, (int)posX, (int)posY, area) });
+                        Leave(deviceId, new JsonObject { ["op"] = "leave", ["f"] = ShareEdge.Fraction(entrySide, (int)posX, (int)posY, area) });
+                        HideAfterHandoff(deviceId);
+                    }
+                    break;
+                case "move" when !controlled && leftMessage is not null && deviceId == leftTo && Environment.TickCount64 - leftAt < 120_000:
+                    // The other computer still thinks it has the pointer: the "leave" never arrived. Say it again.
+                    if (Environment.TickCount64 - leftResentAt > 150)
+                    {
+                        leftResentAt = Environment.TickCount64;
+                        Reply(deviceId, (JsonObject)leftMessage.DeepClone());
                     }
                     break;
                 case "btn" when controlled && from == deviceId:
@@ -382,8 +791,10 @@ public sealed class InputShareService : ObservableObject, IDisposable
             lock (gate)
             {
                 int px = (int)Math.Round(phoneX), py = (int)Math.Round(phoneY);
-                foreach (var side in new[] { ShareSide.Right, ShareSide.Left })
-                    if (ShareEdge.Crossed(side, px, py, Math.Sign(sx), 0, screens) && Enter(side, px, py, screens)) { pendX = pendY = 0; break; }
+                if (TryMapEnter(px, py, Math.Sign(sx), Math.Sign(sy))) pendX = pendY = 0;
+                else
+                    foreach (var side in new[] { ShareSide.Right, ShareSide.Left })
+                        if (ShareEdge.Crossed(side, px, py, Math.Sign(sx), 0, screens) && !MapKnown() && Enter(side, px, py, screens)) { pendX = pendY = 0; break; }
             }
     }
 
@@ -464,11 +875,28 @@ public sealed class InputShareService : ObservableObject, IDisposable
         }
     }
 
+    private string? leftTo;
+    private JsonObject? leftMessage;
+    private long leftAt, leftResentAt;
+
+    /// <summary>
+    /// Gives the pointer back to the other computer. The message is kept: if it got lost on the way (the link back was not up yet),
+    /// the other computer keeps sending moves to a pointer that is no longer here, and each one makes this resend it.
+    /// </summary>
+    private void Leave(string? deviceId, JsonObject message)
+    {
+        leftTo = deviceId;
+        leftMessage = (JsonObject)message.DeepClone();
+        leftAt = Environment.TickCount64;
+        Reply(deviceId, message);
+    }
+
     private void Reply(string? deviceId, JsonObject message)
     {
         message["type"] = "input";
         var client = Peers()?.ConnectedClient(deviceId);
         if (client is not null) _ = client.SendAsync(message);
+        else log.Write(LogLevel.Info, $"Share input: no link back to the other computer to send \"{(string?)message["op"]}\".");
     }
 
     private void ReleaseAll()
@@ -482,6 +910,7 @@ public sealed class InputShareService : ObservableObject, IDisposable
     /// <summary>Every second: a computer that stopped talking (cable, sleep, crash) does not keep the other one's input.</summary>
     private void Watch()
     {
+        if (handoffHidden && (handoffFrom is null || Peers()?.ConnectedClient(handoffFrom) is null)) Reveal();
         lock (gate)
         {
             if (controlled && Environment.TickCount64 - lastHeard > 4000) { controlled = false; ReleaseAll(); log.Write(LogLevel.Info, "Share input: the other computer went quiet; the keyboard and mouse are yours again."); }

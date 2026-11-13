@@ -201,6 +201,34 @@ public sealed class ShortcutEditorViewModel : ObservableObject
 
     public ObservableCollection<ShortcutRowViewModel> Rows { get; } = [];
 
+    // ---- Pages (General, Inputs, Profiles): the same tabs as Settings; only the rows of the page shown are listed ----
+
+    private string page = "General";
+    private System.ComponentModel.ICollectionView? rowsView;
+
+    /// <summary>The rows of the page shown, grouped as their cards.</summary>
+    public System.ComponentModel.ICollectionView RowsView => rowsView ??= BuildView();
+
+    private System.ComponentModel.ICollectionView BuildView()
+    {
+        var view = new System.Windows.Data.CollectionViewSource { Source = Rows }.View;
+        view.GroupDescriptions.Add(new System.Windows.Data.PropertyGroupDescription(nameof(ShortcutRowViewModel.Group)));
+        view.Filter = o => o is ShortcutRowViewModel row && PageOf(row.Group) == page;
+        return view;
+    }
+
+    private static string PageOf(string group) => group.StartsWith("Inputs", StringComparison.Ordinal) ? "Inputs" : group == "Profiles" ? "Profiles" : "General";
+
+    public string Page
+    {
+        get => page;
+        set { if (Set(ref page, value)) { rowsView?.Refresh(); Raise(nameof(IsPageGeneral)); Raise(nameof(IsPageInputs)); Raise(nameof(IsPageProfiles)); } }
+    }
+
+    public bool IsPageGeneral { get => page == "General"; set { if (value) Page = "General"; } }
+    public bool IsPageInputs { get => page == "Inputs"; set { if (value) Page = "Inputs"; } }
+    public bool IsPageProfiles { get => page == "Profiles"; set { if (value) Page = "Profiles"; } }
+
     /// <summary>The display these shortcuts are shown for, or null.</summary>
     public string? DisplayName { get; }
     public string Heading => DisplayName is null ? "Shortcuts" : $"Shortcuts for {DisplayName}";

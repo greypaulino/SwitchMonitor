@@ -29,6 +29,27 @@ internal static class EcosystemTests
     }
 
     [Test]
+    public static void ThousandsOfForgedCertificatesAreNotAllChecked()
+    {
+        string pa = Temp(), pb = Temp();
+        try
+        {
+            var a = new Ecosystem(pa, NewId(), "Desk");
+            var b = new Ecosystem(pb, NewId(), "Laptop");
+            a.Admit(b.DeviceId, b.Name, b.Kind, b.PublicKey, DateTimeOffset.UtcNow);
+            var forged = new JsonArray();
+            for (int i = 0; i < 3000; i++)
+                forged.Add(new JsonObject { ["deviceId"] = "forged-" + i.ToString("D8"), ["name"] = "x", ["kind"] = "phone", ["key"] = b.PublicKey,
+                    ["issuer"] = a.DeviceId, ["at"] = 1700000000000L + i, ["sig"] = Convert.ToBase64String(new byte[64]) });
+            var timer = System.Diagnostics.Stopwatch.StartNew();
+            Assert.True(!a.Merge(forged, new JsonArray()), "nothing forged is believed");
+            Assert.True(timer.ElapsedMilliseconds < 500, $"a message of forged certificates costs little ({timer.ElapsedMilliseconds} ms)");
+            Assert.Equal(2, a.Members.Count);
+        }
+        finally { foreach (string p in new[] { pa, pb }) File.Delete(p); }
+    }
+
+    [Test]
     public static void ADeviceJoinsAndTheOthersLearnAboutItThroughAnyMember()
     {
         string pa = Temp(), pb = Temp(), pc = Temp();

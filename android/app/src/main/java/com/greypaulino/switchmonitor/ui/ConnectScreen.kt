@@ -29,6 +29,7 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -100,6 +101,13 @@ fun ConnectScreen(ui: RemoteUi) {
                 )
             }
 
+            val update by com.greypaulino.switchmonitor.data.Updates.state.collectAsState()
+            TextButton(onClick = { com.greypaulino.switchmonitor.data.Updates.openDialog() }) {
+                Text(
+                    if (update.step == com.greypaulino.switchmonitor.data.Updates.Step.Available) "Update available: ${update.latest}" else "Check for updates (${update.current})",
+                    color = if (update.step == com.greypaulino.switchmonitor.data.Updates.Step.Available) Green else Soft,
+                )
+            }
             when (ui.phase) {
                 Phase.NeedCode -> CodePanel(ui, useGroup) { wantGroup = !wantGroup }
                 Phase.Connecting, Phase.Offline -> {
@@ -113,21 +121,78 @@ fun ConnectScreen(ui: RemoteUi) {
     }
 }
 
+/**
+ * The group's screen when none of its computers answers: nothing is chosen here, the app looks for them by itself and the control
+ * screen appears as soon as one is found. "Use another computer" is only for one outside the group (by pairing code).
+ */
+@Composable
+fun GroupOfflineScreen(ui: RemoteUi) {
+    Box(Modifier.fillMaxSize().background(Ground)) {
+        Column(
+            Modifier.fillMaxSize().safeDrawingPadding().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Column(Modifier.fillMaxWidth().padding(top = 36.dp, bottom = 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                Box(Modifier.size(84.dp).clip(RoundedCornerShape(26.dp)).background(Raised).border(1.dp, Line, RoundedCornerShape(26.dp)), contentAlignment = Alignment.Center) {
+                    Icon(Glyphs.Wifi, null, Modifier.size(38.dp), tint = Muted)
+                }
+                Text("My devices", Modifier.padding(top = 22.dp), fontSize = 26.sp, fontWeight = FontWeight.Bold, color = Text)
+                Text(
+                    "No computer of your group is connected.",
+                    Modifier.padding(top = 6.dp), fontSize = 16.sp, color = Soft, textAlign = TextAlign.Center,
+                )
+                Row(Modifier.padding(top = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(Modifier.size(15.dp), color = Muted, strokeWidth = 2.dp)
+                    Text("Looking for them on this Wi-Fi…", Modifier.padding(start = 10.dp), fontSize = 14.sp, color = Muted)
+                }
+                Text(
+                    "Turn on a computer with SwitchMonitor open and Phone enabled. When one appears, the controls open by themselves.",
+                    Modifier.padding(top = 14.dp, start = 12.dp, end = 12.dp), fontSize = 14.sp, lineHeight = 20.sp, color = Muted, textAlign = TextAlign.Center,
+                )
+            }
+            if (ui.group.isNotEmpty()) {
+                Panel(padding = androidx.compose.foundation.layout.PaddingValues(14.dp)) {
+                    Text("Computers in your group", Modifier.padding(start = 4.dp, bottom = 10.dp), fontSize = 13.sp, color = Muted)
+                    for (pc in ui.group) {
+                        Row(Modifier.fillMaxWidth().padding(vertical = 8.dp, horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Box(Modifier.size(8.dp).clip(androidx.compose.foundation.shape.CircleShape).background(Muted))
+                            Text(pc.name, Modifier.weight(1f).padding(start = 12.dp), fontSize = 16.sp, color = Text)
+                            Text("Not connected", fontSize = 13.sp, color = Muted)
+                        }
+                    }
+                }
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                TextButton(onClick = { Remote.search() }, enabled = !ui.searching) { Text("Search again", color = Soft) }
+                TextButton(onClick = { Remote.forget() }) { Text("Use another computer", color = Soft) }
+            }
+            val update by com.greypaulino.switchmonitor.data.Updates.state.collectAsState()
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                TextButton(onClick = { com.greypaulino.switchmonitor.data.Updates.openDialog() }) {
+                    Text(
+                        if (update.step == com.greypaulino.switchmonitor.data.Updates.Step.Available) "Update available: ${update.latest}" else "Check for updates (${update.current})",
+                        color = if (update.step == com.greypaulino.switchmonitor.data.Updates.Step.Available) Green else Soft,
+                    )
+                }
+            }
+        }
+        ui.message?.let { Toast(it, Modifier.align(Alignment.BottomCenter)) }
+    }
+}
+
 @Composable
 private fun FindPanel(ui: RemoteUi) {
     var typing by rememberSaveable { mutableStateOf(false) }
     var address by rememberSaveable { mutableStateOf("") }
-    // The computers of the group first: no code, they only need to be on this Wi-Fi.
+    // The group needs no choosing: the app connects to it by itself. Here only a computer outside it is picked, with its pairing code.
     if (ui.inGroup) {
         Panel(padding = androidx.compose.foundation.layout.PaddingValues(14.dp)) {
-            Text("My devices", Modifier.padding(start = 4.dp, bottom = 10.dp), fontSize = 13.sp, color = Muted)
-            if (ui.group.isEmpty()) Text("No computer in the group yet.", Modifier.padding(4.dp), fontSize = 14.sp, color = Soft)
-            for (pc in ui.group) {
-                val here = ui.found.firstOrNull { it.deviceId == pc.deviceId }
-                ComputerRow(pc.name, here?.host ?: "Not on this Wi-Fi", if (here != null) "In your group · here" else "In your group", here != null) {
-                    if (here != null) Remote.choose(here.host, here.port, pc.name)
-                }
-            }
+            Text("This is for a computer outside your group, paired with a code. Your group connects by itself.", Modifier.padding(4.dp), fontSize = 14.sp, color = Soft)
+            Button(
+                onClick = { Remote.backToGroup() },
+                colors = ButtonDefaults.buttonColors(containerColor = Text, contentColor = Ink),
+                modifier = Modifier.padding(top = 10.dp).fillMaxWidth().height(48.dp),
+            ) { Text("Back to My devices", fontWeight = FontWeight.SemiBold) }
             TextButton(onClick = { Remote.leaveGroup() }) { Text("Leave the group on this phone", color = Soft) }
         }
     }
@@ -144,6 +209,7 @@ private fun FindPanel(ui: RemoteUi) {
         }
     }
     val others = ui.found.filter { f -> ui.paired.none { it.name.equals(f.name, ignoreCase = true) } && ui.group.none { it.deviceId == f.deviceId } }
+    // (a computer of the group is never offered here: it is reached through My devices)
     Panel(padding = androidx.compose.foundation.layout.PaddingValues(14.dp)) {
         Row(Modifier.padding(start = 4.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
             Icon(Glyphs.Wifi, null, Modifier.size(16.dp), tint = Muted)
@@ -222,6 +288,12 @@ private fun CodePanel(ui: RemoteUi, useGroup: Boolean, onSwitch: () -> Unit) {
                 }
             },
         )
+        if (ui.verification.isNotEmpty()) {
+            // The computer shows this same number when it asks its owner to allow this phone: if it differs, somebody is in between.
+            Text("Verification number", Modifier.padding(top = 16.dp), fontSize = 12.sp, color = Muted)
+            Text(ui.verification, fontSize = 28.sp, fontWeight = FontWeight.SemiBold, color = Text)
+            Text("The computer shows the same number when it asks to allow this phone. If it differs, do not allow it.", fontSize = 12.sp, color = Muted)
+        }
         Spacer(Modifier.height(16.dp))
         Button(
             onClick = { submit() }, enabled = code.length == 6 && !ui.enrolling,

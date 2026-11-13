@@ -114,6 +114,15 @@ public sealed record AppSettings
     /// <summary>What is copied here (text) is copied on the other computers of the group and on the phones, and the other way round.</summary>
     public bool SharedClipboard { get; init; }
 
+    /// <summary>Profiles are kept the same on the computers of the group: the newest change of each one wins (shortcuts stay personal).</summary>
+    public bool SyncProfiles { get; init; }
+
+    /// <summary>
+    /// The map of the shared mouse: where each other computer's screens sit next to this one's, as {"deviceId":[x,y]} (see
+    /// <see cref="Sharing.ShareMap"/>). Empty: they sit side by side, automatically.
+    /// </summary>
+    public string ShareLayout { get; init; } = "";
+
     /// <summary>The web page for phones without the app (not encrypted: a browser cannot do it on a plain address). Off unless turned on.</summary>
     public bool PhoneWebPage { get; init; }
 
@@ -231,6 +240,9 @@ public sealed record AppSettings
             PhoneInput = root.TryGetProperty("phoneInput", out var phoneInput) && phoneInput.ValueKind == JsonValueKind.True,
             PhoneRemote = root.TryGetProperty("phoneRemote", out var phoneRemote) && phoneRemote.ValueKind == JsonValueKind.True,
             SharedClipboard = root.TryGetProperty("sharedClipboard", out var sharedClipboard) && sharedClipboard.ValueKind == JsonValueKind.True,
+            SyncProfiles = root.TryGetProperty("syncProfiles", out var syncProfiles) && syncProfiles.ValueKind == JsonValueKind.True,
+            ShareLayout = root.TryGetProperty("shareLayout", out var shareLayout) && shareLayout.ValueKind == JsonValueKind.String
+                && shareLayout.GetString() is { Length: <= 4000 } layoutText ? layoutText : "",
             PhoneWebPage = root.TryGetProperty("phoneWebPage", out var webPage) && webPage.ValueKind == JsonValueKind.True,
             ExplorerMenu = !root.TryGetProperty("explorerMenu", out var explorerMenu) || explorerMenu.ValueKind != JsonValueKind.False,
             WelcomeSeen = root.TryGetProperty("welcomeSeen", out var welcome) && welcome.TryGetInt32(out int seenValue) ? Math.Max(0, seenValue) : 0,
@@ -297,6 +309,8 @@ public sealed record AppSettings
             ["phoneInput"] = PhoneInput,
             ["phoneRemote"] = PhoneRemote,
             ["sharedClipboard"] = SharedClipboard,
+            ["syncProfiles"] = SyncProfiles,
+            ["shareLayout"] = ShareLayout,
             ["explorerMenu"] = ExplorerMenu,
             ["phoneWebPage"] = PhoneWebPage,
             ["language"] = Language,

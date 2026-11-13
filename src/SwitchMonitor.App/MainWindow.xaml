@@ -296,11 +296,8 @@
                               WindowChrome.IsHitTestVisibleInChrome="True" IsChecked="{Binding IsSettingsTab, Mode=TwoWay}"
                               ToolTip="Settings of SwitchMonitor" AutomationProperties.Name="Settings" />
                 <Button DockPanel.Dock="Right" Command="{Binding RefreshCommand}" WindowChrome.IsHitTestVisibleInChrome="True"
-                        ToolTip="Look for displays again (after connecting or turning one on)" VerticalAlignment="Center">
-                    <StackPanel Orientation="Horizontal">
-                        <TextBlock Text="&#xE72C;" Style="{StaticResource Glyph}" FontSize="12" Foreground="{StaticResource TextBrush}" Margin="0,1,8,0" />
-                        <TextBlock Text="Refresh displays" />
-                    </StackPanel>
+                        ToolTip="Refresh displays: look for displays again (after connecting or turning one on)" AutomationProperties.Name="Refresh displays" VerticalAlignment="Center">
+                    <TextBlock Text="&#xE72C;" Style="{StaticResource Glyph}" FontSize="13" Foreground="{StaticResource TextBrush}" Margin="2,1,2,1" />
                 </Button>
                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                     <Border Style="{StaticResource IconTile}" Width="34" Height="34" CornerRadius="11" Background="{StaticResource AccentBrush}" Margin="0,0,12,0">
@@ -436,22 +433,6 @@
                 <ColumnDefinition Width="*" />
             </Grid.ColumnDefinitions>
 
-            <!-- Bottom bar of the display: factory reset, always in the same place (as Save is in the other views) -->
-            <Border Grid.Row="2" Grid.Column="1" Style="{StaticResource Card}" Margin="12,0,22,16" Padding="18,12"
-                    DataContext="{Binding Selected}" Visibility="{Binding CanResetAll, Converter={StaticResource BoolToVisibility}, FallbackValue=Collapsed}">
-                <DockPanel>
-                    <Button DockPanel.Dock="Right" Style="{StaticResource DangerButton}" BorderBrush="{StaticResource ErrorBrush}" BorderThickness="1"
-                            Command="{Binding DataContext.ResetAllCommand, RelativeSource={RelativeSource AncestorType=Window}}"
-                            ToolTip="Factory brightness, contrast and colors for the current picture mode. Click twice.">
-                        <StackPanel Orientation="Horizontal">
-                            <TextBlock Text="&#xE7A7;" Style="{StaticResource Glyph}" FontSize="12" Foreground="{StaticResource ErrorBrush}" Margin="0,1,8,0" />
-                            <TextBlock Text="{Binding DataContext.ResetLabel, RelativeSource={RelativeSource AncestorType=Window}}" />
-                        </StackPanel>
-                    </Button>
-                    <TextBlock Style="{StaticResource Hint}" VerticalAlignment="Center" Margin="4,0,16,0"
-                               Text="Factory reset puts this display's brightness, contrast and colors for the current picture mode back to the monitor's defaults." />
-                </DockPanel>
-            </Border>
 
             <!-- Displays -->
             <ListBox Grid.Row="1" Grid.RowSpan="2" ItemsSource="{Binding Monitors}" SelectedItem="{Binding Selected}"
@@ -559,23 +540,78 @@
                 </Border>
             </StackPanel>
 
-            <!-- No display found at all -->
-            <Border Grid.Row="1" Grid.Column="1" Style="{StaticResource Card}" Margin="12,0,22,16" MaxWidth="480"
-                    HorizontalAlignment="Left" VerticalAlignment="Top">
-                <Border.Visibility>
-                    <MultiBinding Converter="{x:Static app:AllFalseToVisibility.Instance}">
-                        <Binding Path="Monitors.Count" />
-                        <Binding Path="IsBusy" />
-                    </MultiBinding>
-                </Border.Visibility>
+            <!-- Capture mode: Windows reported no display at all. The app keeps looking by itself and the controls appear when one shows up -->
+            <Grid Grid.Row="0" Grid.RowSpan="3" Grid.Column="0" Grid.ColumnSpan="2" Margin="22,0,22,40" HorizontalAlignment="Center" VerticalAlignment="Center"
+                  Visibility="{Binding ShowsCapture, Converter={StaticResource BoolToVisibility}}" MaxWidth="460">
+                <StackPanel HorizontalAlignment="Center">
+                    <Grid Width="150" Height="150" HorizontalAlignment="Center" Margin="0,0,0,18">
+                        <Grid.Resources>
+                            <Style x:Key="Ring" TargetType="Ellipse">
+                                <Setter Property="Stroke" Value="{StaticResource MutedBrush}" />
+                                <Setter Property="StrokeThickness" Value="1.5" />
+                                <Setter Property="Opacity" Value="0" />
+                                <Setter Property="RenderTransformOrigin" Value="0.5,0.5" />
+                                <Setter Property="RenderTransform"><Setter.Value><ScaleTransform ScaleX="0.4" ScaleY="0.4" /></Setter.Value></Setter>
+                            </Style>
+                        </Grid.Resources>
+                        <Ellipse Style="{StaticResource Ring}" x:Name="RingA" />
+                        <Ellipse Style="{StaticResource Ring}" x:Name="RingB" />
+                        <Ellipse Style="{StaticResource Ring}" x:Name="RingC" />
+                        <Border Style="{StaticResource IconTile}" Width="64" Height="64" CornerRadius="20" HorizontalAlignment="Center" VerticalAlignment="Center">
+                            <TextBlock Text="&#xE7F4;" Style="{StaticResource Glyph}" FontSize="28" HorizontalAlignment="Center" />
+                        </Border>
+                        <Grid.Triggers>
+                            <EventTrigger RoutedEvent="FrameworkElement.Loaded">
+                                <BeginStoryboard>
+                                    <Storyboard RepeatBehavior="Forever">
+                                        <DoubleAnimation Storyboard.TargetName="RingA" Storyboard.TargetProperty="RenderTransform.ScaleX" From="0.4" To="1" Duration="0:0:2.4" />
+                                        <DoubleAnimation Storyboard.TargetName="RingA" Storyboard.TargetProperty="RenderTransform.ScaleY" From="0.4" To="1" Duration="0:0:2.4" />
+                                        <DoubleAnimation Storyboard.TargetName="RingA" Storyboard.TargetProperty="Opacity" From="0.7" To="0" Duration="0:0:2.4" />
+                                        <DoubleAnimation Storyboard.TargetName="RingB" Storyboard.TargetProperty="RenderTransform.ScaleX" From="0.4" To="1" Duration="0:0:2.4" BeginTime="0:0:0.8" />
+                                        <DoubleAnimation Storyboard.TargetName="RingB" Storyboard.TargetProperty="RenderTransform.ScaleY" From="0.4" To="1" Duration="0:0:2.4" BeginTime="0:0:0.8" />
+                                        <DoubleAnimation Storyboard.TargetName="RingB" Storyboard.TargetProperty="Opacity" From="0.7" To="0" Duration="0:0:2.4" BeginTime="0:0:0.8" />
+                                        <DoubleAnimation Storyboard.TargetName="RingC" Storyboard.TargetProperty="RenderTransform.ScaleX" From="0.4" To="1" Duration="0:0:2.4" BeginTime="0:0:1.6" />
+                                        <DoubleAnimation Storyboard.TargetName="RingC" Storyboard.TargetProperty="RenderTransform.ScaleY" From="0.4" To="1" Duration="0:0:2.4" BeginTime="0:0:1.6" />
+                                        <DoubleAnimation Storyboard.TargetName="RingC" Storyboard.TargetProperty="Opacity" From="0.7" To="0" Duration="0:0:2.4" BeginTime="0:0:1.6" />
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </EventTrigger>
+                        </Grid.Triggers>
+                    </Grid>
+                    <TextBlock Text="Looking for displays" FontSize="20" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,0,0,8" />
+                    <TextBlock Style="{StaticResource Hint}" FontSize="13" TextAlignment="Center" TextWrapping="Wrap" Margin="0,0,0,16"
+                               Text="Windows sees no display right now. Connect or turn one on: the controls appear as soon as one is found, and the search repeats by itself." />
+                    <Button Content="Look now" Command="{Binding RefreshCommand}" HorizontalAlignment="Center" Style="{StaticResource PrimaryButton}" />
+                </StackPanel>
+            </Grid>
+
+            <!-- Lost displays: there are some in the list, but none can be used now -->
+            <Border Grid.Row="0" Grid.RowSpan="2" Grid.Column="1" Style="{StaticResource Card}" Margin="12,6,22,16" MaxWidth="520"
+                    HorizontalAlignment="Left" VerticalAlignment="Top"
+                    Visibility="{Binding ShowsLost, Converter={StaticResource BoolToVisibility}}">
                 <StackPanel>
                     <Border Style="{StaticResource IconTile}" Width="44" Height="44" CornerRadius="14" HorizontalAlignment="Left" Margin="0,0,0,14">
-                        <TextBlock Text="&#xE7FB;" Style="{StaticResource Glyph}" FontSize="20" HorizontalAlignment="Center" />
+                        <TextBlock Text="&#xE783;" Style="{StaticResource Glyph}" FontSize="20" HorizontalAlignment="Center" />
                     </Border>
-                    <TextBlock Text="No displays found" FontSize="20" FontWeight="SemiBold" Margin="0,0,0,8" />
-                    <TextBlock Style="{StaticResource Hint}" FontSize="13" Margin="0,0,0,16"
-                               Text="Windows reported no monitors the app can see. Connect or turn on a display, then look again." />
-                    <Button Content="Refresh displays" Command="{Binding RefreshCommand}" HorizontalAlignment="Left" Style="{StaticResource PrimaryButton}" />
+                    <TextBlock Text="No display is available now" FontSize="20" FontWeight="SemiBold" Margin="0,0,0,8" />
+                    <TextBlock Style="{StaticResource Hint}" FontSize="13" Margin="0,0,0,14" TextWrapping="Wrap"
+                               Text="They may be asleep, switched off, in use by another computer, or that computer may have gone away. SwitchMonitor keeps watching: the controls come back by themselves." />
+                    <ItemsControl ItemsSource="{Binding LostDisplays}" Margin="0,0,0,14">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <DockPanel Margin="0,0,0,10">
+                                    <Border Style="{StaticResource IconTile}" Width="34" Height="34" CornerRadius="10" DockPanel.Dock="Left" Margin="0,0,12,0" Opacity="0.6">
+                                        <TextBlock Text="{Binding Glyph}" Style="{StaticResource Glyph}" FontSize="15" HorizontalAlignment="Center" />
+                                    </Border>
+                                    <StackPanel VerticalAlignment="Center">
+                                        <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis" />
+                                        <TextBlock Text="{Binding Reason}" Foreground="{StaticResource MutedBrush}" FontSize="12" TextTrimming="CharacterEllipsis" />
+                                    </StackPanel>
+                                </DockPanel>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                    <Button Content="Look now" Command="{Binding RefreshCommand}" HorizontalAlignment="Left" Style="{StaticResource PrimaryButton}" />
                 </StackPanel>
             </Border>
 
@@ -585,6 +621,9 @@
                 <Style TargetType="DockPanel">
             <Style.Triggers>
                 <DataTrigger Binding="{Binding}" Value="{x:Null}">
+                    <Setter Property="Visibility" Value="Collapsed" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding DataContext.ShowsLost, RelativeSource={RelativeSource AncestorType=Window}}" Value="True">
                     <Setter Property="Visibility" Value="Collapsed" />
                 </DataTrigger>
             </Style.Triggers>
@@ -622,6 +661,13 @@
 
             <!-- Controls of the selected display -->
             <ScrollViewer Grid.Row="1" Grid.Column="1" VerticalScrollBarVisibility="Auto" Padding="12,0,22,16">
+                <ScrollViewer.Style>
+                    <Style TargetType="ScrollViewer">
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding ShowsLost}" Value="True"><Setter Property="Visibility" Value="Collapsed" /></DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </ScrollViewer.Style>
                 <app:ColumnsPanel DataContext="{Binding Selected}" MinColumnWidth="540" MaxColumns="2">
                     <app:ColumnsPanel.Style>
                         <Style TargetType="app:ColumnsPanel">
@@ -1680,32 +1726,25 @@
         <!-- Shortcuts view (global shortcuts are paused while it is shown): one card per category -->
         <Grid x:Name="ShortcutsView" Grid.Row="3" DataContext="{Binding ShortcutEditor}"
               Visibility="{Binding DataContext.IsShortcutsTab, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolToVisibility}}">
-            <Grid.Resources>
-                <CollectionViewSource x:Key="GroupedRows" Source="{Binding Rows}">
-                    <CollectionViewSource.GroupDescriptions>
-                        <PropertyGroupDescription PropertyName="Group" />
-                    </CollectionViewSource.GroupDescriptions>
-                </CollectionViewSource>
-            </Grid.Resources>
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" />
                 <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
-            <StackPanel Margin="20,0,24,12">
+            <StackPanel Margin="22,0,22,12">
                 <!-- Which display these shortcuts are for (pick another on the Displays view) -->
-                <StackPanel Orientation="Horizontal" Margin="0,0,0,6" Visibility="{Binding HasDisplayName, Converter={StaticResource BoolToVisibility}}">
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,0,0,6" Visibility="{Binding HasDisplayName, Converter={StaticResource BoolToVisibility}}">
                     <TextBlock Text="&#xE7F4;" Style="{StaticResource Glyph}" FontSize="15" Margin="0,1,10,0" />
                     <TextBlock Text="{Binding Heading}" FontSize="16" FontWeight="SemiBold" />
                 </StackPanel>
-                <DockPanel>
-                    <TextBlock Text="&#xE897;" Style="{StaticResource Glyph}" Margin="0,0,10,0" VerticalAlignment="Top" />
-                    <TextBlock Style="{StaticResource Hint}" FontSize="13" Foreground="{StaticResource MutedBrush}"
-                               Text="Shortcuts are paused while this tab is open, so you can record one by pressing it. Inputs and profiles shown are those of the display selected on Displays; the other displays keep theirs." />
-                </DockPanel>
+                <Border BorderBrush="{StaticResource LineBrush}" BorderThickness="0,0,0,1" Margin="0,2,0,0"><WrapPanel>
+                    <RadioButton Style="{StaticResource SubTab}" Content="General" Tag="&#xE713;" GroupName="ShortcutsPage" IsChecked="{Binding IsPageGeneral, Mode=TwoWay}" />
+                    <RadioButton Style="{StaticResource SubTab}" Content="Inputs" Tag="&#xE8AB;" GroupName="ShortcutsPage" IsChecked="{Binding IsPageInputs, Mode=TwoWay}" />
+                    <RadioButton Style="{StaticResource SubTab}" Content="Profiles" Tag="&#xE8EC;" GroupName="ShortcutsPage" IsChecked="{Binding IsPageProfiles, Mode=TwoWay}" />
+                </WrapPanel></Border>
             </StackPanel>
             <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Padding="22,0,22,8">
-                <ItemsControl ItemsSource="{Binding Source={StaticResource GroupedRows}}">
+                <ItemsControl ItemsSource="{Binding RowsView}">
                     <ItemsControl.GroupStyle>
                         <GroupStyle>
                             <!-- Wide window: the groups (General, Inputs, Profiles) side by side -->
@@ -1855,12 +1894,11 @@
         <Grid x:Name="SettingsView" Grid.Row="3" DataContext="{Binding Interface}"
               Visibility="{Binding DataContext.IsSettingsTab, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolToVisibility}}">
             <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" />
                 <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
-            <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="22,0,22,8">
-              <StackPanel MaxWidth="1600">
-                <Border BorderBrush="{StaticResource LineBrush}" BorderThickness="0,0,0,1" Margin="0,2,0,18"><WrapPanel>
+                <Border Grid.Row="0" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,0,0,1" Margin="22,2,22,12"><WrapPanel>
                     <RadioButton Style="{StaticResource SubTab}" Content="General" Tag="&#xE713;" GroupName="SettingsPage" IsChecked="{Binding DataContext.IsSettingsGeneral, RelativeSource={RelativeSource AncestorType=Window}, Mode=TwoWay}" />
                     <RadioButton Style="{StaticResource SubTab}" Content="Appearance" Tag="&#xE790;" GroupName="SettingsPage" IsChecked="{Binding DataContext.IsSettingsAppearance, RelativeSource={RelativeSource AncestorType=Window}, Mode=TwoWay}" />
                     <RadioButton Style="{StaticResource SubTab}" Content="Devices" Tag="&#xE8EA;" GroupName="SettingsPage" IsChecked="{Binding DataContext.IsSettingsDevices, RelativeSource={RelativeSource AncestorType=Window}, Mode=TwoWay}" />
@@ -1868,8 +1906,32 @@
                     <RadioButton Style="{StaticResource SubTab}" Content="Updates" Tag="&#xE895;" GroupName="SettingsPage" IsChecked="{Binding DataContext.IsSettingsUpdates, RelativeSource={RelativeSource AncestorType=Window}, Mode=TwoWay}" />
                     <RadioButton Style="{StaticResource SubTab}" Content="About" Tag="&#xE946;" GroupName="SettingsPage" IsChecked="{Binding DataContext.IsSettingsAbout, RelativeSource={RelativeSource AncestorType=Window}, Mode=TwoWay}" />
                 </WrapPanel></Border>
+            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Padding="22,0,22,8">
+              <StackPanel MaxWidth="1600">
                 <app:ColumnsPanel MinColumnWidth="620" MaxColumns="2"
                                   Visibility="{Binding DataContext.IsSettingsGeneral, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolToVisibility}}">
+                    <!-- Language of the app -->
+                    <Border Style="{StaticResource Card}" DataContext="{Binding DataContext, RelativeSource={RelativeSource AncestorType=Window}}">
+                        <StackPanel>
+                        <Border Style="{StaticResource CardHeader}">
+                            <DockPanel>
+                                <Border Style="{StaticResource IconTile}">
+                                    <TextBlock Text="&#xE774;" Style="{StaticResource Glyph}" HorizontalAlignment="Center" />
+                                </Border>
+                                <TextBlock Text="Language" Style="{StaticResource CardTitle}" />
+                            </DockPanel>
+                        </Border>
+                            <DockPanel>
+                                <ComboBox DockPanel.Dock="Right" Width="150" VerticalAlignment="Center" ItemsSource="{Binding Languages}" SelectedItem="{Binding LanguageName, Mode=TwoWay}"
+                                          AutomationProperties.Name="Language" />
+                                <StackPanel Margin="0,0,16,0">
+                                    <TextBlock Text="Language of the app" FontWeight="SemiBold" FontSize="14" />
+                                    <TextBlock Style="{StaticResource Hint}" Margin="0,3,0,0" Text="Applies at once. Messages the app writes while it works may still appear in English." TextWrapping="Wrap" />
+                                </StackPanel>
+                            </DockPanel>
+                        </StackPanel>
+                    </Border>
+
                     <!-- Everything that turns on with a switch, in one place (each one is also on its own page) -->
                     <Border Style="{StaticResource Card}" DataContext="{Binding DataContext, RelativeSource={RelativeSource AncestorType=Window}}">
                         <StackPanel>
@@ -1894,6 +1956,18 @@
                             </DockPanel>
                             <Border Height="1" Background="{StaticResource LineBrush}" Margin="0,12,0,12" />
                             <DockPanel>
+                                <ToggleButton DockPanel.Dock="Right" Style="{StaticResource Switch}" IsChecked="{Binding Updates.AutoCheck, Mode=TwoWay}"
+                                              VerticalAlignment="Center" AutomationProperties.Name="Check for updates automatically" />
+                                <Border DockPanel.Dock="Left" Style="{StaticResource IconTile}" Margin="0,0,12,0" VerticalAlignment="Center">
+                                    <TextBlock Text="&#xE895;" Style="{StaticResource Glyph}" HorizontalAlignment="Center" />
+                                </Border>
+                                <StackPanel Margin="0,0,16,0" VerticalAlignment="Center">
+                                    <TextBlock Text="Check for updates automatically" FontWeight="SemiBold" FontSize="14" />
+                                    <TextBlock Style="{StaticResource Hint}" Margin="0,2,0,0" TextWrapping="Wrap" Text="Looks for a new version every few hours; it never installs by itself." />
+                                </StackPanel>
+                            </DockPanel>
+                            <Border Height="1" Background="{StaticResource LineBrush}" Margin="0,12,0,12" />
+                            <DockPanel>
                                 <ToggleButton DockPanel.Dock="Right" Style="{StaticResource Switch}" IsChecked="{Binding LinkedAppsEnabled, Mode=TwoWay}"
                                               VerticalAlignment="Center" AutomationProperties.Name="Linked apps switch profiles" />
                                 <Border DockPanel.Dock="Left" Style="{StaticResource IconTile}" Margin="0,0,12,0" VerticalAlignment="Center">
@@ -1906,14 +1980,14 @@
                             </DockPanel>
                             <Border Height="1" Background="{StaticResource LineBrush}" Margin="0,12,0,12" />
                             <DockPanel>
-                                <ToggleButton DockPanel.Dock="Right" Style="{StaticResource Switch}" IsChecked="{Binding Interface.PointerLight, Mode=TwoWay}"
-                                              VerticalAlignment="Center" AutomationProperties.Name="Pointer light" />
+                                <ToggleButton DockPanel.Dock="Right" Style="{StaticResource Switch}" IsChecked="{Binding Phone.SyncProfiles, Mode=TwoWay}"
+                                              VerticalAlignment="Center" AutomationProperties.Name="Sync profiles between computers" />
                                 <Border DockPanel.Dock="Left" Style="{StaticResource IconTile}" Margin="0,0,12,0" VerticalAlignment="Center">
-                                    <TextBlock Text="&#xE790;" Style="{StaticResource Glyph}" HorizontalAlignment="Center" />
+                                    <TextBlock Text="&#xE895;" Style="{StaticResource Glyph}" HorizontalAlignment="Center" />
                                 </Border>
                                 <StackPanel Margin="0,0,16,0" VerticalAlignment="Center">
-                                    <TextBlock Text="Pointer light" FontWeight="SemiBold" FontSize="14" />
-                                    <TextBlock Style="{StaticResource Hint}" Margin="0,2,0,0" TextWrapping="Wrap" Text="A soft light follows the pointer over the window." />
+                                    <TextBlock Text="Sync profiles between computers" FontWeight="SemiBold" FontSize="14" />
+                                    <TextBlock Style="{StaticResource Hint}" Margin="0,2,0,0" TextWrapping="Wrap" Text="Profiles are kept the same on the computers of the group: the newest change of each profile wins. Shortcuts stay personal." />
                                 </StackPanel>
                             </DockPanel>
                             <Border Height="1" Background="{StaticResource LineBrush}" Margin="0,12,0,12" />
@@ -1926,6 +2000,18 @@
                                 <StackPanel Margin="0,0,16,0" VerticalAlignment="Center">
                                     <TextBlock Text="Allow control from the network" FontWeight="SemiBold" FontSize="14" />
                                     <TextBlock Style="{StaticResource Hint}" Margin="0,2,0,0" TextWrapping="Wrap" Text="Needed by phones and by your other computers." />
+                                </StackPanel>
+                            </DockPanel>
+                            <Border Height="1" Background="{StaticResource LineBrush}" Margin="0,12,0,12" />
+                            <DockPanel>
+                                <ToggleButton DockPanel.Dock="Right" Style="{StaticResource Switch}" IsChecked="{Binding Phone.FirewallOn, Mode=TwoWay}"
+                                              VerticalAlignment="Center" AutomationProperties.Name="Allow on home networks only" ToolTip="Allow on home networks only" />
+                                <Border DockPanel.Dock="Left" Style="{StaticResource IconTile}" Margin="0,0,12,0" VerticalAlignment="Center">
+                                    <TextBlock Text="&#xE72E;" Style="{StaticResource Glyph}" HorizontalAlignment="Center" />
+                                </Border>
+                                <StackPanel Margin="0,0,16,0" VerticalAlignment="Center">
+                                    <TextBlock Text="Windows Firewall" FontWeight="SemiBold" FontSize="14" />
+                                    <TextBlock Style="{StaticResource Hint}" Margin="0,2,0,0" TextWrapping="Wrap" Text="{Binding Phone.FirewallStatus}" />
                                 </StackPanel>
                             </DockPanel>
                             <Border Height="1" Background="{StaticResource LineBrush}" Margin="0,12,0,12" />
@@ -1966,18 +2052,6 @@
                             </DockPanel>
                             <Border Height="1" Background="{StaticResource LineBrush}" Margin="0,12,0,12" />
                             <DockPanel>
-                                <ToggleButton DockPanel.Dock="Right" Style="{StaticResource Switch}" IsChecked="{Binding Phone.PhoneWebPage, Mode=TwoWay}"
-                                              VerticalAlignment="Center" AutomationProperties.Name="Web page for phones without the app" />
-                                <Border DockPanel.Dock="Left" Style="{StaticResource IconTile}" Margin="0,0,12,0" VerticalAlignment="Center">
-                                    <TextBlock Text="&#xE774;" Style="{StaticResource Glyph}" HorizontalAlignment="Center" />
-                                </Border>
-                                <StackPanel Margin="0,0,16,0" VerticalAlignment="Center">
-                                    <TextBlock Text="Web page for phones without the app" FontWeight="SemiBold" FontSize="14" />
-                                    <TextBlock Style="{StaticResource Hint}" Margin="0,2,0,0" TextWrapping="Wrap" Text="A browser cannot encrypt on a plain address, so this page is NOT encrypted. Leave it off unless you need it; the app always is." />
-                                </StackPanel>
-                            </DockPanel>
-                            <Border Height="1" Background="{StaticResource LineBrush}" Margin="0,12,0,12" />
-                            <DockPanel>
                                 <ToggleButton DockPanel.Dock="Right" Style="{StaticResource Switch}" IsChecked="{Binding Phone.SharedClipboard, Mode=TwoWay}"
                                               VerticalAlignment="Center" AutomationProperties.Name="Shared clipboard" />
                                 <Border DockPanel.Dock="Left" Style="{StaticResource IconTile}" Margin="0,0,12,0" VerticalAlignment="Center">
@@ -1990,14 +2064,14 @@
                             </DockPanel>
                             <Border Height="1" Background="{StaticResource LineBrush}" Margin="0,12,0,12" />
                             <DockPanel>
-                                <ToggleButton DockPanel.Dock="Right" Style="{StaticResource Switch}" IsChecked="{Binding Updates.AutoCheck, Mode=TwoWay}"
-                                              VerticalAlignment="Center" AutomationProperties.Name="Check for updates automatically" />
+                                <ToggleButton DockPanel.Dock="Right" Style="{StaticResource Switch}" IsChecked="{Binding Phone.PhoneWebPage, Mode=TwoWay}"
+                                              VerticalAlignment="Center" AutomationProperties.Name="Web page for phones without the app" />
                                 <Border DockPanel.Dock="Left" Style="{StaticResource IconTile}" Margin="0,0,12,0" VerticalAlignment="Center">
-                                    <TextBlock Text="&#xE895;" Style="{StaticResource Glyph}" HorizontalAlignment="Center" />
+                                    <TextBlock Text="&#xE774;" Style="{StaticResource Glyph}" HorizontalAlignment="Center" />
                                 </Border>
                                 <StackPanel Margin="0,0,16,0" VerticalAlignment="Center">
-                                    <TextBlock Text="Check for updates automatically" FontWeight="SemiBold" FontSize="14" />
-                                    <TextBlock Style="{StaticResource Hint}" Margin="0,2,0,0" TextWrapping="Wrap" Text="Looks for a new version every few hours; it never installs by itself." />
+                                    <TextBlock Text="Web page for phones without the app" FontWeight="SemiBold" FontSize="14" />
+                                    <TextBlock Style="{StaticResource Hint}" Margin="0,2,0,0" TextWrapping="Wrap" Text="A browser cannot encrypt on a plain address, so this page is NOT encrypted. Leave it off unless you need it; the app always is." />
                                 </StackPanel>
                             </DockPanel>
                         </StackPanel>
@@ -2032,28 +2106,6 @@
                                     <TextBlock Text="Backup" FontWeight="SemiBold" FontSize="14" />
                                     <TextBlock Style="{StaticResource Hint}" Margin="0,3,0,0" TextWrapping="Wrap"
                                                Text="One file with profiles, shortcuts, appearance and learned settings. Importing keeps the current ones in a backups folder first." />
-                                </StackPanel>
-                            </DockPanel>
-                        </StackPanel>
-                    </Border>
-
-                    <!-- Language of the app -->
-                    <Border Style="{StaticResource Card}" DataContext="{Binding DataContext, RelativeSource={RelativeSource AncestorType=Window}}">
-                        <StackPanel>
-                        <Border Style="{StaticResource CardHeader}">
-                            <DockPanel>
-                                <Border Style="{StaticResource IconTile}">
-                                    <TextBlock Text="&#xE774;" Style="{StaticResource Glyph}" HorizontalAlignment="Center" />
-                                </Border>
-                                <TextBlock Text="Language" Style="{StaticResource CardTitle}" />
-                            </DockPanel>
-                        </Border>
-                            <DockPanel>
-                                <ComboBox DockPanel.Dock="Right" Width="150" VerticalAlignment="Center" ItemsSource="{Binding Languages}" SelectedItem="{Binding LanguageName, Mode=TwoWay}"
-                                          AutomationProperties.Name="Language" />
-                                <StackPanel Margin="0,0,16,0">
-                                    <TextBlock Text="Language of the app" FontWeight="SemiBold" FontSize="14" />
-                                    <TextBlock Style="{StaticResource Hint}" Margin="0,3,0,0" Text="Applies at once. Messages the app writes while it works may still appear in English." TextWrapping="Wrap" />
                                 </StackPanel>
                             </DockPanel>
                         </StackPanel>
@@ -2245,12 +2297,13 @@
                             </DockPanel>
                         </Border>
                         <TextBlock Style="{StaticResource Hint}" TextWrapping="Wrap" Margin="0,0,0,14"
-                                   Text="Three ways to connect. Your devices: every computer and phone that is yours, in one group. Phone: control the displays from a phone, or use it as a mouse and keyboard. One computer: pair just two computers by code." />
+                                   Text="Your devices, a phone, or one computer by code." />
                         <!-- The server: needed by phones and by other computers -->
                         <DockPanel DataContext="{Binding Phone}">
                             <ToggleButton DockPanel.Dock="Right" Style="{StaticResource Switch}" IsChecked="{Binding Enabled, Mode=TwoWay}"
                                           VerticalAlignment="Center" AutomationProperties.Name="Allow control from the network" />
-                            <StackPanel Margin="0,0,16,0">
+                            <Border DockPanel.Dock="Left" Style="{StaticResource IconTile}" Margin="0,0,12,0" VerticalAlignment="Center"><TextBlock Text="&#xE839;" Style="{StaticResource Glyph}" HorizontalAlignment="Center" /></Border>
+                            <StackPanel Margin="0,0,16,0" VerticalAlignment="Center">
                                 <TextBlock Text="Allow control from the network" FontWeight="SemiBold" FontSize="14" />
                                 <TextBlock Style="{StaticResource Hint}" Margin="0,3,0,0" Text="{Binding Status}" TextWrapping="Wrap" />
                                 <TextBlock Style="{StaticResource Hint}" Margin="0,3,0,0" TextWrapping="Wrap"
@@ -2281,7 +2334,8 @@
                             <DockPanel>
                                 <Button DockPanel.Dock="Right" Content="Join a group" Command="{Binding JoinGroupCommand}" VerticalAlignment="Center"
                                         ToolTip="Type the code another computer of yours shows, and join its group" />
-                                <StackPanel Margin="0,0,16,0">
+                                <Border DockPanel.Dock="Left" Style="{StaticResource IconTile}" Margin="0,0,12,0" VerticalAlignment="Center"><TextBlock Text="&#xE716;" Style="{StaticResource Glyph}" HorizontalAlignment="Center" /></Border>
+                                <StackPanel Margin="0,0,16,0" VerticalAlignment="Center">
                                     <TextBlock Text="Your computers and phones, in one group" FontWeight="SemiBold" FontSize="14" />
                                     <TextBlock Style="{StaticResource Hint}" Margin="0,3,0,0" TextWrapping="Wrap" Text="{Binding GroupStatus}" />
                                 </StackPanel>
@@ -2316,32 +2370,35 @@
                             <Button Content="Leave this group" Command="{Binding LeaveGroupCommand}" Style="{StaticResource QuietButton}" HorizontalAlignment="Left" Margin="0,8,0,0"
                                     Visibility="{Binding InGroup, Converter={StaticResource BoolToVisibility}}" />
                         </StackPanel>
-                        <Border Height="1" Background="{StaticResource LineBrush}" Margin="0,14,0,14" />
+                        <Border Height="1" Background="{StaticResource LineBrush}" Margin="0,24,0,24" />
                         <DockPanel DataContext="{Binding DataContext.Phone, RelativeSource={RelativeSource AncestorType=Window}}">
                             <ToggleButton DockPanel.Dock="Right" Style="{StaticResource Switch}" IsChecked="{Binding SharedClipboard, Mode=TwoWay}"
                                           VerticalAlignment="Center" AutomationProperties.Name="Shared clipboard" />
-                            <StackPanel Margin="0,0,16,0">
+                            <Border DockPanel.Dock="Left" Style="{StaticResource IconTile}" Margin="0,0,12,0" VerticalAlignment="Center"><TextBlock Text="&#xE8C8;" Style="{StaticResource Glyph}" HorizontalAlignment="Center" /></Border>
+                            <StackPanel Margin="0,0,16,0" VerticalAlignment="Center">
                                 <TextBlock Text="Shared clipboard" FontWeight="SemiBold" FontSize="14" />
                                 <TextBlock Style="{StaticResource Hint}" Margin="0,3,0,0" TextWrapping="Wrap"
-                                           Text="Text and images you copy here are copied on your other computers and phones, and theirs here. Turn it on in each device; a clipboard can hold a password." />
+                                           Text="Copied text and images are shared with your other devices. Turn it on in each one." />
                             </StackPanel>
                         </DockPanel>
-                        <DockPanel Margin="0,14,0,0" DataContext="{Binding Peers}">
+                        <DockPanel Margin="0,26,0,0" DataContext="{Binding Peers}">
                             <Button DockPanel.Dock="Right" Content="Send files…" Command="{Binding SendFilesCommand}" VerticalAlignment="Center"
                                     ToolTip="Drop files on one of your devices" />
-                            <StackPanel Margin="0,0,16,0">
+                            <Border DockPanel.Dock="Left" Style="{StaticResource IconTile}" Margin="0,0,12,0" VerticalAlignment="Center"><TextBlock Text="&#xE724;" Style="{StaticResource Glyph}" HorizontalAlignment="Center" /></Border>
+                            <StackPanel Margin="0,0,16,0" VerticalAlignment="Center">
                                 <TextBlock Text="Send files" FontWeight="SemiBold" FontSize="14" />
                                 <TextBlock Style="{StaticResource Hint}" Margin="0,3,0,0" TextWrapping="Wrap"
-                                           Text="Drop files on a computer or phone of your group; they are saved in Downloads\SwitchMonitor. Copy files here and paste them on another computer (up to 500 MB)." />
+                                           Text="Drop files on a device of your group. They are saved in Downloads\SwitchMonitor." />
                             </StackPanel>
                         </DockPanel>
-                        <DockPanel Margin="0,14,0,0" DataContext="{Binding DataContext.Phone, RelativeSource={RelativeSource AncestorType=Window}}">
+                        <DockPanel Margin="0,26,0,0" DataContext="{Binding DataContext.Phone, RelativeSource={RelativeSource AncestorType=Window}}">
                             <ToggleButton DockPanel.Dock="Right" Style="{StaticResource Switch}" IsChecked="{Binding ExplorerMenu, Mode=TwoWay}"
                                           VerticalAlignment="Center" AutomationProperties.Name="Right-click menu in Windows" />
-                            <StackPanel Margin="0,0,16,0">
+                            <Border DockPanel.Dock="Left" Style="{StaticResource IconTile}" Margin="0,0,12,0" VerticalAlignment="Center"><TextBlock Text="&#xE712;" Style="{StaticResource Glyph}" HorizontalAlignment="Center" /></Border>
+                            <StackPanel Margin="0,0,16,0" VerticalAlignment="Center">
                                 <TextBlock Text="Right-click menu in Windows" FontWeight="SemiBold" FontSize="14" />
                                 <TextBlock Style="{StaticResource Hint}" Margin="0,3,0,0" TextWrapping="Wrap"
-                                           Text="Adds &quot;Send with SwitchMonitor&quot; to the right-click menu of a file, listing your connected devices (under Show more options in Windows 11)." />
+                                           Text="Adds &quot;Send with SwitchMonitor&quot; to a file's right-click menu." />
                             </StackPanel>
                         </DockPanel>
 
@@ -2362,28 +2419,31 @@
                         <StackPanel DataContext="{Binding Phone}">
                             <DockPanel>
                                 <Button DockPanel.Dock="Right" Content="Pair a phone" Command="{Binding PairCommand}" VerticalAlignment="Center" />
-                                <StackPanel Margin="0,0,16,0">
+                                <Border DockPanel.Dock="Left" Style="{StaticResource IconTile}" Margin="0,0,12,0" VerticalAlignment="Center"><TextBlock Text="&#xE8EA;" Style="{StaticResource Glyph}" HorizontalAlignment="Center" /></Border>
+                                <StackPanel Margin="0,0,16,0" VerticalAlignment="Center">
                                     <TextBlock Text="Pair a phone" FontWeight="SemiBold" FontSize="14" />
                                     <TextBlock Style="{StaticResource Hint}" Margin="0,3,0,0" TextWrapping="Wrap"
-                                               Text="Only paired devices on this Wi-Fi can control the displays. Pairing shows a code to type in the phone." />
+                                               Text="Shows a code to type in the phone." />
                                 </StackPanel>
                             </DockPanel>
-                            <DockPanel Margin="0,14,0,0">
+                            <DockPanel Margin="0,26,0,0">
                                 <ToggleButton DockPanel.Dock="Right" Style="{StaticResource Switch}" IsChecked="{Binding PhoneInput, Mode=TwoWay}"
                                               VerticalAlignment="Center" AutomationProperties.Name="Phone as mouse and keyboard" />
-                                <StackPanel Margin="0,0,16,0">
+                                <Border DockPanel.Dock="Left" Style="{StaticResource IconTile}" Margin="0,0,12,0" VerticalAlignment="Center"><TextBlock Text="&#xE765;" Style="{StaticResource Glyph}" HorizontalAlignment="Center" /></Border>
+                                <StackPanel Margin="0,0,16,0" VerticalAlignment="Center">
                                     <TextBlock Text="Phone as mouse and keyboard" FontWeight="SemiBold" FontSize="14" />
                                     <TextBlock Style="{StaticResource Hint}" Margin="0,3,0,0" TextWrapping="Wrap"
-                                               Text="A paired phone can move the pointer, click and type on this computer from its Mouse and keyboard screen." />
+                                               Text="A paired phone moves the pointer and types here." />
                                 </StackPanel>
                             </DockPanel>
-                            <DockPanel Margin="0,14,0,0">
+                            <DockPanel Margin="0,26,0,0">
                                 <ToggleButton DockPanel.Dock="Right" Style="{StaticResource Switch}" IsChecked="{Binding PhoneRemote, Mode=TwoWay}"
                                               VerticalAlignment="Center" AutomationProperties.Name="Phone as remote" />
-                                <StackPanel Margin="0,0,16,0">
+                                <Border DockPanel.Dock="Left" Style="{StaticResource IconTile}" Margin="0,0,12,0" VerticalAlignment="Center"><TextBlock Text="&#xE7E8;" Style="{StaticResource Glyph}" HorizontalAlignment="Center" /></Border>
+                                <StackPanel Margin="0,0,16,0" VerticalAlignment="Center">
                                     <TextBlock Text="Phone as remote" FontWeight="SemiBold" FontSize="14" />
                                     <TextBlock Style="{StaticResource Hint}" Margin="0,3,0,0" TextWrapping="Wrap"
-                                               Text="A paired phone can open and close programs and turn this computer off from its Remote tab. Turning it off waits 10 seconds so you can cancel." />
+                                               Text="A paired phone opens programs and turns this computer off." />
                                 </StackPanel>
                             </DockPanel>
                             <Border Margin="0,12,0,0" Padding="14,10" CornerRadius="12" Background="{StaticResource RaisedBrush}"
@@ -2433,12 +2493,17 @@
                             <DockPanel>
                                 <ToggleButton DockPanel.Dock="Right" Style="{StaticResource Switch}" IsChecked="{Binding Enabled, Mode=TwoWay}"
                                               VerticalAlignment="Center" AutomationProperties.Name="Share mouse and keyboard" />
-                                <StackPanel Margin="0,0,16,0">
+                                <Border DockPanel.Dock="Left" Style="{StaticResource IconTile}" Margin="0,0,12,0" VerticalAlignment="Center"><TextBlock Text="&#xE962;" Style="{StaticResource Glyph}" HorizontalAlignment="Center" /></Border>
+                                <StackPanel Margin="0,0,16,0" VerticalAlignment="Center">
                                     <TextBlock Text="Share mouse and keyboard" FontWeight="SemiBold" FontSize="14" />
                                     <TextBlock Style="{StaticResource Hint}" Margin="0,3,0,0" TextWrapping="Wrap" Text="{Binding Hint}" />
                                 </StackPanel>
                             </DockPanel>
-                            <DockPanel Margin="0,10,0,0" Visibility="{Binding Enabled, Converter={StaticResource BoolToVisibility}}">
+                            <DockPanel Margin="0,18,0,0" Visibility="{Binding Enabled, Converter={StaticResource BoolToVisibility}}">
+                                <Button DockPanel.Dock="Right" Content="Arrange screens…" Command="{Binding ArrangeCommand}" VerticalAlignment="Center" Margin="16,0,0,0" />
+                                <TextBlock Style="{StaticResource Hint}" TextWrapping="Wrap" VerticalAlignment="Center" Text="Say where the other computer's screens are." />
+                            </DockPanel>
+                            <DockPanel Margin="0,18,0,0" Visibility="{Binding Enabled, Converter={StaticResource BoolToVisibility}}">
                                 <Button DockPanel.Dock="Right" Content="Restart as administrator" Command="{Binding ElevateCommand}" VerticalAlignment="Center" Margin="16,0,0,0"
                                         Visibility="{Binding CanElevate, Converter={StaticResource BoolToVisibility}}" />
                                 <TextBlock Style="{StaticResource Hint}" TextWrapping="Wrap" VerticalAlignment="Center" Text="{Binding ElevatedText}" />
@@ -2459,9 +2524,12 @@
                             </DockPanel>
                         </Border>
                         <DockPanel>
-                            <ToggleButton x:Name="PairOneToggle" DockPanel.Dock="Right" Content="Show" VerticalAlignment="Center" MinWidth="80" />
+                            <ToggleButton x:Name="PairOneToggle" Visibility="Collapsed" />
+                            <Button DockPanel.Dock="Right" VerticalAlignment="Center" MinWidth="80" Click="PairOneClick">
+                                <TextBlock><TextBlock.Style><Style TargetType="TextBlock"><Setter Property="Text" Value="Show" /><Style.Triggers><DataTrigger Binding="{Binding IsChecked, ElementName=PairOneToggle}" Value="True"><Setter Property="Text" Value="Hide" /></DataTrigger></Style.Triggers></Style></TextBlock.Style></TextBlock>
+                            </Button>
                             <TextBlock Style="{StaticResource Hint}" TextWrapping="Wrap" Margin="0,0,16,0" VerticalAlignment="Center"
-                                       Text="Only for two computers. If you use My devices you do not need this: every computer in the group already sees the others." />
+                                       Text="Only for two computers. My devices already covers it." />
                         </DockPanel>
                         <ItemsControl ItemsSource="{Binding Peers.Computers}" Margin="0,4,0,0">
                             <ItemsControl.ItemTemplate>
@@ -2478,15 +2546,16 @@
                                 </DataTemplate>
                             </ItemsControl.ItemTemplate>
                         </ItemsControl>
-                        <StackPanel Margin="0,14,0,0" Visibility="{Binding IsChecked, ElementName=PairOneToggle, Converter={StaticResource BoolToVisibility}}">
+                        <StackPanel Margin="0,26,0,0" Visibility="{Binding IsChecked, ElementName=PairOneToggle, Converter={StaticResource BoolToVisibility}}">
                         <!-- Computers nearby: pick one, type its code -->
                         <StackPanel DataContext="{Binding Peers}">
                             <DockPanel>
                                 <Button DockPanel.Dock="Right" Content="{Binding SearchLabel}" Command="{Binding SearchCommand}" VerticalAlignment="Center" />
-                                <StackPanel Margin="0,0,16,0">
+                                <Border DockPanel.Dock="Left" Style="{StaticResource IconTile}" Margin="0,0,12,0" VerticalAlignment="Center"><TextBlock Text="&#xE721;" Style="{StaticResource Glyph}" HorizontalAlignment="Center" /></Border>
+                                <StackPanel Margin="0,0,16,0" VerticalAlignment="Center">
                                     <TextBlock Text="Computers nearby" FontWeight="SemiBold" FontSize="14" />
                                     <TextBlock Style="{StaticResource Hint}" Margin="0,3,0,0" TextWrapping="Wrap"
-                                               Text="Other computers with SwitchMonitor on this network. Click one: it shows a code on its screen, and you type it here. Both can then control each other." />
+                                               Text="Pick one: it shows a code to type here." />
                                 </StackPanel>
                             </DockPanel>
                             <ListBox ItemsSource="{Binding Discovered}" SelectedItem="{Binding Selected, Mode=TwoWay}" Margin="0,8,0,0" Width="190" HorizontalAlignment="Left"
@@ -2569,6 +2638,35 @@
                                     <TextBlock Text="Learned settings" FontWeight="SemiBold" FontSize="14" />
                                     <TextBlock Style="{StaticResource Hint}" Margin="0,3,0,0" TextWrapping="Wrap"
                                                Text="Share what Learn settings found on a monitor model, or add what someone else found." />
+                                </StackPanel>
+                            </DockPanel>
+                        </StackPanel>
+                    </Border>
+                    <!-- Factory reset of the display selected on Displays (it used to be a bar at the bottom of that view) -->
+                    <Border Style="{StaticResource Card}" DataContext="{Binding DataContext, RelativeSource={RelativeSource AncestorType=Window}}">
+                        <StackPanel>
+                        <Border Style="{StaticResource CardHeader}">
+                            <DockPanel>
+                                <Border Style="{StaticResource IconTile}">
+                                    <TextBlock Text="&#xE7A7;" Style="{StaticResource Glyph}" HorizontalAlignment="Center" />
+                                </Border>
+                                <TextBlock Text="Factory reset" Style="{StaticResource CardTitle}" />
+                            </DockPanel>
+                        </Border>
+                            <DockPanel>
+                                <Button DockPanel.Dock="Right" Style="{StaticResource DangerButton}" BorderBrush="{StaticResource ErrorBrush}" BorderThickness="1"
+                                        Command="{Binding ResetAllCommand}" VerticalAlignment="Center"
+                                        IsEnabled="{Binding Selected.CanResetAll, FallbackValue=False}"
+                                        ToolTip="Factory brightness, contrast and colors for the current picture mode. Click twice.">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="&#xE7A7;" Style="{StaticResource Glyph}" FontSize="12" Foreground="{StaticResource ErrorBrush}" Margin="0,1,8,0" />
+                                        <TextBlock Text="{Binding ResetLabel}" />
+                                    </StackPanel>
+                                </Button>
+                                <StackPanel Margin="0,0,16,0">
+                                    <TextBlock Text="{Binding Selected.Name, FallbackValue=No display selected}" FontWeight="SemiBold" FontSize="14" />
+                                    <TextBlock Style="{StaticResource Hint}" Margin="0,3,0,0" TextWrapping="Wrap"
+                                               Text="Puts the selected display's brightness, contrast and colors for the current picture mode back to the monitor's defaults. Pick the display on the Displays tab first." />
                                 </StackPanel>
                             </DockPanel>
                         </StackPanel>
@@ -2711,7 +2809,7 @@
             </ScrollViewer>
 
             <!-- Save bar: the same place and order as in Profiles and Shortcuts -->
-            <Border Grid.Row="1" Style="{StaticResource Card}" Margin="22,0,22,16" Padding="18,12">
+            <Border Grid.Row="2" Style="{StaticResource Card}" Margin="22,0,22,16" Padding="18,12">
                 <DockPanel>
                     <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
                         <Button Command="{Binding RestoreDefaultsCommand}" Style="{StaticResource QuietButton}" Margin="0,0,6,0"

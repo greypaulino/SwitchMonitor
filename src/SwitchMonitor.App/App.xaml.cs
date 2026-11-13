@@ -85,6 +85,14 @@ public partial class App : Application
             return;
         }
 
+        // Glass test (--glass-test): nine see-through windows with different methods, to photograph on a Windows 11.
+        if (e.Args.Any(x => x.Equals("--glass-test", StringComparison.OrdinalIgnoreCase)))
+        {
+            ShutdownMode = ShutdownMode.OnExplicitShutdown;
+            Services.GlassTest.Run(() => Shutdown());
+            return;
+        }
+
         // Corner self-test (--test-corner [folder]): the main window's rounded corner against the desktop behind it.
         int cornerAt = Array.FindIndex(e.Args, x => x.Equals("--test-corner", StringComparison.OrdinalIgnoreCase));
         if (cornerAt >= 0)
@@ -171,6 +179,7 @@ public partial class App : Application
         listener.Start();
 
         log = new FileLog(AppPaths.LogDirectory);
+        Services.Trace.Log = log;
         log.Write(LogLevel.Info, "SwitchMonitor v2 starting.");
         DispatcherUnhandledException += (_, args) =>
         {
@@ -223,7 +232,7 @@ public partial class App : Application
         // One mouse and keyboard for the paired computers (off until turned on in Settings > Devices).
         if (demoScenario is null && log is not null) model.Share = new Services.InputShareService(model, log);
         // What is copied is shared with the other computers of the group and the phones (off until turned on in Settings > Devices).
-        if (demoScenario is null && log is not null) { model.Transfers = new Services.FileTransfer(model, log); model.Clipboard = new Services.ClipboardSync(model, log); }
+        if (demoScenario is null && log is not null) { model.Transfers = new Services.FileTransfer(model, log); model.Clipboard = new Services.ClipboardSync(model, log); model.ProfileSync = new Services.ProfileSync(model, log); }
 
         if (demoScenario is not null)
         {

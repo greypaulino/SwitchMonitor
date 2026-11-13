@@ -83,6 +83,19 @@ public static class SecureChannel
 
     public static string Binding(WebSocket socket) => Of(socket)?.Binding ?? "";
 
+    /// <summary>
+    /// A 4-digit number both ends of this connection can compute (from <see cref="SecureSession.Binding"/>). A device sitting in the
+    /// middle has a different connection with each side, so the two numbers differ: the person compares them while pairing.
+    /// </summary>
+    public static string Verification(string binding)
+    {
+        if (binding.Length == 0) return "";
+        byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes("SwitchMonitor verification:" + binding));
+        return (System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(hash) % 10000).ToString("D4");
+    }
+
+    public static string Verification(WebSocket socket) => Verification(Binding(socket));
+
     private static void Attach(WebSocket socket, SecureSession session) => sessions.AddOrUpdate(socket, session);
 
     // ---- The key exchange ----

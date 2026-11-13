@@ -201,6 +201,59 @@ internal static class RemoteTests
     }
 
     [Test]
+    public static void PairingAsksThePersonAndBothSidesShowTheSameNumber() => Approval().GetAwaiter().GetResult();
+
+    private static async Task Approval()
+    {
+        string path = TempFile();
+        var store = new PhoneStore(path);
+        EnrollRequest? seen = null;
+        bool answer = false;
+        using var server = new RemoteServer(store, new FakeHost(), port: 0) { Enrolling = request => { seen = request; return Task.FromResult(answer); } };
+        server.Start(withDiscovery: false);
+        var uri = new Uri($"ws://127.0.0.1:{server.Port}/ws");
+        try
+        {
+            // The right code, but the person says no: nothing is paired.
+            using (var socket = new ClientWebSocket())
+            {
+                await socket.ConnectAsync(uri, CancellationToken.None);
+                await Open(socket);
+                string mine = SecureChannel.Verification(socket);
+                Assert.Equal(4, mine.Length, "a 4-digit number");
+                await Send(socket, new { type = "pair", code = store.NewCode(DateTimeOffset.Now), name = "Phone\r\nFAKE" });
+                Assert.True(((string?)(await Receive(socket))["error"] ?? "").Contains("said no"), "refused by the person");
+                Assert.True(seen is { Pairing: true }, "it is a pairing question");
+                Assert.Equal(mine, seen!.Verification, "the number the person sees is the one the phone shows");
+                Assert.Equal("PhoneFAKE", seen.Name, "no control characters in a name");
+                Assert.Equal(0, store.Phones.Count, "nothing was paired");
+            }
+            // The person says yes: it pairs.
+            answer = true;
+            using (var socket = new ClientWebSocket())
+            {
+                await socket.ConnectAsync(uri, CancellationToken.None);
+                await Open(socket);
+                await Send(socket, new { type = "pair", code = store.NewCode(DateTimeOffset.Now), name = "Pixel" });
+                Assert.Equal("paired", (string?)(await Receive(socket))["type"], "allowed: paired");
+                Assert.Equal(1, store.Phones.Count);
+            }
+            // A wrong code is refused before the person is bothered.
+            seen = null;
+            using (var socket = new ClientWebSocket())
+            {
+                await socket.ConnectAsync(uri, CancellationToken.None);
+                await Open(socket);
+                string code = store.NewCode(DateTimeOffset.Now);
+                await Send(socket, new { type = "pair", code = code == "000000" ? "111111" : "000000", name = "Guess" });
+                Assert.Equal("error", (string?)(await Receive(socket))["type"]);
+                Assert.True(seen is null, "no question for a wrong code");
+            }
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Test]
     public static void ABrowserPageFromAnotherSiteCannotOpenTheSocket() => Origin().GetAwaiter().GetResult();
 
     private static async Task Origin()

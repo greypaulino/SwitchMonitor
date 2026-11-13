@@ -110,6 +110,9 @@ public partial class MainWindow : Window
         Frame.Opacity = 1;
     }
 
+    /// <summary>"Show" / "Hide" of Pair one computer by code (an ordinary button, like the others, that flips the hidden switch).</summary>
+    private void PairOneClick(object sender, RoutedEventArgs e) => PairOneToggle.IsChecked = PairOneToggle.IsChecked != true;
+
     private void MinimizeWindow(object sender, RoutedEventArgs e)
     {
         if (!Animate || minimizing) { WindowState = WindowState.Minimized; return; }

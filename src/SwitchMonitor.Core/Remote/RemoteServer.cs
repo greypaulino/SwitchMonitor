@@ -11,7 +11,9 @@ using SwitchMonitor.Core.Diagnostics;
 namespace SwitchMonitor.Core.Remote;
 
 /// <summary>A device that typed the right code and wants to join the ecosystem (see <see cref="RemoteServer.Enrolling"/>).</summary>
-public sealed record EnrollRequest(string DeviceId, string Name, string Kind, string Address);
+/// <param name="Verification">The 4-digit number of the connection, to compare with the one the other device shows.</param>
+/// <param name="Pairing">True when it is a pairing by code (a phone or a computer to control this one), not joining the group.</param>
+public sealed record EnrollRequest(string DeviceId, string Name, string Kind, string Address, string Verification = "", bool Pairing = false);
 
 /// <summary>What the phone server shows and does; the app implements it on top of the brightness panel.</summary>
 public interface IRemoteHost
@@ -40,6 +42,12 @@ public interface IRemoteHost
     /// <summary>One piece ("blob" message) of an image or a file that a computer or phone of the group sends to this computer.</summary>
     void BlobEvent(JsonElement message, string? deviceId) { }
 
+    /// <summary>A computer of the group sends its profiles ("profiles" message); only computers may (a phone never has this).</summary>
+    void ProfilesEvent(JsonElement message, string deviceId) { }
+
+    /// <summary>A computer of the group tells its screens or where it sits on the shared mouse's map ("share" message).</summary>
+    void ShareEvent(JsonElement message, string deviceId) { }
+
     /// <summary>Another computer reads or writes one of this computer's displays ("dev" request); the answer is sent back.</summary>
     Task<JsonObject> DeviceRequestAsync(JsonElement message) => Task.FromResult(new JsonObject { ["ok"] = false, ["error"] = "Not supported." });
 }
@@ -60,9 +68,10 @@ public sealed class RemoteServer : IDisposable
     public const string DiscoveryQuestion = "SWITCHMONITOR?";
     private const string WebSocketGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
     private const int MaxMessage = 1024 * 1024;   // a shared clipboard text can be long
+    private const int MaxSignInMessage = 128 * 1024;   // before signing in only a key, a code, a proof or a few certificates are sent
 
     /// <summary>Connections served at once (page loads, phones); more are closed at once (a flood on the network).</summary>
-    public const int MaxConnections = 24;
+    public const int MaxConnections = 64;
 
     /// <summary>A connection must pair or prove it is a paired phone within this time, and within a few tries.</summary>
     public static readonly TimeSpan SignInTime = TimeSpan.FromSeconds(10);
@@ -341,7 +350,7 @@ public sealed class RemoteServer : IDisposable
             while (socket.State == WebSocketState.Open && !cancel.IsCancellationRequested)
             {
                 if (client is null && errors >= MaxSignInErrors) break;
-                string? text = await ReceiveAsync(socket, client is null ? signIn.Token : cancel);
+                string? text = await SecureChannel.ReceiveAsync(socket, client is null ? MaxSignInMessage : MaxMessage, client is null ? signIn.Token : cancel);
                 if (text is null) break;
                 JsonElement message;
                 string type;
@@ -388,7 +397,9 @@ public sealed class RemoteServer : IDisposable
                     string who = message.TryGetProperty("name", out var rn) ? rn.GetString() ?? "" : "";
                     who = PhoneStore.CleanText(who);
                     if (who.Length == 0) who = remote.Address.ToString();
-                    string shown = store.NewCode(asked);
+                    // A code already on screen stays (a device that is not typing it must not be able to cancel the one the person is
+                    // reading): a request while it lasts only shows it again.
+                    string shown = store.CurrentCode(asked) ?? store.NewCode(asked);
                     log.Write(LogLevel.Info, $"Pairing requested by \"{who}\" ({remote.Address}); the code is on screen.");
                     PairRequested?.Invoke(who, shown, store.CodeExpires);
                     await SendAsync(socket, sending, Message("pairRequested", new JsonObject()));
@@ -406,12 +417,32 @@ public sealed class RemoteServer : IDisposable
                     }
                     string kind = message.TryGetProperty("kind", out var k) && k.GetString() == "computer" ? "computer" : "phone";
                     string? otherDevice = message.TryGetProperty("deviceId", out var di) ? di.GetString() : null;
-                    string? token = store.Pair(code, name, DateTimeOffset.Now, kind, kind == "computer" ? otherDevice : null);
-                    if (token is null)
+                    var pairingAt = DateTimeOffset.Now;
+                    if (!store.CheckCode(code, pairingAt))
                     {
                         errors++;
                         log.Write(LogLevel.Warning, $"Phone: wrong or expired pairing code from {remote.Address}.");
                         await SendAsync(socket, sending, Error("The code is wrong or expired. Show a new one in SwitchMonitor > Settings > Phone."));
+                        continue;
+                    }
+                    // The right code is not enough: the person at this computer says yes, seeing who it is and the number to compare.
+                    if (Enrolling is not null)
+                    {
+                        var asking = new EnrollRequest(otherDevice ?? "", PhoneStore.CleanText(name) is { Length: > 0 } shown ? shown : remote.Address.ToString(),
+                            kind, remote.Address.ToString(), SecureChannel.Verification(socket), Pairing: true);
+                        if (!await AskAsync(asking))
+                        {
+                            log.Write(LogLevel.Info, $"Pairing: \"{asking.Name}\" was not allowed.");
+                            store.CancelCode();
+                            await SendAsync(socket, sending, Error("The person at that computer said no (or did not answer)."));
+                            continue;
+                        }
+                    }
+                    string? token = store.Pair(code, name, DateTimeOffset.Now, kind, kind == "computer" ? otherDevice : null);
+                    if (token is null)
+                    {
+                        errors++;
+                        await SendAsync(socket, sending, Error("The code expired while waiting. Show a new one."));
                         continue;
                     }
                     client = Join(id, socket, sending, store.Find(token)!);
@@ -505,6 +536,16 @@ public sealed class RemoteServer : IDisposable
                     host.BlobEvent(message, client.Phone.IsComputer ? client.Phone.DeviceId : null);
                     continue;
                 }
+                if (type == "share")
+                {
+                    if (client.Phone is { IsComputer: true, DeviceId: { } mapSender }) host.ShareEvent(message, mapSender);
+                    continue;
+                }
+                if (type == "profiles")
+                {
+                    if (client.Phone is { IsComputer: true, DeviceId: { } sender }) host.ProfilesEvent(message, sender);
+                    continue;
+                }
                 if (type == "apps")
                 {
                     // The programs of this computer, for a phone's Remote tab (only a paired phone or computer is here).
@@ -558,17 +599,9 @@ public sealed class RemoteServer : IDisposable
             await SendAsync(socket, sending, Error("The code is wrong or expired. Look at the one this computer shows now."));
             return false;
         }
-        var request = new EnrollRequest(deviceId, PhoneStore.CleanText(name) is { Length: > 0 } shownName ? shownName : remote.Address.ToString(), kind, remote.Address.ToString());
-        bool allowed;
-        try
-        {
-            var asking = Enrolling(request);
-            allowed = await Task.WhenAny(asking, Task.Delay(TimeSpan.FromSeconds(60))) == asking && await asking;
-        }
-        catch (Exception error) when (error is InvalidOperationException or OperationCanceledException)
-        {
-            allowed = false;
-        }
+        var request = new EnrollRequest(deviceId, PhoneStore.CleanText(name) is { Length: > 0 } shownName ? shownName : remote.Address.ToString(), kind,
+            remote.Address.ToString(), SecureChannel.Verification(socket));
+        bool allowed = await AskAsync(request);
         if (!allowed)
         {
             log.Write(LogLevel.Info, $"Ecosystem: \"{request.Name}\" was not allowed in.");
@@ -585,6 +618,18 @@ public sealed class RemoteServer : IDisposable
             ["answer"] = Ecosystem.EnrollAnswer(code, nonce, deviceId, ecosystem.DeviceId, ecosystem.Id!, SecureChannel.Binding(socket))
         }));
         return true;
+    }
+
+    /// <summary>Asks the person here (up to a minute); no answer counts as no.</summary>
+    private async Task<bool> AskAsync(EnrollRequest request)
+    {
+        if (Enrolling is null) return false;
+        try
+        {
+            var asking = Enrolling(request);
+            return await Task.WhenAny(asking, Task.Delay(TimeSpan.FromSeconds(60))) == asking && await asking;
+        }
+        catch (Exception error) when (error is InvalidOperationException or OperationCanceledException) { return false; }
     }
 
     /// <summary>
@@ -734,9 +779,6 @@ public sealed class RemoteServer : IDisposable
         await stream.WriteAsync(content);
         await stream.FlushAsync();
     }
-
-    private static Task<string?> ReceiveAsync(WebSocket socket, CancellationToken cancel) =>
-        SecureChannel.ReceiveAsync(socket, MaxMessage, cancel);
 
     private static async Task SendAsync(WebSocket socket, SemaphoreSlim sending, string json)
     {

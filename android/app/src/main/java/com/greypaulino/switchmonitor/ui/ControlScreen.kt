@@ -33,6 +33,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -83,7 +84,7 @@ import kotlin.math.roundToInt
 fun ControlScreen(ui: RemoteUi, state: PcState?, live: Boolean = true) {
     val dim by androidx.compose.animation.core.animateFloatAsState(if (live) 1f else 0.55f, label = "dim")
     // The app is the whole group's, not one computer's: its name is "My devices", and the mouse has its own tab.
-    val title = if (ui.inGroup) "My devices" else state?.computer?.ifBlank { null } ?: ui.computer ?: ui.host ?: "Computer"
+    val title = if (ui.groupMode) "My devices" else state?.computer?.ifBlank { null } ?: ui.computer ?: ui.host ?: "Computer"
     Column(Modifier.fillMaxSize().background(Ground).safeDrawingPadding()) {
         Box(Modifier.weight(1f).fillMaxWidth()) {
             if (controlTab == 0) {
@@ -94,7 +95,7 @@ fun ControlScreen(ui: RemoteUi, state: PcState?, live: Boolean = true) {
                         .padding(horizontal = 16.dp, vertical = 12.dp),
                     verticalArrangement = Arrangement.spacedBy(14.dp),
                 ) {
-                    Header(title, if (ui.inGroup) null else ui.host, ui.phase, ui)
+                    Header(title, if (ui.groupMode) null else ui.host, ui.phase, ui)
                     if (state == null) SkeletonPanels()
                     else Column(Modifier.graphicsLayer { alpha = dim }, verticalArrangement = Arrangement.spacedBy(14.dp)) {
                         BrightnessPanel(state)
@@ -232,7 +233,11 @@ private fun Header(computer: String, host: String?, phase: com.greypaulino.switc
         Column(Modifier.weight(1f).padding(start = 12.dp)) {
             Text(computer, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, color = Text, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Row(verticalAlignment = Alignment.CenterVertically) {
-                val (dot, status) = when (phase) {
+                val (dot, status) = if (ui.groupMode) {
+                    // The group's own line: how many of its computers are answering, not the state of one connection.
+                    val n = ui.available.size
+                    if (n > 0) Green to (if (n == 1) "1 computer connected" else "$n computers connected") else Warn to "No computer connected"
+                } else when (phase) {
                     com.greypaulino.switchmonitor.data.Phase.Connected -> Green to "Connected over Wi-Fi"
                     com.greypaulino.switchmonitor.data.Phase.Offline -> Warn to "Can't reach it · trying again"
                     else -> Muted to "Connecting…"
@@ -283,6 +288,21 @@ private fun Header(computer: String, host: String?, phase: com.greypaulino.switc
                 DropdownMenuItem(
                     text = { Text("Add a widget…") }, onClick = { menu = false; pickWidget = true },
                     leadingIcon = { Icon(Glyphs.Widget, null, Modifier.size(20.dp), tint = Text) },
+                )
+                val update by com.greypaulino.switchmonitor.data.Updates.state.collectAsState()
+                DropdownMenuItem(
+                    text = { Text(if (update.step == com.greypaulino.switchmonitor.data.Updates.Step.Available) "Update available: ${update.latest}" else "Check for updates…") },
+                    onClick = { menu = false; com.greypaulino.switchmonitor.data.Updates.openDialog() },
+                    leadingIcon = {
+                        Icon(
+                            Glyphs.Next, null, Modifier.size(20.dp),
+                            tint = if (update.step == com.greypaulino.switchmonitor.data.Updates.Step.Available) Green else Text,
+                        )
+                    },
+                )
+                if (ui.inGroup && ui.manual) DropdownMenuItem(
+                    text = { Text("Back to My devices") }, onClick = { menu = false; Remote.backToGroup() },
+                    leadingIcon = { Icon(Glyphs.Link, null, Modifier.size(20.dp), tint = Text) },
                 )
                 DropdownMenuItem(
                     text = { Text("Use another computer") }, onClick = { menu = false; Remote.forget() },
@@ -481,18 +501,14 @@ private fun VolumeBone() {
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 private fun VolumePanel(volume: com.greypaulino.switchmonitor.data.Volume, forDisplay: String? = null) {
-    var open by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
     val level = remember { mutableFloatStateOf(volume.percent.toFloat()) }
     val scope = rememberCoroutineScope()
     var dragging by remember { mutableStateOf(false) }
     LaunchedEffect(volume.percent, dragging) { if (!dragging) level.floatValue = volume.percent.toFloat() }
-    val turn by androidx.compose.animation.core.animateFloatAsState(if (open) 0f else -90f, label = "chevron")
     Panel(padding = androidx.compose.foundation.layout.PaddingValues(start = 10.dp, end = 10.dp, top = 6.dp, bottom = 6.dp)) {
         Row(
             Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(14.dp))
-                .clickable(onClickLabel = if (open) "Hide volume" else "Show volume") { open = !open }
                 .padding(start = 6.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -502,9 +518,8 @@ private fun VolumePanel(volume: com.greypaulino.switchmonitor.data.Volume, forDi
                 if (forDisplay != null) Text(forDisplay, fontSize = 12.sp, color = Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             Text(if (volume.muted) "Muted" else "${level.floatValue.roundToInt()}%", Modifier.padding(end = 8.dp), fontSize = 15.sp, color = Soft)
-            Icon(Glyphs.ChevronDown, null, Modifier.size(18.dp).graphicsLayer { rotationZ = turn }, tint = Muted)
         }
-        androidx.compose.animation.AnimatedVisibility(open) {
+        androidx.compose.animation.AnimatedVisibility(true) {
             Row(Modifier.fillMaxWidth().padding(start = 2.dp, end = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                 Box(
                     Modifier

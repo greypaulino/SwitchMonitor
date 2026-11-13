@@ -74,6 +74,17 @@ internal class SecureSocket : WebSocket {
     val keyed get() = session != null
     val binding get() = session?.binding ?: ""
 
+    /** A 4-digit number both ends of this connection can compute: the computer shows it when it asks to allow this phone. A device in the middle makes them differ. */
+    val verification: String
+        get() {
+            val b = binding
+            if (b.isEmpty()) return ""
+            val hash = MessageDigest.getInstance("SHA-256").digest(("SwitchMonitor verification:$b").toByteArray(Charsets.UTF_8))
+            var n = 0L
+            for (i in 0 until 4) n = (n shl 8) or (hash[i].toLong() and 0xFF)
+            return "%04d".format(n % 10000)
+        }
+
     /**
      * The computer's challenge was read: sends this phone's key (plain, the only plain message) and derives the session.
      * An error text when the challenge has no key (an old version, or somebody removing it): never falls back to plain.

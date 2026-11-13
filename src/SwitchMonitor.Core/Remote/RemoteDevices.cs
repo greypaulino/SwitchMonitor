@@ -10,7 +10,7 @@ namespace SwitchMonitor.Core.Remote;
 /// <summary>A display of the computer that publishes it: what the others need to build the same display with a network transport.</summary>
 public sealed record RemoteDeviceInfo(
     string Key, string Name, string DeviceId, string? PnpId, bool IsBuiltIn, string TransportId, bool SnapsToLevels,
-    IReadOnlyList<uint>? Levels, int? Home = null)
+    IReadOnlyList<uint>? Levels, int? Home = null, bool Detects = false)
 {
     public JsonObject ToJson()
     {
@@ -20,6 +20,7 @@ public sealed record RemoteDeviceInfo(
             ["transport"] = TransportId, ["snaps"] = SnapsToLevels
         };
         if (Home is int home) json["home"] = home;   // the input the owner is plugged into (displays that answer on every input)
+        if (Detects) json["detects"] = true;   // this computer can tell whether the display shows it (so its offer of the display is reliable)
         if (Levels is { Count: > 0 }) json["levels"] = new JsonArray(Levels.Select(l => (JsonNode)JsonValue.Create((int)l)!).ToArray());
         return json;
     }
@@ -30,7 +31,7 @@ public sealed record RemoteDeviceInfo(
         return new RemoteDeviceInfo(key, (string?)json["name"] ?? key, deviceId, (string?)json["pnp"], json["builtIn"]?.GetValue<bool>() == true,
             (string?)json["transport"] ?? "peer", json["snaps"]?.GetValue<bool>() == true,
             json["levels"] is JsonArray list ? list.Select(n => (uint)(n?.GetValue<int>() ?? 0)).ToArray() : null,
-            json["home"] is JsonValue h ? h.GetValue<int>() : null);
+            json["home"] is JsonValue h ? h.GetValue<int>() : null, json["detects"]?.GetValue<bool>() == true);
     }
 }
 
@@ -44,7 +45,7 @@ public static class DeviceHost
     /// <summary>The inventory published in the state: this computer's own displays.</summary>
     public static JsonArray Inventory(IEnumerable<MonitorDevice> devices, Func<MonitorDevice, string> displayName, Func<MonitorDevice, int?>? home = null) =>
         new(devices.Where(d => d.IsControllable).Select(d => (JsonNode)new RemoteDeviceInfo(d.Key, displayName(d), d.Identity.DeviceId,
-            d.Identity.PnpId, d.Identity.IsBuiltIn, d.TransportId, d.SnapsToLevels, d.BrightnessLevels, home?.Invoke(d)).ToJson()).ToArray());
+            d.Identity.PnpId, d.Identity.IsBuiltIn, d.TransportId, d.SnapsToLevels, d.BrightnessLevels, home?.Invoke(d), d.AnswersOnOtherInputs && home?.Invoke(d) is not null).ToJson()).ToArray());
 
     /// <summary>Runs one request ("caps", "read" or "write" on one device) and returns the answer (always with ok true or false).</summary>
     public static JsonObject Handle(Func<string, MonitorDevice?> find, JsonElement request)

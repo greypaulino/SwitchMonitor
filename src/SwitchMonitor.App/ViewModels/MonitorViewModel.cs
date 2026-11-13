@@ -41,13 +41,13 @@ public sealed class MonitorViewModel : ObservableObject
     /// <summary>Brand and model ("LG 29WK600", "Laptop DELL N5050").</summary>
     public string Name => DisplayNames.For(Device);
     public bool IsActive => Device.IsActive;
-    public bool IsControllable => Device.IsControllable && !unavailable;
+    public bool IsControllable => Device.IsControllable && !unavailable && !heldElsewhere;
 
     private bool unavailable;
     private bool stopped;
 
     /// <summary>What the page says in place of the controls.</summary>
-    public string NothingToAdjustHint => unavailable
+    public string NothingToAdjustHint => IsUnavailable
         ? "This display is not answering: it is probably showing another computer. It comes back here by itself when that computer lets go of it."
         : "Nothing to adjust here right now. Turn the display on or reconnect it, then use Refresh displays.";
 
@@ -55,7 +55,25 @@ public sealed class MonitorViewModel : ObservableObject
     /// The display is on and connected here but does not answer: the monitor is showing another computer's input, or that
     /// computer holds its DDC/CI. Not an error: it is checked again every few seconds and comes back by itself.
     /// </summary>
-    public bool IsUnavailable => unavailable;
+    public bool IsUnavailable => unavailable || heldElsewhere;
+
+    /// <summary>The display answers by itself (it is not flagged unavailable on its own account): used to match it with the same display on another computer.</summary>
+    public bool AnswersItself => !unavailable;
+
+    private bool heldElsewhere;
+
+    /// <summary>
+    /// Another computer proved it has this display (it detects what the display shows and publishes it) while this one cannot tell: it is
+    /// shown as in use by another computer and its controls are locked, like a laptop panel Windows is not using.
+    /// </summary>
+    public void SetHeldElsewhere(bool held)
+    {
+        if (heldElsewhere == held) return;
+        heldElsewhere = held;
+        Services.Trace.Write($"{Name}: held by another computer = {held}");
+        foreach (string name in new[] { nameof(IsUnavailable), nameof(NothingToAdjustHint), nameof(IsControllable), nameof(Subtitle), nameof(DisplayGlyph), nameof(Details), nameof(ShowsSkeleton), nameof(HasInputs), nameof(HasAdvanced), nameof(HasColorTuning), nameof(CanResetAll) })
+            Raise(name);
+    }
 
     private string? panel;
 
@@ -109,7 +127,7 @@ public sealed class MonitorViewModel : ObservableObject
         : "Prefer this display as the main display: whenever it is connected, it becomes the main display.";
 
     public string Subtitle => !Device.IsActive ? "Off — Windows is not using this display"
-        : unavailable ? (IsRemote ? $"Unavailable on {ComputerName}" : "Unavailable — in use by another computer")
+        : IsUnavailable ? (IsRemote ? $"Unavailable on {ComputerName}" : "Unavailable — in use by another computer")
         : !Device.IsControllable ? "No control path on this computer"
         : string.Join(" · ", new[]
           {
@@ -122,18 +140,18 @@ public sealed class MonitorViewModel : ObservableObject
 
     /// <summary>Tooltip of the display: full name and how the app talks to it (ddc-ci, intel-cui, amd-adl, wmi).</summary>
     /// <summary>Laptop screen, external monitor, or one Windows is not using.</summary>
-    public string DisplayGlyph => Device.Identity.IsBuiltIn ? Icons.BuiltIn : Device.IsActive && !unavailable ? Icons.External : Icons.ExternalOff;
+    public string DisplayGlyph => Device.Identity.IsBuiltIn ? Icons.BuiltIn : Device.IsActive && !IsUnavailable ? Icons.External : Icons.ExternalOff;
 
     public string Details => Device.IsControllable ? $"{Name}\nControlled through {Device.TransportId}" : Name;
 
     public ObservableCollection<InputViewModel> Inputs { get; } = [];
-    public bool HasInputs => Inputs.Count > 0;
+    public bool HasInputs => Inputs.Count > 0 && !IsUnavailable;
     public ObservableCollection<ControlViewModel> Controls { get; } = [];
 
     /// <summary>Red/green/blue and black levels: shown on the Advanced tab only (see <see cref="FeatureCatalog.IsAdvanced"/>).</summary>
     public ObservableCollection<ControlViewModel> AdvancedControls { get; } = [];
 
-    public bool HasAdvanced => AdvancedControls.Count > 0;
+    public bool HasAdvanced => AdvancedControls.Count > 0 && !IsUnavailable;
 
     private SoftwareColorViewModel? softwareColor;
 
@@ -142,7 +160,7 @@ public sealed class MonitorViewModel : ObservableObject
     public bool HasSoftwareColor => SoftwareColor is not null;
 
     /// <summary>The "Color fine-tuning" section on the Displays tab has something to show.</summary>
-    public bool HasColorTuning => HasAdvanced || HasSoftwareColor;
+    public bool HasColorTuning => (HasAdvanced || HasSoftwareColor) && !IsUnavailable;
     public string NoAdvancedText => HasSoftwareColor
         ? "This display has no color controls of its own; the software color below works on it."
         : "This display has no color controls the app can change.";
@@ -289,9 +307,10 @@ public sealed class MonitorViewModel : ObservableObject
     private void SetUnavailable(bool value)
     {
         if (unavailable == value) return;
+        Services.Trace.Write($"{Name}{(IsRemote ? " (remote)" : "")}: unavailable = {value}; reached from {new System.Diagnostics.StackFrame(1).GetMethod()?.Name}");
         unavailable = value;
         LoadError = null;
-        foreach (string name in new[] { nameof(IsUnavailable), nameof(NothingToAdjustHint), nameof(IsControllable), nameof(Subtitle), nameof(DisplayGlyph), nameof(Details), nameof(ShowsSkeleton) })
+        foreach (string name in new[] { nameof(IsUnavailable), nameof(NothingToAdjustHint), nameof(IsControllable), nameof(Subtitle), nameof(DisplayGlyph), nameof(Details), nameof(ShowsSkeleton), nameof(HasInputs), nameof(HasAdvanced), nameof(HasColorTuning), nameof(CanResetAll) })
             Raise(name);
     }
 
@@ -325,6 +344,9 @@ public sealed class MonitorViewModel : ObservableObject
     /// </summary>
     private bool ShowsAnotherComputerNow(int shown)
     {
+        // A display of another computer is judged by that computer (it does not publish a display it is not showing): this computer's
+        // connectors say nothing about it, and answering "yes" here made the display vanish from the panel the moment it was picked.
+        if (IsRemote) return false;
         if (Core.Diagnostics.BuiltInProbe.InputFitsConnector(Core.Diagnostics.BuiltInProbe.ConnectorOf(Device.Identity.GdiName), shown) is bool fits)
             return !fits;
         return this.inputs.HomeInput(this) is int own && shown != own;
@@ -599,7 +621,7 @@ public sealed class MonitorViewModel : ObservableObject
         await ReloadValuesAsync();
     }
 
-    public bool CanResetAll => Device.IsControllable &&
+    public bool CanResetAll => Device.IsControllable && !IsUnavailable &&
         (Device.CanRestore(DefaultsGroup.LuminanceContrast) || Device.CanRestore(DefaultsGroup.Color));
 
     private CancellationTokenSource? refreshSoon;

@@ -93,6 +93,22 @@ public sealed class PhoneStore
     public void CancelCode() { lock (gate) code = null; }
 
     /// <summary>
+    /// Whether this is the code being shown (nothing is used up: <see cref="Pair"/> does that). A wrong one counts as a failure,
+    /// like in <see cref="Pair"/>; it is how a device is asked about before the person is.
+    /// </summary>
+    public bool CheckCode(string offeredCode, DateTimeOffset now)
+    {
+        lock (gate)
+        {
+            if (now < blockedUntil || code is null || now >= codeUntil) return false;
+            if (CryptographicOperations.FixedTimeEquals(Encoding.ASCII.GetBytes(offeredCode.Trim()), Encoding.ASCII.GetBytes(code))) return true;
+            if (++codeTries >= MaxCodeTries) code = null;
+            RecordFailure(now);
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Pairs a phone with the code. Returns its new token (to send to the phone once), or null when the code is wrong,
     /// expired or used up; after <see cref="MaxCodeTries"/> wrong tries the code stops working.
     /// </summary>

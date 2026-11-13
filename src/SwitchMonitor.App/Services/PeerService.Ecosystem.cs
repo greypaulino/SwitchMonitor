@@ -72,9 +72,15 @@ public sealed partial class PeerService
     {
         Raise(nameof(GroupCode));
         Raise(nameof(GroupCodeHint));
-        // Every half minute, members that do not answer are looked for again (their address may have changed).
-        if (++ecoTicks % 30 == 0 && InGroup && memberClients.Values.Any(c => !c.Connected)) _ = SearchAsync();
+        // Every 15 seconds, members that are not connected are looked for again: they may have opened after this program did (then there
+        // is no client for them yet, which is why "has a client that does not answer" is not the test) or their address may have changed.
+        if (++ecoTicks % 15 == 0 && InGroup && MembersMissing()) _ = SearchAsync();
     }
+
+    /// <summary>A member computer of the group (not paired by code, which has its own client) that this one is not connected to.</summary>
+    private bool MembersMissing() =>
+        Eco is { InEcosystem: true } eco && eco.Members.Any(m => m.IsComputer && m.DeviceId != eco.DeviceId
+            && store.FindByDevice(m.DeviceId) is null && !(memberClients.TryGetValue(m.DeviceId, out var client) && client.Connected));
 
     private void OnEcosystemChanged()
     {
@@ -115,6 +121,16 @@ public sealed partial class PeerService
         Refresh();
     }
 
+    private readonly Dictionary<string, bool> portableSeen = [];
+
+    /// <summary>Whether a computer of the group is a laptop: what its last state said, remembered for as long as this runs; null when never seen.</summary>
+    private bool? PortableOf(string deviceId, PeerClient? client)
+    {
+        if (client is { Connected: true, State: { } state } && state["portable"] is System.Text.Json.Nodes.JsonValue value && value.TryGetValue<bool>(out bool known))
+            portableSeen[deviceId] = known;
+        return portableSeen.TryGetValue(deviceId, out bool last) ? last : null;
+    }
+
     private void FillMembers()
     {
         Members.Clear();
@@ -128,7 +144,10 @@ public sealed partial class PeerService
                     : store.FindByDevice(cert.DeviceId) is not null ? Loc.T("Paired by code")
                     : Loc.T("Not reachable");
                 var removing = cert;
-                Members.Add(new MemberRow(cert.DeviceId, cert.Name, detail, cert.IsComputer ? "" : "", !self,
+                // A laptop (it has a battery) or a desktop PC; for another computer, what it last told (kept while this runs).
+                bool? portable = self ? PhoneBridge.IsPortable : PortableOf(cert.DeviceId, memberClients.TryGetValue(cert.DeviceId, out var seen) ? seen : null);
+                string glyph = !cert.IsComputer ? "" : portable == false ? "" : "";
+                Members.Add(new MemberRow(cert.DeviceId, cert.Name, detail, glyph, !self,
                     new RelayCommand(_ => RemoveMember(removing))));
             }
         Raise(nameof(HasMembers));
@@ -165,7 +184,9 @@ public sealed partial class PeerService
             if (sure != System.Windows.MessageBoxResult.Yes) return;
         }
         if (nearby.Count == 0) await SearchAsync();
-        var window = new JoinGroupWindow(nearby.Where(n => n.DeviceId != eco.DeviceId).ToList(), async (target, code) => await PeerClient.EnrollAsync(target.Host, target.Port, eco, code));
+        JoinGroupWindow? window = null;
+        window = new JoinGroupWindow(nearby.Where(n => n.DeviceId != eco.DeviceId).ToList(), async (target, code) =>
+            await PeerClient.EnrollAsync(target.Host, target.Port, eco, code, verification: number => window?.Dispatcher.BeginInvoke(() => window?.ShowVerification(number))));
         if (System.Windows.Application.Current.Windows.OfType<MainWindow>().FirstOrDefault(w => w.IsVisible) is { } owner) window.Owner = owner;
         window.ShowDialog();
         if (window.Joined) main.Report("This computer joined your group of devices.", true);

@@ -6,10 +6,12 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -50,6 +52,7 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.greypaulino.switchmonitor.data.Remote
@@ -98,7 +101,7 @@ fun TouchpadScreen(ui: RemoteUi) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f).padding(start = 4.dp)) {
                 Text("Mouse and keyboard", fontSize = 17.sp, fontWeight = FontWeight.SemiBold, color = Text)
-                Text(if (ui.group.size > 1) "Pick the computer to control" else "On this computer", fontSize = 13.sp, color = Muted)
+                Text(if (ui.liveGroup().size > 1) "Pick the computer to control" else "On this computer", fontSize = 13.sp, color = Muted)
             }
             val hasGyro = remember { (context.getSystemService(android.content.Context.SENSOR_SERVICE) as android.hardware.SensorManager).getDefaultSensor(android.hardware.Sensor.TYPE_GYROSCOPE) != null }
             if (hasGyro) { Chip("Air", selected = air) { air = !air }; Box(Modifier.size(8.dp)) }
@@ -131,27 +134,48 @@ fun TouchpadScreen(ui: RemoteUi) {
             }
         }
         // Every computer of the group can be the one the mouse and keyboard act on.
-        if (ui.group.size > 1) {
+        // Only the computers that answer right now.
+        val live = ui.liveGroup()
+        if (live.size > 1) {
             val aimed = ui.target.ifEmpty { ui.gateway }
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                for (pc in ui.group) Chip(pc.name, selected = pc.deviceId == aimed) { Remote.aim(pc.deviceId) }
+                for (pc in live) Chip(pc.name, selected = pc.deviceId == aimed, icon = kindIcon(ui, pc.deviceId)) { Remote.aim(pc.deviceId) }
             }
         }
 
         AirMouse(air && holding)
-        // One surface: the pad above and, along its bottom, the three buttons (left, middle, right) as plain zones, no text.
-        Column(
-            Modifier.weight(1f).fillMaxWidth().clip(RoundedCornerShape(28.dp)).background(Card).border(1.dp, Line, RoundedCornerShape(28.dp)),
+        // While a finger is on the pad it grows (the wheel shrinks to a thread and the sides give a little room); it goes back to
+        // its width a moment after the finger leaves, so a quick tap does not make it flicker.
+        var padDown by remember { mutableStateOf(false) }
+        var using by remember { mutableStateOf(false) }
+        LaunchedEffect(padDown) { if (padDown) using = true else { kotlinx.coroutines.delay(280); using = false } }
+        val wheelWidth by androidx.compose.animation.core.animateDpAsState(if (using) 6.dp else 54.dp, androidx.compose.animation.core.tween(160), label = "wheel")
+        val grow by androidx.compose.animation.core.animateDpAsState(if (using) 10.dp else 0.dp, androidx.compose.animation.core.tween(160), label = "grow")
+        Row(
+            Modifier.weight(1f).fillMaxWidth().layout { measurable, constraints ->
+                val extra = grow.roundToPx()
+                val wide = constraints.maxWidth + 2 * extra
+                val placeable = measurable.measure(constraints.copy(minWidth = wide, maxWidth = wide))
+                layout(constraints.maxWidth, placeable.height) { placeable.place(-extra, 0) }
+            },
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            Pad(Modifier.weight(1f).fillMaxWidth(), air) { holding = it }
-            Box(Modifier.fillMaxWidth().height(1.dp).background(Line))
-            Row(Modifier.fillMaxWidth().height(84.dp)) {
-                MouseZone("l", Modifier.weight(1f))
-                Box(Modifier.width(1.dp).fillMaxSize().background(Line))
-                MouseZone("m", Modifier.weight(0.45f))
-                Box(Modifier.width(1.dp).fillMaxSize().background(Line))
-                MouseZone("r", Modifier.weight(1f))
+            // One surface: the pad above and, along its bottom, the three buttons (left, middle, right) as plain zones, no text.
+            Column(
+                Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(28.dp)).background(Card).border(1.dp, Line, RoundedCornerShape(28.dp)),
+            ) {
+                Pad(Modifier.weight(1f).fillMaxWidth(), air, onUse = { padDown = it }) { holding = it }
+                Box(Modifier.fillMaxWidth().height(1.dp).background(Line))
+                Row(Modifier.fillMaxWidth().height(84.dp)) {
+                    MouseZone("l", Modifier.weight(1f))
+                    Box(Modifier.width(1.dp).fillMaxSize().background(Line))
+                    MouseZone("m", Modifier.weight(0.45f))
+                    Box(Modifier.width(1.dp).fillMaxSize().background(Line))
+                    MouseZone("r", Modifier.weight(1f))
+                }
             }
+            // The wheel, outside the pad on its right and as tall as the whole mouse.
+            ScrollWheel(Modifier.width(wheelWidth).fillMaxHeight())
         }
 
         if (keys) KeysRow()
@@ -204,17 +228,59 @@ private fun SpeedRow(label: String, value: Float, onChange: (Float) -> Unit) {
 }
 
 @Composable
-internal fun Chip(label: String, selected: Boolean = false, onClick: () -> Unit) {
-    Box(
+internal fun Chip(label: String, selected: Boolean = false, icon: androidx.compose.ui.graphics.vector.ImageVector? = null, onClick: () -> Unit) {
+    Row(
         Modifier.clip(RoundedCornerShape(14.dp)).background(if (selected) Text else Raised).border(1.dp, if (selected) Text else Line, RoundedCornerShape(14.dp))
             .clickable { onClick() }.padding(horizontal = 14.dp, vertical = 10.dp),
-        contentAlignment = Alignment.Center,
-    ) { Text(label, color = if (selected) Ground else Text, fontSize = 14.sp) }
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (icon != null) androidx.compose.material3.Icon(icon, null, Modifier.padding(end = 8.dp).size(18.dp), tint = if (selected) Ground else Muted)
+        Text(label, color = if (selected) Ground else Text, fontSize = 14.sp)
+    }
+}
+
+/** The computer's kind next to its name: a laptop (it has a battery) or a desktop PC. */
+internal fun kindIcon(ui: RemoteUi, deviceId: String) = if (ui.available[deviceId] == true) Glyphs.Laptop else Glyphs.Monitor
+
+/**
+ * A mouse wheel outside the pad, as tall as it: drag a finger along it and the page scrolls (the ridges move with the finger).
+ */
+@Composable
+private fun ScrollWheel(modifier: Modifier) {
+    var phase by remember { androidx.compose.runtime.mutableFloatStateOf(0f) }
+    Box(
+        modifier
+            .clip(RoundedCornerShape(26.dp)).background(Card).border(1.dp, Line, RoundedCornerShape(26.dp))
+            .pointerInput(Unit) {
+                var carry = 0f
+                detectVerticalDragGestures(onDragStart = { carry = 0f }) { change, dy ->
+                    change.consume()
+                    phase += dy
+                    carry += dy
+                    val step = 14f / Remote.scrollSpeed
+                    val notches = (carry / step).toInt()
+                    if (notches != 0) { carry -= notches * step; Remote.wheel(notches * 120) }
+                }
+            },
+    ) {
+        androidx.compose.foundation.Canvas(Modifier.fillMaxSize()) {
+            val gap = 18.dp.toPx()
+            val inset = minOf(12.dp.toPx(), size.width * 0.25f)
+            var y = ((phase % gap) + gap) % gap - gap
+            while (y < size.height) {
+                // Fainter toward both ends, like the wheel turning away from you.
+                val middle = 1f - (kotlin.math.abs(y - size.height / 2f) / (size.height / 2f)).coerceIn(0f, 1f)
+                drawLine(Soft.copy(alpha = 0.25f + 0.65f * middle), androidx.compose.ui.geometry.Offset(inset, y), androidx.compose.ui.geometry.Offset(size.width - inset, y),
+                    2.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round)
+                y += gap
+            }
+        }
+    }
 }
 
 /** The touchpad itself. */
 @Composable
-private fun Pad(modifier: Modifier, air: Boolean, onHold: (Boolean) -> Unit) {
+private fun Pad(modifier: Modifier, air: Boolean, onUse: (Boolean) -> Unit, onHold: (Boolean) -> Unit) {
     val haptic = LocalHapticFeedback.current
     Box(
         modifier
@@ -222,6 +288,7 @@ private fun Pad(modifier: Modifier, air: Boolean, onHold: (Boolean) -> Unit) {
                 var lastTapAt = 0L
                 awaitEachGesture {
                     awaitFirstDown(requireUnconsumed = false)
+                    onUse(true)
                     if (air) onHold(true)
                     // A tap and, at once, a touch that stays and moves: drag with the left button held (a quick second tap is a double click).
                     val dragging = !air && System.currentTimeMillis() - lastTapAt < 280
@@ -303,6 +370,7 @@ private fun Pad(modifier: Modifier, air: Boolean, onHold: (Boolean) -> Unit) {
                         event.changes.forEach { it.consume() }
                     }
                     onHold(false)
+                    onUse(false)
                     if (ctrlHeld) Remote.key(0x11, true)
                     if (dragging) {
                         Remote.button("l", false)

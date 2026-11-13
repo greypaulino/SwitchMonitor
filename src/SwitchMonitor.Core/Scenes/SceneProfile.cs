@@ -395,7 +395,10 @@ public static class SceneStore
             throw new FormatException($"There is already a profile called \"{name}\".");
 
         var scene = existing ?? new System.Text.Json.Nodes.JsonObject();
+        if (existing is not null && (string?)existing["name"] is { } oldName && !string.Equals(oldName.Trim(), name, StringComparison.OrdinalIgnoreCase))
+            SceneSync.Forget(root, oldName);   // renamed: the old name is a deleted profile for the other computers
         scene["name"] = name;
+        SceneSync.Touch(root, scene);
         if (string.IsNullOrWhiteSpace(monitor)) scene.Remove("monitor");
         else scene["monitor"] = monitor.Trim();
         if (monitorKey is not null)
@@ -474,7 +477,7 @@ public static class SceneStore
     {
         var root = System.Text.Json.Nodes.JsonNode.Parse(json, documentOptions: ReadOptions) ?? throw new FormatException("scenes.json is empty.");
         var scenes = ScenesArray(root);
-        if (FindScene(scenes, name) is { } scene) scenes.Remove(scene);
+        if (FindScene(scenes, name) is { } scene) { scenes.Remove(scene); SceneSync.Forget(root, name); }
         string result = root.ToJsonString(WriteOptions);
         Parse(result);
         return result;
@@ -552,6 +555,7 @@ public static class SceneStore
                 scene["icon"] = "image:" + picture;
             }
         }
+        SceneSync.Touch(root, scene);
         scenes.Add(scene);
         string result = root.ToJsonString(WriteOptions);
         Parse(result);   // a profile this app cannot read is refused before anything is written

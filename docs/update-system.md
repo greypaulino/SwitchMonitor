@@ -120,3 +120,14 @@ sequenceDiagram
 3. **¿Actualizar sola o preguntar?** Propongo: avisar siempre, instalar solo con tu clic.
 4. **¿Intervalo de comprobación?** Propongo 6 h como en la 1.x, más una comprobación al abrir la ventana.
 5. **¿Quieres que la edición portable pueda actualizarse sola** (descargar el zip y reemplazar) o que solo avise?
+
+## La app de Android (desde la 2.0.1)
+
+Misma fuente y mismos archivos que Windows, sin dependencias nuevas (`data/Updates.kt`, `ui/UpdateDialog.kt`):
+
+- **Dónde:** menú ⋮ > "Check for updates…" (y en la pantalla de conexión). Muestra la versión instalada, "Check now", las notas de la versión nueva, "Download and install" con barra de progreso y el interruptor "Check automatically".
+- **Cuándo revisa solo:** una vez al día (`JobScheduler`, con red, sobrevive al reinicio) y al abrir la app si la última revisión tiene más de 6 horas. Si hay una versión nueva avisa con una notificación (una vez por versión) que abre la ventana de actualización.
+- **Qué descarga:** `GET /repos/greypaulino/SwitchMonitor/releases/latest`; el APK `SwitchMonitor-<versión>.apk` de ese release (solo direcciones `github.com/greypaulino/SwitchMonitor/releases/download/…`).
+- **Cómo lo comprueba:** si el release trae `SHA256.json` (y `SHA256.json.sig`, firmado con la misma clave ECDSA P-256 que usa Windows), el APK debe coincidir con el hash de esa lista y la firma debe ser válida. Además se mira que sea este mismo paquete, de versión mayor y firmado con la misma clave que el instalado (Android lo exige igual al instalar).
+- **Instalar:** se entrega a Android con `ACTION_VIEW`; la primera vez Android pide permitir que SwitchMonitor instale apps, y siempre pide confirmar.
+- **Para publicar:** `release-apk.ps1` deja `SwitchMonitor-<versión>.apk` en `results\release-<versión>`; `run-installer.ps1` lo incluye en `SHA256.json` y lo firma. Una build de depuración (otra clave) no se puede actualizar a la publicada: hay que desinstalar una vez.

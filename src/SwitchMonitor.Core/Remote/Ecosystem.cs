@@ -72,6 +72,9 @@ public sealed class Ecosystem
 
     public const int CodeSeconds = 30;
     public const int MaxCodeTries = 5;
+
+    /// <summary>Certificates (and revocations) taken from one message: a group is a handful of devices.</summary>
+    public const int MaxMerge = 64;
     public static readonly TimeSpan LockTime = TimeSpan.FromMinutes(1);
 
     private readonly string path;
@@ -250,8 +253,12 @@ public sealed class Ecosystem
     /// <summary>Learns every certificate and revocation that checks out, repeating while a new one makes others checkable.</summary>
     private bool MergeLocked(JsonArray? members, JsonArray? revocations)
     {
-        var pendingCerts = (members ?? []).Select(MemberCert.FromJson).OfType<MemberCert>().ToList();
-        var pendingRevs = (revocations ?? []).Select(Revocation.FromJson).OfType<Revocation>().ToList();
+        // At most MaxMerge of each per message, and what is already known is skipped before any signature is checked: a device
+        // that has not signed in yet cannot make this computer spend seconds on thousands of forged certificates.
+        var pendingCerts = (members ?? []).Take(MaxMerge).Select(MemberCert.FromJson).OfType<MemberCert>()
+            .Where(c => !(certs.TryGetValue(c.DeviceId, out var known) && known.IssuedAt >= c.IssuedAt)).ToList();
+        var pendingRevs = (revocations ?? []).Take(MaxMerge).Select(Revocation.FromJson).OfType<Revocation>()
+            .Where(r => !(revoked.TryGetValue(r.DeviceId, out var known) && known.At >= r.At)).ToList();
         bool any = false, progress = true;
         while (progress)
         {

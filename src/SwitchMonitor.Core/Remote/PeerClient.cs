@@ -82,15 +82,16 @@ public sealed class PeerClient : IDisposable
     /// also given a token to control this one back, so one pairing works both ways.
     /// </summary>
     public static async Task<(string? Token, string? ComputerName, string? DeviceId, string? Error)> PairAsync(
-        string host, int port, string code, string myName, string? counterToken = null, int myPort = 0, CancellationToken cancel = default)
+        string host, int port, string code, string myName, string? counterToken = null, int myPort = 0, CancellationToken cancel = default, Action<string>? verification = null)
     {
         using var socket = new ClientWebSocket();
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancel);
-        timeout.CancelAfter(TimeSpan.FromSeconds(10));
+        timeout.CancelAfter(TimeSpan.FromSeconds(90));   // the person over there has up to a minute to say yes
         try
         {
             await socket.ConnectAsync(new Uri($"ws://{Bracket(host)}:{port}/ws"), timeout.Token);
             await StartChannelAsync(socket, await ReceiveJsonAsync(socket, timeout.Token), timeout.Token);   // the challenge
+            verification?.Invoke(SecureChannel.Verification(socket));
             var pair = new JsonObject { ["type"] = "pair", ["code"] = code.Trim(), ["name"] = myName };
             if (counterToken is not null)
             {
@@ -156,7 +157,7 @@ public sealed class PeerClient : IDisposable
     /// Joins the ecosystem of the computer at <paramref name="host"/>: proves with its code that the person is in front of it,
     /// waits for the person there to say yes, and takes in the ecosystem it sends. Null when it worked, else an error text.
     /// </summary>
-    public static async Task<string?> EnrollAsync(string host, int port, Ecosystem me, string code, CancellationToken cancel = default)
+    public static async Task<string?> EnrollAsync(string host, int port, Ecosystem me, string code, CancellationToken cancel = default, Action<string>? verification = null)
     {
         using var socket = new ClientWebSocket();
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancel);
@@ -169,6 +170,7 @@ public sealed class PeerClient : IDisposable
             if (challenge is null || nonce.Length == 0) return "The other computer did not answer as expected.";
             await StartChannelAsync(socket, challenge, timeout.Token);
             string binding = SecureChannel.Binding(socket);
+            verification?.Invoke(SecureChannel.Verification(socket));
             string clean = code.Replace(" ", "").Trim();
             await SendRawAsync(socket, new JsonObject
             {

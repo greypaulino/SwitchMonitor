@@ -88,7 +88,7 @@ fun RemoteScreen(ui: RemoteUi) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f).padding(start = 4.dp)) {
                 Text("Remote", fontSize = 17.sp, fontWeight = FontWeight.SemiBold, color = Text)
-                Text(if (countdown > 0) "Turning $name off in $countdown s" else if (ui.group.size > 1) "Pick the computer to control" else name, fontSize = 13.sp, color = Muted)
+                Text(if (countdown > 0) "Turning $name off in $countdown s" else if (ui.liveGroup().size > 1) "Pick the computer to control" else name, fontSize = 13.sp, color = Muted)
             }
             if (countdown > 0) { Chip("Cancel") { Remote.power("cancel"); countdown = 0 }; Box(Modifier.size(8.dp)) }
             // Power: top right.
@@ -97,15 +97,32 @@ fun RemoteScreen(ui: RemoteUi) {
                 contentAlignment = Alignment.Center,
             ) { Icon(Glyphs.Power, "Turn off", Modifier.size(22.dp), tint = Text) }
         }
-        if (ui.group.size > 1) {
+        // Only the computers that answer right now.
+        val live = ui.liveGroup()
+        if (live.size > 1) {
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                for (pc in ui.group) Chip(pc.name, selected = pc.deviceId == target) { Remote.aim(pc.deviceId) }
+                for (pc in live) Chip(pc.name, selected = pc.deviceId == target, icon = kindIcon(ui, pc.deviceId)) { Remote.aim(pc.deviceId) }
             }
         }
 
-        // The wheel in the middle of what is left of the screen.
+        // The wheel in the middle of what is left of the screen; the track buttons under it.
         Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-            ControlWheel { Remote.media(it) }
+            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                ControlWheel { Remote.media(it) }
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Chip("◀◀  Previous") { Remote.media("prev") }
+                    Chip("Next  ▶▶") { Remote.media("next") }
+                }
+            }
+        }
+
+        // Mute: on its own, just above the favorite programs.
+        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+            Box(
+                Modifier.size(44.dp).clip(CircleShape).background(Raised).border(1.dp, Line, CircleShape)
+                    .clickable(onClickLabel = "Mute") { Remote.media("mute") },
+                contentAlignment = Alignment.Center,
+            ) { Icon(Glyphs.SpeakerOff, "Mute", Modifier.size(22.dp), tint = Text) }
         }
 
         Favorites(ui, target)
@@ -123,7 +140,10 @@ fun RemoteScreen(ui: RemoteUi) {
     }
 }
 
-/** The wheel: the middle plays or pauses; up and down are volume; left and right skip back and forward. Volume repeats while held. */
+/**
+ * The wheel: the middle plays or pauses; up and down are volume; left and right jump 10 s back and forward. Volume repeats while held.
+ * It acts on the program that is playing (a browser on YouTube, Spotify…), and on Windows itself when nothing is.
+ */
 @Composable
 private fun ControlWheel(onKey: (String) -> Unit) {
     val scope = rememberCoroutineScope()
@@ -141,7 +161,7 @@ private fun ControlWheel(onKey: (String) -> Unit) {
                     val key = when {
                         distance > radius -> null
                         distance < radius * 0.36f -> "playpause"
-                        abs(dx) > abs(dy) -> if (dx > 0) "next" else "prev"
+                        abs(dx) > abs(dy) -> if (dx > 0) "seekfwd" else "seekback"
                         else -> if (dy < 0) "volup" else "voldown"
                     }
                     if (key != null) {
@@ -174,8 +194,8 @@ private fun ControlWheel(onKey: (String) -> Unit) {
         }
         Text("+", Modifier.align(Alignment.TopCenter).padding(top = 26.dp), fontSize = 30.sp, color = Text)
         Text("−", Modifier.align(Alignment.BottomCenter).padding(bottom = 22.dp), fontSize = 34.sp, color = Text)
-        Text("◀◀", Modifier.align(Alignment.CenterStart).padding(start = 22.dp), fontSize = 20.sp, color = Text)
-        Text("▶▶", Modifier.align(Alignment.CenterEnd).padding(end = 22.dp), fontSize = 20.sp, color = Text)
+        Text("−10 s", Modifier.align(Alignment.CenterStart).padding(start = 18.dp), fontSize = 15.sp, fontWeight = FontWeight.Medium, color = Text)
+        Text("+10 s", Modifier.align(Alignment.CenterEnd).padding(end = 18.dp), fontSize = 15.sp, fontWeight = FontWeight.Medium, color = Text)
         Text("▶ ❚❚", fontSize = 18.sp, color = Text, textAlign = TextAlign.Center)
     }
 }
@@ -191,13 +211,11 @@ private fun Favorites(ui: RemoteUi, target: String) {
     Panel {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("Favorite apps", Modifier.weight(1f), fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = Text)
-            // Mute: at the top of this panel.
             Box(
                 Modifier.size(40.dp).clip(CircleShape).background(Raised).border(1.dp, Line, CircleShape)
-                    .clickable(onClickLabel = "Mute") { Remote.media("mute") },
+                    .clickable(onClickLabel = "Add a favorite program") { Remote.requestApps(); picking = true },
                 contentAlignment = Alignment.Center,
-            ) { Icon(Glyphs.SpeakerOff, "Mute", Modifier.size(20.dp), tint = Text) }
-            TextButton(onClick = { Remote.requestApps(); picking = true }) { Text("Add", color = Soft) }
+            ) { Icon(Glyphs.Plus, "Add a favorite program", Modifier.size(20.dp), tint = Text) }
         }
         if (offered != null && !offered.allowed) {
             Text("Turn on \"Phone as remote\" in SwitchMonitor > Settings > Devices on that computer to open and close programs.", fontSize = 13.sp, color = Muted)
@@ -240,13 +258,19 @@ private fun Favorites(ui: RemoteUi, target: String) {
             dismissButton = { TextButton(onClick = { options = null; Remote.removeFavorite(app.id) }) { Text("Remove", color = Soft) } },
         )
     }
-    if (picking) AppPicker(offered?.items.orEmpty(), allowed = offered?.allowed != false, taken = favorites.map { it.id }.toSet()) { picking = false }
+    if (picking) AppPicker(offered?.items.orEmpty(), ui, target, allowed = offered?.allowed != false, taken = favorites.map { it.id }.toSet()) { picking = false }
 }
 
 /** Every program of that computer's Start menu: tap one to make it a favorite. */
 @Composable
-private fun AppPicker(apps: List<AppItem>, allowed: Boolean, taken: Set<String>, onClose: () -> Unit) {
+private fun AppPicker(apps: List<AppItem>, ui: RemoteUi, target: String, allowed: Boolean, taken: Set<String>, onClose: () -> Unit) {
     var query by remember { mutableStateOf("") }
+    // The icons of what is listed (the first ones) are asked for, as the Apps tab on the computer shows them.
+    val listed = apps.filter { it.name.contains(query, ignoreCase = true) }.take(40).map { it.id }
+    LaunchedEffect(listed) {
+        delay(250)
+        Remote.requestIcons(listed.filter { ui.icons["$target|$it"] == null })
+    }
     AlertDialog(
         onDismissRequest = onClose,
         containerColor = Raised,
@@ -264,11 +288,20 @@ private fun AppPicker(apps: List<AppItem>, allowed: Boolean, taken: Set<String>,
                 LazyColumn(Modifier.height(320.dp).padding(top = 8.dp)) {
                     items(shown, key = { it.id }) { app ->
                         val added = app.id in taken
+                        // A pill: the program's icon and name on a color of its own.
+                        val tint = androidx.compose.ui.graphics.Color.hsv((app.name.lowercase().hashCode() and 0x7fffffff) % 360f, 0.40f, if (added) 0.20f else 0.30f)
                         Row(
-                            Modifier.fillMaxWidth().clickable(enabled = !added) { Remote.addFavorite(app) }.padding(vertical = 12.dp, horizontal = 4.dp),
+                            Modifier.fillMaxWidth().padding(vertical = 4.dp)
+                                .clip(RoundedCornerShape(22.dp)).background(tint).border(1.dp, Line, RoundedCornerShape(22.dp))
+                                .clickable(enabled = !added) { Remote.addFavorite(app) }.padding(start = 10.dp, end = 14.dp, top = 8.dp, bottom = 8.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Text(app.name, Modifier.weight(1f), color = if (added) Muted else Text, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            val icon = ui.icons["$target|${app.id}"]
+                            Box(Modifier.size(30.dp), contentAlignment = Alignment.Center) {
+                                if (icon != null) Image(icon.asImageBitmap(), null, Modifier.size(26.dp))
+                                else Icon(Glyphs.Monitor, null, Modifier.size(20.dp), tint = Muted)
+                            }
+                            Text(app.name, Modifier.weight(1f).padding(start = 10.dp), color = if (added) Muted else Text, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             if (added) Text("Added", color = Muted, fontSize = 12.sp)
                         }
                     }

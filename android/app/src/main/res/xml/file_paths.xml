@@ -2,4 +2,6 @@
 <!-- Images that arrive for the shared clipboard are kept here for a while so other apps can paste them. -->
 <paths>
     <cache-path name="shared" path="shared/" />
+    <!-- The update the app downloaded, handed to Android's installer. -->
+    <cache-path name="updates" path="updates/" />
 </paths>

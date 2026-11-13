@@ -37,6 +37,8 @@ public sealed partial class PeerService : ObservableObject, IDisposable
         ConnectCommand = new RelayCommand(_ => _ = ConnectByAddressAsync(), _ => !pairing && host.Trim().Length > 0);
         SearchCommand = new RelayCommand(_ => _ = SearchAsync(), _ => !searching);
         store.Changed += () => dispatcher.BeginInvoke(Reconnect);
+        // Whether a local display is available changes without the other computer saying anything: the list is judged again.
+        duplicateClock = new DispatcherTimer(TimeSpan.FromSeconds(3), DispatcherPriority.Background, (_, _) => { if (clients.Count + memberClients.Count > 0) { SyncDisplays(); SendHolds(); } }, dispatcher);
         Reconnect();
         // The other computers pair back through this one's server: a computer that paired with us by code (we learn how to reach it),
         // or one that asks to be forgotten.
@@ -50,6 +52,9 @@ public sealed partial class PeerService : ObservableObject, IDisposable
             };
             // Another computer clicked this one in its list: the code is made and shown here, nobody presses "pair" on this side.
             phone.PairRequested += (who, shown, until) => ShowRequest(phone, who, shown);
+            // A computer that opened after this one signs in here first: look for it at once, so this one connects back
+            // (otherwise the connection this way waits for the next search, or for this program to be reopened).
+            phone.DevicesChanged += () => { if (MembersMissing()) _ = SearchAsync(); };
             phone.ComputerForgot += device =>
             {
                 if (store.FindByDevice(device) is { } gone) store.Remove(gone.Id);
@@ -176,18 +181,20 @@ public sealed partial class PeerService : ObservableObject, IDisposable
             if (refused is not null) { Status = refused; return; }
             Status = $"Type the code {target.Name} is showing.";
             string? pairedName = null;
+            PairCodeWindow? window = null;
             // The window pairs by itself with the sixth digit and shows "Connected!" when it is done.
             async Task<string?> PairAsync(string code)
             {
                 string counter = PhoneStore.NewToken();
-                var result = await PeerClient.PairAsync(target.Host, target.Port, code, Environment.MachineName, counter, phone.ServerPort);
+                var result = await PeerClient.PairAsync(target.Host, target.Port, code, Environment.MachineName, counter, phone.ServerPort,
+                    verification: number => window?.Dispatcher.BeginInvoke(() => window?.ShowVerification(number)));
                 if (result.Token is null || result.DeviceId is null) return result.Error ?? "Could not pair.";
                 pairedName = result.ComputerName ?? target.Name;
                 phone.AddComputer(pairedName, counter, result.DeviceId);
                 store.Add(pairedName, target.Host, target.Port, result.Token, DateTimeOffset.Now, result.DeviceId);
                 return null;
             }
-            var window = new PairCodeWindow(target.Name, PairAsync);
+            window = new PairCodeWindow(target.Name, PairAsync);
             if (System.Windows.Application.Current.Windows.OfType<MainWindow>().FirstOrDefault(w => w.IsVisible) is { } owner) window.Owner = owner;
             window.ShowDialog();
             if (pairedName is null) { Status = null; return; }
@@ -249,23 +256,90 @@ public sealed partial class PeerService : ObservableObject, IDisposable
 
         SyncDisplays();
         FillMembers();
+        var nowConnected = ConnectedClients.Select(c => c.Computer.DeviceId ?? c.Computer.Id).ToHashSet();
+        bool someoneNew = nowConnected.Any(id => !wasConnected.Contains(id));
+        wasConnected = nowConnected;
+        if (someoneNew) ComputerConnected?.Invoke();
     }
+
+    private HashSet<string> wasConnected = [];
+    private DispatcherTimer? duplicateClock;
+
+    /// <summary>A computer of the group just connected (profiles are compared with it).</summary>
+    public event Action? ComputerConnected;
 
     /// <summary>
     /// The displays each connected computer publishes become ordinary displays of this one (a network transport): they sit in the
     /// list and the brightness panel with every function a local one has. A computer that is not connected, or no longer offers a
     /// display, takes it out of the list.
     /// </summary>
+    private readonly Dictionary<string, (string[] Names, long At)> holds = [];
+
+    /// <summary>The other computer says which displays it has the picture of (it can tell, this one may not): those are locked here.</summary>
+    public void OnHolds(string deviceId, string[] names) => dispatcher.BeginInvoke(() => { holds[deviceId] = (names, Environment.TickCount64); SyncDisplays(); });
+
+    private string sentHolds = "";
+    private long sentHoldsAt;
+
+    /// <summary>Tells the connected computers which displays this one has the picture of and can prove it (so their copy is locked).</summary>
+    private void SendHolds()
+    {
+        var names = main.Monitors.Where(m => !m.IsRemote && !m.Device.Identity.IsBuiltIn && m.Device.IsActive && m.AnswersItself && !m.IsUnavailable && Reliable(m))
+            .Select(m => m.Name).Where(n => n.Length > 0).Distinct().OrderBy(n => n).ToArray();
+        string key = string.Join("|", names);
+        long now = Environment.TickCount64;
+        if (key == sentHolds && (names.Length == 0 || now - sentHoldsAt < 8_000)) return;
+        sentHolds = key; sentHoldsAt = now;
+        var message = new JsonObject { ["type"] = "share", ["op"] = "holds", ["names"] = new JsonArray(names.Select(n => (JsonNode)JsonValue.Create(n)!).ToArray()) };
+        foreach (var client in ConnectedClients) _ = client.SendAsync((JsonObject)message.DeepClone());
+    }
+
+    /// <summary>The display can really tell whether it shows this computer: it answers on other inputs and this computer knows which input it is plugged into.</summary>
+    private bool Reliable(MonitorViewModel m) => m.Device.AnswersOnOtherInputs && main.HomeInput(m) is not null;
+
+    private string lastNote = "";
+    private void Note(string text) { if (text != lastNote) { lastNote = text; Services.Trace.Write(text); } }
+
     private void SyncDisplays()
     {
         var wanted = new Dictionary<string, (PairedComputer Computer, PeerClient Client, RemoteDeviceInfo Info)>();
+        // The same physical display is often plugged into both computers (the LG; each one reads a different product id, so it is
+        // matched by name). Whoever has its picture lists it as its own; the other lists it as the first one's, and its own signal
+        // stays as a locked display, like a laptop panel Windows is not using:
+        //  - this computer can tell what the display shows (and it answers): its copy is the real one, the other's is not listed;
+        //  - this one cannot tell but the other can, and offers it (so it has its picture): this one's copy is locked, the other's listed;
+        //  - neither can tell: this one's copy stays and the other's is not listed.
+        var locals = main.Monitors.Where(m => !m.IsRemote && !m.Device.Identity.IsBuiltIn && m.Device.IsActive && m.AnswersItself
+                                              && !string.IsNullOrEmpty(m.Name)).ToList();
+        var used = new HashSet<MonitorViewModel>();
+        var held = new HashSet<MonitorViewModel>();
         foreach (var client in clients.Values.Concat(memberClients.Values))
         {
             if (client is not { Connected: true, State: { } state } || state["devices"] is not JsonArray list) continue;
+            Note($"offers from {client.Computer.Name}: {list.Count} display(s); mine: {string.Join(", ", locals.Select(m => m.Name + (m.Device.AnswersOnOtherInputs ? " (detects)" : " (cannot detect)")))}");
             foreach (var item in list.OfType<JsonObject>())
                 if (RemoteDeviceInfo.FromJson(item) is { } info)
+                {
+                    var twin = info.IsBuiltIn ? null : locals.FirstOrDefault(m => !used.Contains(m) && string.Equals(m.Name, info.Name, StringComparison.OrdinalIgnoreCase));
+                    if (twin is not null)
+                    {
+                        used.Add(twin);
+                        Note($"twin of {info.Name}: other detects = {info.Detects}; this one is reliable = {Reliable(twin)}");
+                        if (!(info.Detects && !Reliable(twin))) continue;   // this one's copy is the real one
+                        held.Add(twin);
+                    }
                     wanted[RemoteKey(client.Computer, info)] = (client.Computer, client, info);
+                }
         }
+        // The other computer told us (over the link that works from its side) which displays it has, even if this one cannot read its offer.
+        long nowTick = Environment.TickCount64;
+        foreach (var m in locals)
+            if (!held.Contains(m) && !Reliable(m) && holds.Values.Any(h => nowTick - h.At < 12_000 && h.Names.Contains(m.Name, StringComparer.OrdinalIgnoreCase)))
+            {
+                Note($"held: {m.Name} is shown by the other computer");
+                held.Add(m);
+            }
+        foreach (var m in main.Monitors.Where(m => !m.IsRemote)) m.SetHeldElsewhere(held.Contains(m));
         foreach (var (key, monitor) in remote.ToArray())
             if (!wanted.ContainsKey(key))
             {
