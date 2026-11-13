@@ -59,6 +59,7 @@ import com.greypaulino.switchmonitor.data.Remote
 import com.greypaulino.switchmonitor.data.RemoteUi
 import com.greypaulino.switchmonitor.ui.theme.Card
 import com.greypaulino.switchmonitor.ui.theme.Green
+import com.greypaulino.switchmonitor.ui.theme.Ground
 import com.greypaulino.switchmonitor.ui.theme.Line
 import com.greypaulino.switchmonitor.ui.theme.Muted
 import com.greypaulino.switchmonitor.ui.theme.Raised
@@ -75,6 +76,15 @@ import kotlin.math.sin
  * The phone as a remote for any computer of the group: power at the top right, the control wheel (a media remote's) in the middle
  * of the screen with mute on its right, and the favorite programs of that computer below as labels with their icon.
  */
+/** A round key with only an icon. */
+@Composable
+private fun RoundKey(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, onClick: () -> Unit) {
+    Box(
+        Modifier.size(52.dp).clip(CircleShape).background(Raised).border(1.dp, Line, CircleShape).clickable(onClickLabel = label) { onClick() },
+        contentAlignment = Alignment.Center,
+    ) { Icon(icon, label, Modifier.size(24.dp), tint = Text) }
+}
+
 @Composable
 fun RemoteScreen(ui: RemoteUi) {
     val target = ui.target.ifEmpty { ui.gateway }
@@ -109,20 +119,26 @@ fun RemoteScreen(ui: RemoteUi) {
         Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
             Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 ControlWheel { Remote.media(it) }
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Chip("◀◀  Previous") { Remote.media("prev") }
-                    Chip("Next  ▶▶") { Remote.media("next") }
-                }
             }
         }
 
-        // Mute: on its own, just above the favorite programs.
-        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+        // Previous, mute and next, only icons. Mute shows whether it is on: filled and crossed out while the sound is off, and the
+        // speaker with waves (bright while sound comes out) when it is not.
+        val media = ui.media[target]
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(20.dp, Alignment.CenterHorizontally), verticalAlignment = Alignment.CenterVertically) {
+            RoundKey(Glyphs.SkipBack, "Previous") { Remote.media("prev") }
+            val muted = media?.muted == true
             Box(
-                Modifier.size(44.dp).clip(CircleShape).background(Raised).border(1.dp, Line, CircleShape)
-                    .clickable(onClickLabel = "Mute") { Remote.media("mute") },
+                Modifier.size(60.dp).clip(CircleShape).background(if (muted) Text else Raised)
+                    .border(1.dp, if (muted) Text else Line, CircleShape).clickable(onClickLabel = if (muted) "Turn the sound on" else "Mute") { Remote.media("mute") },
                 contentAlignment = Alignment.Center,
-            ) { Icon(Glyphs.SpeakerOff, "Mute", Modifier.size(22.dp), tint = Text) }
+            ) {
+                Icon(
+                    if (muted) Glyphs.SpeakerOff else Glyphs.Speaker, if (muted) "Muted" else "Sound on", Modifier.size(26.dp),
+                    tint = if (muted) Ground else if (media?.audible == true) Text else Muted,
+                )
+            }
+            RoundKey(Glyphs.SkipForward, "Next") { Remote.media("next") }
         }
 
         Favorites(ui, target)

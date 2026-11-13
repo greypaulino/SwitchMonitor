@@ -33,6 +33,66 @@ public static class ActiveMedia
         }
     }
 
+    /// <summary>Gets the media session manager ready, so <see cref="Snapshot"/> can answer at once.</summary>
+    public static async Task PrimeAsync()
+    {
+        try { manager ??= await GlobalSystemMediaTransportControlsSessionManager.RequestAsync(); }
+        catch (Exception error) when (error is COMException or InvalidOperationException or InvalidCastException or UnauthorizedAccessException) { manager = null; }
+    }
+
+    private static long lastAudibleAt;
+    private static long pageCheckedAt;
+    private static volatile bool pageChecking;
+    private static bool? pageMute;   // the video page's own mute: true / false, null when it could not be read
+
+    private static async Task RefreshPageMuteAsync(GlobalSystemMediaTransportControlsSession session, string source)
+    {
+        string title = "";
+        try { title = (await session.TryGetMediaPropertiesAsync())?.Title ?? ""; }
+        catch (Exception error) when (error is COMException or InvalidOperationException or InvalidCastException) { }
+        pageMute = title.Length == 0 ? null : BrowserPlayer.ReadMuted(source, title);
+    }
+
+    /// <summary>
+    /// What the phone's mute key shows: is the program that plays media silenced (its audio muted, Windows muted, or it plays and nothing
+    /// comes out for a few seconds: a page muted in its own player), is sound coming out, is it playing.
+    /// </summary>
+    public static (bool Muted, bool Audible, bool Playing) Snapshot()
+    {
+        bool master = WindowsVolume.Read() is { Muted: true };
+        try
+        {
+            var current = manager;
+            if (current is null) return (master, false, false);
+            GlobalSystemMediaTransportControlsSession? pick = null;
+            foreach (var s in current.GetSessions())
+                if (s.GetPlaybackInfo()?.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing) { pick = s; break; }
+            bool playing = pick is not null;
+            if (pick is null && current.GetCurrentSession() is { } last
+                && last.GetPlaybackInfo()?.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Paused) pick = last;
+            if (pick is null) return (master, false, false);
+            string source = (pick.SourceAppUserModelId ?? "").ToLowerInvariant();
+            var (appMuted, peak) = AppAudio.Read(source);
+            long now = Environment.TickCount64;
+            // A video page in a browser has its own mute (not the browser's audio): looked at in the background, at most every 1.5 s.
+            if (BrowserPlayer.IsBrowser(source) && now - pageCheckedAt > 1500 && !pageChecking)
+            {
+                pageChecking = true;
+                var watched = pick;
+                _ = Task.Run(async () => { try { await RefreshPageMuteAsync(watched, source); } finally { pageChecking = false; pageCheckedAt = Environment.TickCount64; } });
+            }
+            if (peak > 0.0008f) lastAudibleAt = now;
+            bool audible = now - lastAudibleAt < 1500;
+            bool silentWhilePlaying = playing && now - lastAudibleAt > 3000;
+            bool pageMuted = pageMute is { } known && now - pageCheckedAt < 6000 && known;
+            return (master || appMuted || pageMuted || (pageMute is null && silentWhilePlaying), audible, playing);
+        }
+        catch (Exception error) when (error is COMException or InvalidOperationException or InvalidCastException or UnauthorizedAccessException)
+        {
+            return (master, false, false);
+        }
+    }
+
     /// <summary>play/pause, next, prev, seekfwd, seekback on the active program; false when there is none (the caller uses the media keys).</summary>
     public static async Task<bool> CommandAsync(string key)
     {
@@ -100,6 +160,33 @@ public static class ActiveMedia
 
         public static bool IsBrowser(string source) => Names.Any(source.Contains);
 
+        private static readonly System.Text.RegularExpressions.Regex Unmute = new(
+            @"(?i)^(un-?mute|activar sonido|reactivar|ativar som|reativar|activer le son|réactiver|ton ein|stummschaltung aufheben|riattiva|включить звук|取消静音|ミュート解除)",
+            System.Text.RegularExpressions.RegexOptions.Compiled);
+
+        /// <summary>Whether the page's player is muted (its mute button offers to turn the sound on); null when the player is not found.</summary>
+        public static bool? ReadMuted(string source, string title)
+        {
+            try
+            {
+                string browser = Names.First(source.Contains);
+                var windows = UIA.AutomationElement.RootElement.FindAll(UIA.TreeScope.Children,
+                    new UIA.PropertyCondition(UIA.AutomationElement.ClassNameProperty, "Chrome_WidgetWin_1"));
+                foreach (UIA.AutomationElement window in windows)
+                {
+                    if (!(window.Current.Name ?? "").Contains(title, StringComparison.CurrentCultureIgnoreCase) || !ProcessIs(window.Current.ProcessId, browser)) continue;
+                    foreach (UIA.AutomationElement button in window.FindAll(UIA.TreeScope.Descendants,
+                                 new UIA.PropertyCondition(UIA.AutomationElement.ControlTypeProperty, UIA.ControlType.Button)))
+                    {
+                        string text = button.Current.Name ?? "";
+                        if (text.EndsWith("(m)", StringComparison.Ordinal) || text.EndsWith(" m", StringComparison.Ordinal)) return Unmute.IsMatch(text);
+                    }
+                }
+            }
+            catch (Exception error) when (error is not OutOfMemoryException) { }
+            return null;
+        }
+
         public static bool Change(string source, string title, string key)
         {
             try
@@ -143,7 +230,13 @@ public static class ActiveMedia
                 {
                     string text = button.Current.Name ?? "";
                     if (!(text.EndsWith("(m)", StringComparison.Ordinal) || text.EndsWith(" m", StringComparison.Ordinal))) continue;
-                    if (button.TryGetCurrentPattern(UIA.InvokePattern.Pattern, out object? pattern) && pattern is UIA.InvokePattern invoke) { invoke.Invoke(); return true; }
+                    if (button.TryGetCurrentPattern(UIA.InvokePattern.Pattern, out object? pattern) && pattern is UIA.InvokePattern invoke)
+                    {
+                        invoke.Invoke();
+                        pageMute = !Unmute.IsMatch(text);   // it was "Mute" (now muted) or "Unmute" (now not): known at once, the next look confirms it
+                        pageCheckedAt = Environment.TickCount64;
+                        return true;
+                    }
                 }
                 return false;
             }
@@ -192,6 +285,46 @@ public static class ActiveMedia
     private static class AppAudio
     {
         private static Guid context = Guid.Empty;
+
+        /// <summary>Whether the audio sessions of the program are all muted, and the loudest sound coming out of them now (0..1).</summary>
+        public static (bool Muted, float Peak) Read(string source)
+        {
+            if (source.Length == 0) return (false, 0f);
+            bool any = false, allMuted = true;
+            float peak = 0f;
+            try
+            {
+                var enumerator = (IMMDeviceEnumerator)new MMDeviceEnumerator();
+                try
+                {
+                    if (enumerator.GetDefaultAudioEndpoint(0, 1, out var device) != 0 || device is null) return (false, 0f);
+                    Guid iid = typeof(IAudioSessionManager2).GUID;
+                    if (device.Activate(ref iid, 0x17, IntPtr.Zero, out object managerObject) != 0) return (false, 0f);
+                    var sessions = ((IAudioSessionManager2)managerObject).GetSessionEnumerator(out var list) == 0 ? list : null;
+                    if (sessions is null || sessions.GetCount(out int count) != 0) return (false, 0f);
+                    for (int i = 0; i < count; i++)
+                    {
+                        if (sessions.GetSession(i, out var control) != 0 || control is not IAudioSessionControl2 two) continue;
+                        if (two.GetProcessId(out uint pid) != 0 || pid == 0) continue;
+                        string name;
+                        try { using var p = Process.GetProcessById((int)pid); name = p.ProcessName.ToLowerInvariant(); }
+                        catch (Exception error) when (error is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception) { continue; }
+                        if (name.Length < 3 || !source.Contains(name)) continue;
+                        if (control is ISimpleAudioVolume volume && volume.GetMute(out bool muted) == 0) { any = true; allMuted &= muted; }
+                        if (control is IAudioMeterInformation meter && meter.GetPeakValue(out float value) == 0) peak = Math.Max(peak, value);
+                    }
+                }
+                finally { Marshal.ReleaseComObject(enumerator); }
+            }
+            catch (Exception error) when (error is COMException or InvalidCastException) { return (false, 0f); }
+            return (any && allMuted, peak);
+        }
+
+        [ComImport, Guid("C02216F6-8C67-4B5B-9D00-D008E73E0064"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        private interface IAudioMeterInformation
+        {
+            [PreserveSig] int GetPeakValue(out float peak);
+        }
 
         public static bool Change(string source, string key)
         {

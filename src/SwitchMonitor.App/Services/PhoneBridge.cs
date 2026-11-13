@@ -43,6 +43,7 @@ public sealed class PhoneBridge : ObservableObject, IRemoteHost, IDisposable
         Eco = new Ecosystem();
         Task.Run(CheckFirewall);
         server = new RemoteServer(store, this, log, ecosystem: Eco) { Enrolling = AskToAdmit, AllowUnencryptedPage = main.Settings.PhoneWebPage };
+        _ = ActiveMedia.PrimeAsync();
         push = new DispatcherTimer(TimeSpan.FromMilliseconds(250), DispatcherPriority.Background, (_, _) => _ = PushIfChangedAsync(), dispatcher);
         codeClock = new DispatcherTimer(TimeSpan.FromSeconds(1), DispatcherPriority.Background, (_, _) => TickCode(), dispatcher);
         PairCommand = new RelayCommand(_ => NewCode(), _ => Enabled);
@@ -359,6 +360,13 @@ public sealed class PhoneBridge : ObservableObject, IRemoteHost, IDisposable
         await server.BroadcastAsync(state);
     }
 
+    /// <summary>What the program that plays media is doing (for the phone's mute key).</summary>
+    private static JsonObject MediaState()
+    {
+        var (muted, audible, playing) = ActiveMedia.Snapshot();
+        return new JsonObject { ["muted"] = muted, ["audible"] = audible, ["playing"] = playing };
+    }
+
     private JsonObject BuildState()
     {
         var displays = new JsonArray();
@@ -407,6 +415,7 @@ public sealed class PhoneBridge : ObservableObject, IRemoteHost, IDisposable
         {
             ["computer"] = ComputerName,
             ["portable"] = IsPortable,
+            ["media"] = MediaState(),
             ["devices"] = DeviceHost.Inventory(main.Monitors.Where(m => !m.IsRemote && m.IsControllable && m.IsLoaded && !m.IsUnavailable && m.Device.IsActive).Select(m => m.Device), Core.DisplayNames.For,
                 d => main.Monitors.FirstOrDefault(m => ReferenceEquals(m.Device, d)) is { } vm ? main.HomeInput(vm) : null),
             ["linked"] = panel.Linked,

@@ -72,6 +72,8 @@ data class RemoteUi(
     val icons: Map<String, android.graphics.Bitmap> = emptyMap(),
     /** The computers of the group that answer right now (device id → it is a laptop). The mouse and Remote tabs list only these. */
     val available: Map<String, Boolean> = emptyMap(),
+    /** What the program that plays media is doing on each computer (device id): silenced, audible, playing. */
+    val media: Map<String, MediaState> = emptyMap(),
     /** The person chose "Use another computer": a computer outside the group, by pairing code. Otherwise the app belongs to the group. */
     val manual: Boolean = false,
 ) {
@@ -461,9 +463,10 @@ object Remote {
         primaryState?.let { sources += gateway to it }
         for ((id, link) in links) link.state?.let { sources += id to it }
         val availableNow = sources.associate { (id, s) -> id to s.portable }
-        if (_ui.value.available != availableNow) _ui.update {
+        val mediaNow = sources.mapNotNull { (id, s) -> s.media?.let { id to it } }.toMap()
+        if (_ui.value.available != availableNow || _ui.value.media != mediaNow) _ui.update {
             // A computer that went away is no longer the one the mouse and Remote act on.
-            it.copy(available = availableNow, target = if (it.target.isEmpty() || it.target in availableNow) it.target else "")
+            it.copy(available = availableNow, media = mediaNow, target = if (it.target.isEmpty() || it.target in availableNow) it.target else "")
         }
         if (sources.isEmpty()) {
             if (_ui.value.state != null) { _ui.update { it.copy(state = null) }; latest = latest }

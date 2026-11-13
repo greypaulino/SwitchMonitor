@@ -29,6 +29,8 @@ object Glyphs {
     val ChevronDown = line("chevron-down", "M6 9l6 6 6-6", width = 2.4f)
     val Speaker = line("speaker", "M4 9.5h3.5L12 5.5v13l-4.5-4H4z", "M15.5 9a4.5 4.5 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11")
     val SpeakerOff = line("speaker-off", "M4 9.5h3.5L12 5.5v13l-4.5-4H4z", "M16 9.5l5 5M21 9.5l-5 5")
+    val SkipBack = line("skip-back", "M19 5v14L9 12z", "M6 5v14")
+    val SkipForward = line("skip-forward", "M5 5v14l10-7z", "M18 5v14")
     val Wifi = line("wifi", "M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0M2 9a15 15 0 0 1 20 0", circle(12f, 19.5f, 1f))
     val Plus = line("plus", "M12 5v14M5 12h14", width = 2.2f)
     val Check =line("check", "M5 12.5l4.5 4.5L19 7.5", width = 2.2f)

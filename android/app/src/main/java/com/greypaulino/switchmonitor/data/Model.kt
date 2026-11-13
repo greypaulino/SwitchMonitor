@@ -19,7 +19,11 @@ data class PcState(
     val linkOwner: String = "",
     /** The computer is a laptop (it has a battery). */
     val portable: Boolean = false,
+    /** The program that plays media on the computer: is it silenced, is sound coming out, is it playing. Null on older versions. */
+    val media: MediaState? = null,
 )
+
+data class MediaState(val muted: Boolean, val audible: Boolean, val playing: Boolean)
 
 data class Volume(val percent: Int, val muted: Boolean)
 
@@ -102,6 +106,7 @@ internal fun parseState(o: JSONObject): PcState = PcState(
     volume = o.optJSONObject("volume")?.let { Volume(it.optInt("percent"), it.optBoolean("muted")) },
     volumeFor = if (o.isNull("volumeFor")) null else o.optString("volumeFor").ifBlank { null },
     portable = o.optBoolean("portable"),
+    media = o.optJSONObject("media")?.let { MediaState(it.optBoolean("muted"), it.optBoolean("audible"), it.optBoolean("playing")) },
 )
 
 private fun JSONArray?.objects(): List<JSONObject> =
