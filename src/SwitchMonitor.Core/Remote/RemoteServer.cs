@@ -704,16 +704,18 @@ public sealed class RemoteServer : IDisposable
         foreach (var (id, client) in clients)
             if (!StillAllowed(client.Phone) && clients.TryRemove(id, out _))
             {
-                _ = CloseAsync(client, "This phone was removed in SwitchMonitor.");
+                // A member taken out of the group is told so (code "removed"): it leaves the group on its own side too.
+                bool takenOut = client.Phone.Id.StartsWith(MemberPrefix, StringComparison.Ordinal) && ecosystem is { InEcosystem: true };
+                _ = CloseAsync(client, "This device was removed from the group.", takenOut ? "removed" : "unpaired");
                 ClientsChanged?.Invoke();
             }
     }
 
-    private static async Task CloseAsync(Client client, string reason)
+    private static async Task CloseAsync(Client client, string reason, string code = "unpaired")
     {
         try
         {
-            await SendAsync(client.Socket, client.Sending, Error(reason, "unpaired"));
+            await SendAsync(client.Socket, client.Sending, Error(reason, code));
             await client.Socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "bye", CancellationToken.None);
         }
         catch (Exception error) when (error is WebSocketException or ObjectDisposedException or InvalidOperationException or IOException) { }

@@ -240,6 +240,14 @@ public sealed class Ecosystem
         {
             if (id is null) return false;
             changed = MergeLocked(members as JsonArray, revocations as JsonArray);
+            // Taken out of the group by another computer: this device leaves it too (its list, its code, its connections).
+            if (id is not null && certs.TryGetValue(DeviceId, out var mine) && !Active(mine))
+            {
+                id = null;
+                certs.Clear();
+                revoked.Clear();
+                changed = true;
+            }
             if (changed) Save();
         }
         if (changed) Changed?.Invoke();

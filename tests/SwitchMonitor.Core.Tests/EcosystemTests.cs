@@ -263,6 +263,8 @@ internal static class EcosystemTests
             desk.Revoke(laptop.DeviceId, DateTimeOffset.UtcNow.AddSeconds(1));
             for (int i = 0; i < 50 && server.ConnectedCount > 0; i++) await Task.Delay(100);
             Assert.Equal(0, server.ConnectedCount);
+            for (int i = 0; i < 50 && laptop.InEcosystem; i++) await Task.Delay(100);
+            Assert.True(!laptop.InEcosystem, "told it was removed: it leaves the group on its own side"); 
         }
         finally { foreach (string p in new[] { pa, pb, pstore }) File.Delete(p); }
     }

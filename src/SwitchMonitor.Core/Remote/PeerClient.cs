@@ -316,6 +316,12 @@ public sealed class PeerClient : IDisposable
                         }
                         break;
                     case "error":
+                        if ((string?)message["code"] == "removed" && ecosystem is not null)
+                        {
+                            // The computer we signed in to (proved at sign-in) took this one out of the group: it leaves on its side too.
+                            ecosystem.Leave();
+                            return;
+                        }
                         if ((string?)message["code"] == "unpaired")
                         {
                             if (ecosystem is not null) return;   // removed from the ecosystem: the app drops this client

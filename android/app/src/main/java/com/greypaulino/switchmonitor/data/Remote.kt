@@ -289,6 +289,15 @@ object Remote {
         }
     }
 
+    /** A computer of the group, signed in, told this phone it was taken out: the phone leaves the group on its own side and goes back to the start screen. */
+    private fun removedFromGroup() {
+        if (!MyDevices.inGroup()) return
+        MyDevices.leave()
+        refreshGroup()
+        show("This phone was removed from the group.")
+        forget()
+    }
+
     /** What a computer of the group told or sent changed the group (somebody left or was taken out): the list follows, and the phone leaves when it was the one taken out. */
     private fun groupChanged() {
         val was = _ui.value.inGroup
@@ -374,6 +383,7 @@ object Remote {
                     secure.send(hello)
                 }
                 "group" -> if (connected) { MyDevices.merge(m.optJSONArray("members"), m.optJSONArray("revoked")); groupChanged() }
+                "error" -> if (connected && m.optString("code") == "removed") removedFromGroup()
                 "memberWelcome" -> {
                     MyDevices.merge(m.optJSONArray("members"), m.optJSONArray("revoked"))
                     groupChanged()
@@ -1134,6 +1144,16 @@ object Remote {
                 }
                 "error" -> {
                     _ui.update { it.copy(enrolling = false) }
+                    if (m.optString("code") == "removed") {
+                        // Only believed from a computer that proved it is in the group (an impostor cannot make the phone leave).
+                        if (verified) removedFromGroup()
+                        return
+                    }
+                    if (m.optString("code") == "unpaired" && _ui.value.groupMode) {
+                        // A computer of the group stopped serving this phone (it left the group, say): nothing to pair again; the phone keeps looking.
+                        _ui.update { it.copy(phase = Phase.Offline, state = null) }
+                        return
+                    }
                     if (m.optString("code") == "notMember") {
                         // This computer is not in our group (or does not know us yet): its pairing token, if we have one, else a code.
                         val t = savedHost?.let { tokenFor(prefs.getString("computer", null), it) }
