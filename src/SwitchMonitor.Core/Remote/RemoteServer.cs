@@ -214,6 +214,14 @@ public sealed class RemoteServer : IDisposable
         foreach (var client in clients.Values.Where(c => !c.Phone.IsComputer)) await SendAsync(client.Socket, client.Sending, json);
     }
 
+    /// <summary>Sends a message to every member of the group connected to this computer (phones and computers).</summary>
+    public async Task SendToMembersAsync(JsonObject message)
+    {
+        string json = message.ToJsonString();
+        foreach (var client in clients.Values.Where(c => c.Phone.Id.StartsWith(MemberPrefix, StringComparison.Ordinal)))
+            await SendAsync(client.Socket, client.Sending, json);
+    }
+
     /// <summary>The phones connected now (id and name), where a file can be sent.</summary>
     public IReadOnlyList<PairedPhone> PhonesOnline => clients.Values.Where(c => !c.Phone.IsComputer).Select(c => c.Phone).ToArray();
 
@@ -539,6 +547,14 @@ public sealed class RemoteServer : IDisposable
                 if (type == "share")
                 {
                     if (client.Phone is { IsComputer: true, DeviceId: { } mapSender }) host.ShareEvent(message, mapSender);
+                    continue;
+                }
+                if (type == "group")
+                {
+                    // A member tells what changed in the group (a device left or was taken out): each entry is checked by its signature.
+                    if (ecosystem is not null && client.Phone.Id.StartsWith(MemberPrefix, StringComparison.Ordinal))
+                        ecosystem.Merge(message.TryGetProperty("members", out var gm) ? JsonNode.Parse(gm.GetRawText()) : null,
+                            message.TryGetProperty("revoked", out var gr) ? JsonNode.Parse(gr.GetRawText()) : null);
                     continue;
                 }
                 if (type == "profiles")

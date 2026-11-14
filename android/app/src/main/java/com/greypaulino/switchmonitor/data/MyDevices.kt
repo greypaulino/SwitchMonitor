@@ -169,10 +169,23 @@ internal object MyDevices {
         save()
     }
 
-    /** Takes in the members and revocations another member sent (each one checked). */
+    /**
+     * What this phone signs with its own key to tell the others it is leaving: send it to them, then call [leave]. Each device that
+     * learns it takes this phone out of its list. Null when the phone is in no group.
+     */
+    @Synchronized fun createLeave(): Revoked? {
+        val eco = id ?: return null
+        val own = certs[deviceId]?.at ?: 0L
+        val unsigned = Revoked(deviceId, deviceId, maxOf(System.currentTimeMillis(), own + 1), "")
+        return unsigned.copy(sig = sign(unsigned.payload(eco)))
+    }
+
+    /** Takes in the members and revocations another member sent (each one checked). The phone leaves by itself when it was taken out. */
     @Synchronized fun merge(members: JSONArray?, revocations: JSONArray?) {
         if (id == null) return
         if (mergeLocked(members, revocations)) save()
+        val mine = certs[deviceId]
+        if (mine != null && !active(mine)) { id = null; certs.clear(); revoked.clear(); save() }
     }
 
     /** What to send a computer: every certificate and revocation known. */
@@ -226,7 +239,8 @@ internal object MyDevices {
     private fun revocationChecks(r: Revoked): Boolean {
         val eco = id ?: return false
         val issuer = certs[r.issuer] ?: return false
-        return issuer.isComputer && verifyWith(issuer.key, r.payload(eco), r.sig)
+        // A computer of the group takes a device out, or a device leaves by itself (signed with its own key).
+        return (issuer.isComputer || r.issuer == r.deviceId) && verifyWith(issuer.key, r.payload(eco), r.sig)
     }
 
     // ---- Saved, sealed with the Keystore ----

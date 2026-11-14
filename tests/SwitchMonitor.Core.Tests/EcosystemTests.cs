@@ -29,6 +29,62 @@ internal static class EcosystemTests
     }
 
     [Test]
+    public static void ANewCodeAtOnceReplacesTheOneOnScreen()
+    {
+        string pa = Temp();
+        try
+        {
+            var a = new Ecosystem(pa, NewId(), "Desk");
+            a.Found();
+            var now = DateTimeOffset.Now;
+            string before = a.Code(now);
+            string id = NewId(), key = a.PublicKey;
+            string fresh = a.NewCode(now);
+            Assert.True(fresh != before, "another code, without waiting for the next 30 seconds");
+            Assert.Equal(fresh, a.Code(now), "it is the one on screen now");
+            Assert.True(a.SecondsLeft(now) > Ecosystem.CodeSeconds, "it lasts until time reaches its step");
+            Assert.True(!a.CheckEnrollProof(Ecosystem.EnrollProof(before, "n", id, key), "n", id, key, now, out _), "the old code stops working");
+            Assert.True(a.CheckEnrollProof(Ecosystem.EnrollProof(fresh, "n", id, key), "n", id, key, now, out _), "the new one works");
+        }
+        finally { File.Delete(pa); }
+    }
+
+    [Test]
+    public static void ADeviceThatLeavesIsTakenOutByTheOthers()
+    {
+        string pa = Temp(), pb = Temp(), pc = Temp();
+        try
+        {
+            var a = new Ecosystem(pa, NewId(), "Desk");
+            var b = new Ecosystem(pb, NewId(), "Laptop");
+            var c = new Ecosystem(pc, NewId(), "Pixel", "phone");
+            a.Admit(b.DeviceId, b.Name, b.Kind, b.PublicKey, DateTimeOffset.UtcNow);
+            b.Join(a.Export());
+            a.Admit(c.DeviceId, c.Name, c.Kind, c.PublicKey, DateTimeOffset.UtcNow);
+            var export = a.Export();
+            c.Join(export);
+            b.Merge(export["members"], export["revoked"]);
+            Assert.True(a.IsMember(c.DeviceId) && b.IsMember(c.DeviceId));
+
+            // The phone says it is leaving, signed with its own key: both computers drop it.
+            var leaving = c.CreateLeave(DateTimeOffset.UtcNow.AddSeconds(1))!;
+            var message = new JsonArray(leaving.ToJson());
+            Assert.True(a.Merge(null, message) && !a.IsMember(c.DeviceId), "Desk drops it");
+            Assert.True(b.Merge(null, message) && !b.IsMember(c.DeviceId), "Laptop drops it");
+            Assert.Equal(2, a.Members.Count);
+
+            // Somebody else cannot make a device leave in its name.
+            var forged = leaving with { DeviceId = b.DeviceId, IssuerId = b.DeviceId };
+            Assert.True(!a.Merge(null, new JsonArray(forged.ToJson())) && a.IsMember(b.DeviceId), "a leave needs the device's own signature");
+
+            // It can join again later.
+            a.Admit(c.DeviceId, c.Name, c.Kind, c.PublicKey, DateTimeOffset.UtcNow.AddSeconds(5));
+            Assert.True(a.IsMember(c.DeviceId), "joined again");
+        }
+        finally { foreach (string p in new[] { pa, pb, pc }) File.Delete(p); }
+    }
+
+    [Test]
     public static void ThousandsOfForgedCertificatesAreNotAllChecked()
     {
         string pa = Temp(), pb = Temp();

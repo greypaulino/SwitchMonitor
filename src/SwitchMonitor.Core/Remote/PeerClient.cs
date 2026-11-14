@@ -304,6 +304,10 @@ public sealed class PeerClient : IDisposable
                         State = message;
                         Changed?.Invoke();
                         break;
+                    case "group":
+                        // The other computer (a member, proved at sign-in) tells what changed in the group.
+                        ecosystem?.Merge(message["members"], message["revoked"]);
+                        break;
                     case "devResult":
                         if (message["id"]?.GetValue<long>() is long answered && waiting.TryRemove(answered, out var pending))
                         {

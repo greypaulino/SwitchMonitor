@@ -521,6 +521,9 @@ public sealed class PhoneBridge : ObservableObject, IRemoteHost, IDisposable
     public IReadOnlyList<Core.Remote.PairedPhone> PhonesOnline => server.PhonesOnline;
     public Task<bool> SendToPhoneAsync(string phoneId, JsonObject message) => server.SendToPhoneAsync(phoneId, message);
 
+    /// <summary>A message to every member of the group connected to this computer (phones and computers).</summary>
+    public Task SendToMembersAsync(JsonObject message) => server.SendToMembersAsync(message);
+
     /// <summary>The right-click "Send with SwitchMonitor…" of Windows Explorer.</summary>
     public bool ExplorerMenu
     {

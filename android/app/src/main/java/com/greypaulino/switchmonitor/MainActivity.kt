@@ -13,6 +13,8 @@ import com.greypaulino.switchmonitor.ui.UpdateDialog
 import com.greypaulino.switchmonitor.ui.ConnectScreen
 import com.greypaulino.switchmonitor.ui.ControlScreen
 import com.greypaulino.switchmonitor.ui.GroupOfflineScreen
+import com.greypaulino.switchmonitor.ui.JoinGroupScreen
+import com.greypaulino.switchmonitor.ui.StartScreen
 import com.greypaulino.switchmonitor.ui.theme.SwitchMonitorTheme
 
 class MainActivity : ComponentActivity() {
@@ -35,12 +37,17 @@ class MainActivity : ComponentActivity() {
                 val state = ui.state
                 UpdateDialog()
                 when {
-                    // The group: no computer is chosen. Nothing answering = the offline screen; the first computer that answers brings the controls.
-                    ui.groupMode && ui.phase != Phase.NeedCode ->
-                        if (ui.available.isNotEmpty() && state != null) ControlScreen(ui, state) else GroupOfflineScreen(ui)
+                    // Nothing chosen yet: the two ways to connect.
+                    ui.mode == "none" -> StartScreen(ui)
+                    // The group, not joined yet: only the code is asked for, whatever the connection does meanwhile.
+                    ui.joiningGroup -> JoinGroupScreen(ui)
+                    // In the group no computer is chosen: nothing answering = the discovery screen; the first that answers brings the controls.
+                    ui.groupMode -> if (ui.available.isNotEmpty() && state != null) ControlScreen(ui, state) else GroupOfflineScreen(ui)
+                    // One computer, paired by code: the code, then the controls.
                     ui.phase == Phase.Connected && state != null -> ControlScreen(ui, state)
-                    // A known computer: the control screen right away (last state kept, or placeholders), live once it answers.
-                    ui.host != null && ui.phase in setOf(Phase.Connecting, Phase.Offline, Phase.Connected) ->
+                    // A computer already paired: the control screen right away (last state kept, or placeholders), live once it answers.
+                    ui.host != null && ui.phase in setOf(Phase.Connecting, Phase.Offline) &&
+                        ui.paired.any { it.host == ui.host || it.name.equals(ui.computer, ignoreCase = true) } ->
                         ControlScreen(ui, state ?: Remote.latest, live = false)
                     else -> ConnectScreen(ui)
                 }

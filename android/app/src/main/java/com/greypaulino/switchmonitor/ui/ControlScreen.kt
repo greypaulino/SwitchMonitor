@@ -150,6 +150,8 @@ private fun Header(computer: String, host: String?, phase: com.greypaulino.switc
     // Files for the computer this phone is controlling.
     var sendDevice by remember { mutableStateOf("") }
     var chooseDevice by remember { mutableStateOf(false) }
+    var confirmLeave by remember { mutableStateOf(false) }
+    if (confirmLeave) LeaveGroupDialog(onDismiss = { confirmLeave = false })
     val pickFiles = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         if (uris.isNotEmpty()) com.greypaulino.switchmonitor.data.Transfers.sendFiles(context, uris, sendDevice)
     }
@@ -300,13 +302,13 @@ private fun Header(computer: String, host: String?, phase: com.greypaulino.switc
                         )
                     },
                 )
-                if (ui.inGroup && ui.manual) DropdownMenuItem(
-                    text = { Text("Back to My devices") }, onClick = { menu = false; Remote.backToGroup() },
-                    leadingIcon = { Icon(Glyphs.Link, null, Modifier.size(20.dp), tint = Text) },
-                )
                 DropdownMenuItem(
-                    text = { Text("Use another computer") }, onClick = { menu = false; Remote.forget() },
+                    text = { Text("Change how I connect") }, onClick = { menu = false; Remote.forget() },
                     leadingIcon = { Icon(Glyphs.Swap, null, Modifier.size(20.dp), tint = Text) },
+                )
+                if (ui.groupMode) DropdownMenuItem(
+                    text = { Text("Leave the group…") }, onClick = { menu = false; confirmLeave = true },
+                    leadingIcon = { Icon(Glyphs.Link, null, Modifier.size(20.dp), tint = Text) },
                 )
             }
         }

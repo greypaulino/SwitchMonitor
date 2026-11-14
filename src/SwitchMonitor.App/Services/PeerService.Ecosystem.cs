@@ -1,5 +1,6 @@
 ﻿using System.Collections.ObjectModel;
 using System.Windows.Input;
+using System.Text.Json.Nodes;
 using System.Windows.Threading;
 using SwitchMonitor.Core.Remote;
 
@@ -26,6 +27,7 @@ public sealed partial class PeerService
     public ICommand? JoinGroupCommand { get; private set; }
     public ICommand? LeaveGroupCommand { get; private set; }
     public ICommand? CopyKeyCommand { get; private set; }
+    public ICommand? NewCodeCommand { get; private set; }
 
     /// <summary>Opens the window where files are dropped on a device of the group.</summary>
     public ICommand SendFilesCommand => new RelayCommand(_ =>
@@ -56,6 +58,8 @@ public sealed partial class PeerService
         JoinGroupCommand = new RelayCommand(_ => _ = JoinGroupAsync());
         LeaveGroupCommand = new RelayCommand(_ => LeaveGroup(), _ => InGroup);
         CopyKeyCommand = new RelayCommand(_ => CopyKey());
+        // A code at once, without waiting for the next 30 seconds (the one on screen stops working).
+        NewCodeCommand = new RelayCommand(_ => { eco.NewCode(DateTimeOffset.Now); Raise(nameof(GroupCode)); Raise(nameof(GroupCodeHint)); });
         eco.Changed += () => dispatcher.BeginInvoke(OnEcosystemChanged);
         ecoClock = new DispatcherTimer(TimeSpan.FromSeconds(1), DispatcherPriority.Background, (_, _) => TickEcosystem(), dispatcher);
         OnEcosystemChanged();
@@ -89,6 +93,7 @@ public sealed partial class PeerService
         Raise(nameof(GroupStatus));
         CommandManager.InvalidateRequerySuggested();
         ReconcileMembers();
+        _ = TellGroupAsync();
         if (InGroup && Eco!.Members.Any(m => m.IsComputer && m.DeviceId != Eco.DeviceId && nearby.All(n => n.DeviceId != m.DeviceId))) _ = SearchAsync();
     }
 
@@ -160,10 +165,27 @@ public sealed partial class PeerService
         main.Report($"{cert.Name} is no longer one of your devices.", true);
     }
 
-    private void LeaveGroup()
+    /// <summary>
+    /// Tells every member connected to this computer what is known of the group (devices that left or were taken out): they check
+    /// each entry by its signature and, when it was new to them, tell the others in turn; what is already known stops it.
+    /// </summary>
+    private async Task TellGroupAsync(Revocation? leaving = null)
     {
-        Eco?.Leave();
-        main.Report("This computer left the group. The other devices keep it.", true);
+        if (Eco is not { InEcosystem: true } eco) return;
+        var export = eco.Export();
+        var message = new JsonObject { ["type"] = "group", ["members"] = export["members"]!.DeepClone(), ["revoked"] = export["revoked"]!.DeepClone() };
+        if (leaving is not null && message["revoked"] is JsonArray list) list.Add(leaving.ToJson());
+        foreach (var client in live) await client.SendAsync(message.DeepClone().AsObject());
+        if (main.Phone is { } phone) await phone.SendToMembersAsync(message);
+    }
+
+    private async void LeaveGroup()
+    {
+        if (Eco is not { } eco) return;
+        // First tell the others (signed with this device's own key), then leave: each of them drops this computer from its list.
+        if (eco.CreateLeave(DateTimeOffset.Now) is { } leaving) await TellGroupAsync(leaving);
+        eco.Leave();
+        main.Report("This computer left the group, and the other devices were told.", true);
     }
 
     private void CopyKey()

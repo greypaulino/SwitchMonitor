@@ -2344,6 +2344,13 @@
                                 <DockPanel>
                                     <Button DockPanel.Dock="Right" Content="Copy setup key" Command="{Binding CopyKeyCommand}" Style="{StaticResource QuietButton}"
                                             VerticalAlignment="Center" ToolTip="For an authenticator app: it then shows the same code" />
+                                    <Button DockPanel.Dock="Right" Command="{Binding NewCodeCommand}" Style="{StaticResource QuietButton}" VerticalAlignment="Center" Margin="0,0,6,0"
+                                            ToolTip="A new code now, without waiting for the next 30 seconds. The one on screen stops working." AutomationProperties.Name="New code">
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="&#xE72C;" Style="{StaticResource Glyph}" FontSize="13" Margin="0,1,8,0" />
+                                            <TextBlock Text="New code" />
+                                        </StackPanel>
+                                    </Button>
                                     <StackPanel>
                                         <TextBlock Text="Code to add a device" Style="{StaticResource Hint}" />
                                         <TextBlock Text="{Binding GroupCode}" FontSize="30" FontWeight="SemiBold" FontFamily="Consolas, Segoe UI" />

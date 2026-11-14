@@ -74,11 +74,16 @@ data class RemoteUi(
     val available: Map<String, Boolean> = emptyMap(),
     /** What the program that plays media is doing on each computer (device id): silenced, audible, playing. */
     val media: Map<String, MediaState> = emptyMap(),
-    /** The person chose "Use another computer": a computer outside the group, by pairing code. Otherwise the app belongs to the group. */
-    val manual: Boolean = false,
+    /** How this phone connects: "none" (the start screen asks), "group" (My devices) or "computer" (one computer, by pairing code). */
+    val mode: String = "none",
+    /** The computer this phone is connected to has sent its challenge: a code can be answered now. */
+    val ready: Boolean = false,
 ) {
     /** The app works for the whole group: it connects by itself to the computers of My devices and has no chosen computer. */
-    val groupMode: Boolean get() = inGroup && !manual
+    val groupMode: Boolean get() = inGroup && mode == "group"
+
+    /** The phone chose the group but is not in it yet: it waits for the code of a computer of the group. */
+    val joiningGroup: Boolean get() = mode == "group" && !inGroup
 
     /** The computers of the group that answer right now. */
     fun liveGroup(): List<Found> = group.filter { it.deviceId in available }
@@ -141,8 +146,19 @@ object Remote {
         }
         val host = prefs.getString("host", null)
         // A known computer starts as Connecting, so the first frame is already the control screen (not the search).
-        _ui.update { it.copy(phase = if (host != null) Phase.Connecting else it.phase, host = host, computer = prefs.getString("computer", null), paired = pairedList(), inGroup = MyDevices.inGroup(), group = groupList(), manual = prefs.getBoolean("manual", false)) }
+        _ui.update { it.copy(phase = if (host != null) Phase.Connecting else it.phase, host = host, computer = prefs.getString("computer", null), paired = pairedList(), inGroup = MyDevices.inGroup(), group = groupList(), mode = initialMode()) }
         latest = prefs.getString("lastState", null)?.let { try { parseState(JSONObject(it)).let { s -> s.copy(displays = s.displays.filter { d -> !d.remote }) } } catch (_: Exception) { null } }
+    }
+
+    /** The way this phone connects: what was chosen last; for an older install, the group when it is in one, else the saved computer. */
+    private fun initialMode(): String {
+        prefs.getString("mode", null)?.let { return it }
+        return if (MyDevices.inGroup() && !prefs.getBoolean("manual", false)) "group" else if (prefs.getString("host", null) != null) "computer" else "none"
+    }
+
+    private fun setMode(mode: String) {
+        prefs.edit().putString("mode", mode).apply()
+        _ui.update { it.copy(mode = mode) }
     }
 
     private val savedHost get() = prefs.getString("host", null)
@@ -259,8 +275,37 @@ object Remote {
 
     /** Leaves the group on this phone only; the computers keep it (and the phone can be taken out there). */
     fun leaveGroup() {
-        MyDevices.leave()
+        // Tell the computers first (signed with this phone's key), so each one takes it out of its list; then leave.
+        MyDevices.createLeave()?.let { leaving ->
+            val text = JSONObject().put("type", "group").put("members", org.json.JSONArray()).put("revoked", org.json.JSONArray().put(leaving.toJson())).toString()
+            if (verified) socket?.send(text)
+            for (link in links.values) link.send(text)
+        }
+        scope.launch {
+            delay(500)
+            MyDevices.leave()
+            refreshGroup()
+            forget()
+        }
+    }
+
+    /** What a computer of the group told or sent changed the group (somebody left or was taken out): the list follows, and the phone leaves when it was the one taken out. */
+    private fun groupChanged() {
+        val was = _ui.value.inGroup
         refreshGroup()
+        if (was && !MyDevices.inGroup()) {
+            show("This phone is no longer in the group.")
+            forget()
+        }
+    }
+
+    /** From the start screen: the group (straight in when the phone is in one, else it waits for a code) or one computer. */
+    fun chooseMode(mode: String) {
+        when (mode) {
+            "group" -> if (MyDevices.inGroup()) backToGroup() else { forget(); setMode("group") }
+            "computer" -> { forget(); setMode("computer") }
+            else -> forget()
+        }
     }
 
     @Volatile private var challenge = ""
@@ -328,8 +373,10 @@ object Remote {
                     mine = nonce
                     secure.send(hello)
                 }
+                "group" -> if (connected) { MyDevices.merge(m.optJSONArray("members"), m.optJSONArray("revoked")); groupChanged() }
                 "memberWelcome" -> {
                     MyDevices.merge(m.optJSONArray("members"), m.optJSONArray("revoked"))
+                    groupChanged()
                     val theirs = m.optString("deviceId")
                     if (theirs != deviceId || mine == null || !MyDevices.verify(theirs, "server:$mine:$challenge:$theirs:${secure.binding}", m.optString("signature"))) {
                         secure.close(1000, null)
@@ -410,7 +457,8 @@ object Remote {
 
     /** Back from "Use another computer" to the group: the isolated connection is dropped and the group's computers are looked for. */
     fun backToGroup() {
-        prefs.edit().putBoolean("manual", false).remove("host").remove("computer").remove("lastState").apply()
+        setMode("group")
+        prefs.edit().remove("host").remove("computer").remove("lastState").apply()
         synchronized(this) {
             retry?.cancel()
             socket?.close(1000, null)
@@ -423,7 +471,7 @@ object Remote {
         closeLinks()
         latest = null
         changed()
-        _ui.update { it.copy(manual = false, host = null, computer = null, state = null, gateway = "", available = emptyMap(), phase = Phase.Offline, target = "") }
+        _ui.update { it.copy(host = null, computer = null, state = null, gateway = "", available = emptyMap(), phase = Phase.Offline, target = "") }
         startGroupLoop()
         search()
     }
@@ -613,12 +661,12 @@ object Remote {
         val known = name ?: pairedList().firstOrNull { it.host == h }?.name
         val edit = prefs.edit().putString("host", h).putInt("port", p)
         if (known != null) edit.putString("computer", known) else if (!sameComputer) edit.remove("computer")
-        edit.putBoolean("manual", !viaGroup && MyDevices.inGroup()).apply()
+        edit.putString("mode", if (viaGroup) "group" else "computer").apply()
         wanted = true
         socket?.close(1000, null)
         socket = null
         primaryState = null
-        _ui.update { it.copy(host = h, computer = known ?: it.computer.takeIf { sameComputer }, state = null, manual = !viaGroup && MyDevices.inGroup()) }
+        _ui.update { it.copy(host = h, computer = known ?: it.computer.takeIf { sameComputer }, state = null, mode = if (viaGroup) "group" else "computer", ready = false) }
         rebuild()
         open(h, p)
     }
@@ -633,14 +681,14 @@ object Remote {
             socket = null
         }
         val inGroup = MyDevices.inGroup()
-        prefs.edit().remove("host").remove("computer").remove("lastState").putBoolean("manual", inGroup).apply()
+        prefs.edit().remove("host").remove("computer").remove("lastState").putString("mode", "none").apply()
         primaryState = null
         selectedId = null
         latest = null
         changed()
         _ui.update {
             it.copy(phase = Phase.Choose, host = null, computer = null, state = null, gateway = "", target = "", available = emptyMap(), verification = "",
-                paired = pairedList(), inGroup = inGroup, group = groupList(), manual = inGroup, enrolling = false)
+                paired = pairedList(), inGroup = inGroup, group = groupList(), mode = "none", ready = false, enrolling = false)
         }
         closeLinks()
         holders += "app"
@@ -950,7 +998,7 @@ object Remote {
 
     private fun open(host: String, port: Int) {
         retry?.cancel()
-        _ui.update { it.copy(phase = if (it.phase == Phase.Offline) Phase.Offline else Phase.Connecting, host = host) }
+        _ui.update { it.copy(phase = if (it.phase == Phase.Offline) Phase.Offline else Phase.Connecting, host = host, ready = false) }
         val request = Request.Builder().url("http://$host:$port/ws").build()
         val secure = SecureSocket()
         socket = secure
@@ -989,7 +1037,7 @@ object Remote {
                     val problem = secure.start(m)
                     if (problem != null) { show(problem); secure.close(1000, null); return }
                     challenge = m.optString("nonce")
-                    _ui.update { it.copy(verification = secure.verification) }
+                    _ui.update { it.copy(verification = secure.verification, ready = true) }
                     if (MyDevices.inGroup()) {
                         // A member of the group signs the challenge with its key: no token, no code. It tells what it knows of the
                         // group, and checks the computer's answer the same way.
@@ -1007,8 +1055,10 @@ object Remote {
                 "apps" -> if (verified) appsArrived(_ui.value.gateway, m)
                 "clip" -> if (verified) clipboardArrived(m.optString("text"))
                 "blob" -> if (verified) Transfers.onBlob(appContext, m)
+                "group" -> if (verified) { MyDevices.merge(m.optJSONArray("members"), m.optJSONArray("revoked")); groupChanged() }
                 "memberWelcome" -> {
                     MyDevices.merge(m.optJSONArray("members"), m.optJSONArray("revoked"))
+                    groupChanged()
                     val theirs = m.optString("deviceId")
                     val mine = memberNonce
                     if (mine == null || !MyDevices.verify(theirs, "server:$mine:$challenge:$theirs:${secure.binding}", m.optString("signature"))) {
@@ -1041,9 +1091,8 @@ object Remote {
                         return
                     }
                     enrollCode = null
-                    prefs.edit().putBoolean("manual", false).apply()
                     refreshGroup()
-                    _ui.update { it.copy(manual = false) }
+                    setMode("group")
                     show("This phone is now one of your devices.")
                     // The computer hangs up after letting us in: connect again, this time signing in as a member.
                     val host = savedHost
@@ -1127,7 +1176,7 @@ object Remote {
                 return
             }
             rebuild()
-            _ui.update { it.copy(phase = Phase.Offline) }
+            _ui.update { it.copy(phase = Phase.Offline, ready = false) }
             retry?.cancel()
             // Quick retries while something is on screen; slower ones for the notification (away from home, say).
             val wait = if ("app" in holders || "panel" in holders) 3000L else 20000L

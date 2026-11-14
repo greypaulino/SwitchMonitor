@@ -188,7 +188,23 @@ public sealed class Ecosystem
         return true;
     }
 
-    /// <summary>Leaves the ecosystem (this device only; the others keep it).</summary>
+    /// <summary>
+    /// What this device signs to tell the others it is leaving (null when it is in no group): send it to them, then call
+    /// <see cref="Leave"/>. Each member that learns it takes this device out of its list.
+    /// </summary>
+    public Revocation? CreateLeave(DateTimeOffset now)
+    {
+        lock (gate)
+        {
+            if (id is null) return null;
+            // Never before its own certificate (the clocks of two devices differ): the leave must count after it.
+            var after = certs.TryGetValue(DeviceId, out var own) ? own.IssuedAt.AddMilliseconds(1) : now;
+            var unsigned = new Revocation(DeviceId, DeviceId, now > after ? now : after, "");
+            return unsigned with { Signature = SignText(unsigned.Payload(id)) };
+        }
+    }
+
+    /// <summary>Leaves the ecosystem (this device only; the others learn it from <see cref="CreateLeave"/>).</summary>
     public void Leave()
     {
         lock (gate)
@@ -297,8 +313,14 @@ public sealed class Ecosystem
         return VerifyText(issuer.PublicKey, cert.Payload(id), cert.Signature);
     }
 
+    /// <summary>
+    /// A computer of the group takes a device out (its signature), or a device leaves by itself (its own signature, any kind of device):
+    /// both spread the same way, so every member drops it from its list.
+    /// </summary>
     private bool RevocationChecks(Revocation rev) =>
-        id is not null && certs.TryGetValue(rev.IssuerId, out var issuer) && issuer.IsComputer && VerifyText(issuer.PublicKey, rev.Payload(id), rev.Signature);
+        id is not null && certs.TryGetValue(rev.IssuerId, out var issuer)
+            && (issuer.IsComputer || rev.IssuerId == rev.DeviceId)
+            && VerifyText(issuer.PublicKey, rev.Payload(id), rev.Signature);
 
     private static bool ValidKey(string publicKey)
     {
@@ -333,9 +355,32 @@ public sealed class Ecosystem
     // ---- The code that lets a new device in (the same kind an authenticator app makes) ----
 
     /// <summary>The 6-digit code for the 30 seconds <paramref name="now"/> is in.</summary>
-    public string Code(DateTimeOffset now) => Totp.Code(totpSecret, Totp.Step(now));
+    public string Code(DateTimeOffset now) { lock (gate) return Totp.Code(totpSecret, Math.Max(Totp.Step(now), shownStep)); }
 
-    public int SecondsLeft(DateTimeOffset now) => CodeSeconds - (int)(now.ToUnixTimeSeconds() % CodeSeconds);
+    public int SecondsLeft(DateTimeOffset now)
+    {
+        lock (gate)
+            return CodeSeconds - (int)(now.ToUnixTimeSeconds() % CodeSeconds) + (int)Math.Max(0, shownStep - Totp.Step(now)) * CodeSeconds;
+    }
+
+    private long shownStep;   // when the person asked for a new code: the step whose code is on screen until time catches up with it
+
+    /// <summary>
+    /// A new code at once, without waiting for the next 30 seconds: the one on screen (and every older one) stops working and the
+    /// next step's code takes its place. Returns it. (An authenticator app keeps showing the current step's code, which also stops
+    /// working until time reaches the step shown here.)
+    /// </summary>
+    public string NewCode(DateTimeOffset now)
+    {
+        lock (gate)
+        {
+            long current = Totp.Step(now);
+            shownStep = Math.Min(Math.Max(shownStep, current) + 1, current + 3);
+            lastStep = Math.Max(lastStep, shownStep - 1);
+            failures = 0;
+            return Totp.Code(totpSecret, shownStep);
+        }
+    }
 
     /// <summary>The secret as an authenticator app asks for it (base32); the app then shows the same code.</summary>
     public string SetupKey => Totp.Base32(totpSecret);
@@ -362,7 +407,7 @@ public sealed class Ecosystem
             catch (FormatException) { return Fail(now); }
             string? match = null;
             long matchStep = 0;
-            for (long step = current - 1; step <= current + 1; step++)
+            for (long step = current - 1; step <= Math.Max(current + 1, shownStep); step++)
             {
                 string candidate = Totp.Code(totpSecret, step);
                 // Every candidate is compared (no early exit): the time taken says nothing.
